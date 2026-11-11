@@ -285,11 +285,49 @@ struct Guest {
     feed: Feed,
 }
 
+#[derive(Clone, Default)]
+pub struct DismissedRooms(Arc<Mutex<HashSet<Uuid>>>);
+
+impl DismissedRooms {
+    pub fn record(&self, room: Uuid) {
+        self.0.lock().expect("dismissed rooms").insert(room);
+    }
+
+    pub fn clear(&self) {
+        self.0.lock().expect("dismissed rooms").clear();
+    }
+
+    fn admit(&self, room: Uuid, scanned: bool) -> Result<()> {
+        let mut dismissed = self.0.lock().expect("dismissed rooms");
+        if scanned {
+            dismissed.remove(&room);
+        } else {
+            ensure!(
+                !dismissed.contains(&room),
+                "This private session was closed on this device."
+            );
+        }
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct State {
     memberships: HashMap<Uuid, Vec<User>>,
     hosted: HashMap<Uuid, Hosted>,
     guests: HashMap<Uuid, Guest>,
+    dismissed: DismissedRooms,
+}
+
+impl State {
+    fn end_guest(&mut self, id: Uuid) {
+        self.dismissed.record(id);
+        if let Some(guest) = self.guests.remove(&id)
+            && let Some(sender) = guest.sender
+        {
+            let _ = sender.try_send(Wire::Leave);
+        }
+    }
 }
 
 struct Engine {
@@ -321,6 +359,7 @@ impl PrivateLobby {
         key: DeviceKey,
         credential: LanCredential,
         memberships: HashMap<Uuid, Vec<User>>,
+        dismissed: DismissedRooms,
     ) -> Result<Self> {
         let identity = Identity::new(own.id, key, credential)?;
         let lan = Lan::new(Scope::current()?, &identity, origin, own.id)?;
@@ -330,6 +369,7 @@ impl PrivateLobby {
             identity: Mutex::new(Arc::new(identity)),
             state: Mutex::new(State {
                 memberships,
+                dismissed,
                 ..State::default()
             }),
         });
@@ -553,11 +593,8 @@ impl PrivateLobby {
         let mut state = self.engine.state();
         if let Some(room) = state.hosted.remove(&id) {
             room.close();
-        }
-        if let Some(mut guest) = state.guests.remove(&id) {
-            if let Some(sender) = guest.sender.take() {
-                let _ = sender.try_send(Wire::Leave);
-            }
+        } else {
+            state.end_guest(id);
         }
     }
 
@@ -997,6 +1034,7 @@ fn attach_guest_task(
                 approval: Some(approval),
             })?;
         }
+        state.dismissed.admit(id, scanned)?;
         let phase = if decided || room.open || room.host == engine.own.id || scanned {
             Phase::Authenticating
         } else {
@@ -1155,6 +1193,54 @@ async fn recv_frame(recv: &mut RecvStream) -> Result<Wire> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dismissing_a_disconnected_guest_blocks_automatic_rejoin_after_rebind() {
+        let host = User {
+            id: Uuid::new_v4(),
+            handle: "host".into(),
+        };
+        let room = Room {
+            id: Uuid::new_v4(),
+            conversation: None,
+            host: host.id,
+            host_device: [0; 32],
+            invited: Vec::new(),
+            open: true,
+        };
+        let id = room.id;
+        let mut state = State::default();
+        state.guests.insert(
+            id,
+            Guest {
+                room,
+                summary: PrivateSummary {
+                    id,
+                    conversation: None,
+                    host,
+                    invited: Vec::new(),
+                    participants: Vec::new(),
+                    phase: Phase::Failed,
+                    open: true,
+                    hosted: false,
+                },
+                link: Uuid::new_v4(),
+                sender: None,
+                voted: true,
+                feed: Feed::new(),
+            },
+        );
+        state.end_guest(id);
+        assert!(!state.guests.contains_key(&id));
+        let rebound = State {
+            dismissed: state.dismissed.clone(),
+            ..State::default()
+        };
+        assert!(rebound.dismissed.admit(id, false).is_err());
+        assert!(rebound.dismissed.admit(Uuid::new_v4(), false).is_ok());
+        assert!(rebound.dismissed.admit(id, true).is_ok());
+        assert!(rebound.dismissed.admit(id, false).is_ok());
+    }
 
     #[test]
     fn private_qr_expires_at_its_monotonic_deadline() {

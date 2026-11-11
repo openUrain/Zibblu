@@ -8,7 +8,9 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 use uuid::Uuid;
-use zibblu_core::private_chat::{Phase, PrivateCode, PrivateLobby, PrivateSummary, PrivateView};
+use zibblu_core::private_chat::{
+    DismissedRooms, Phase, PrivateCode, PrivateLobby, PrivateSummary, PrivateView,
+};
 use zibblu_core::{
     Client, ConversationRequest, Credentials, Direction, Directory, FileFilter, GroupInvite,
     GroupInvitePreview, OnlineError, Page, SendMessage, Transfer, User,
@@ -19,6 +21,7 @@ pub(crate) struct Desktop {
     preferences: StdMutex<Preferences>,
     session: Mutex<Option<Arc<Client>>>,
     pub(crate) private: Mutex<Option<Arc<PrivateLobby>>>,
+    pub(crate) dismissed_rooms: DismissedRooms,
     private_worker: StdMutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub drop: StdMutex<Option<(Uuid, PathBuf)>>,
 }
@@ -34,6 +37,7 @@ impl Desktop {
             preferences: StdMutex::new(preferences),
             session: Mutex::new(None),
             private: Mutex::new(None),
+            dismissed_rooms: DismissedRooms::default(),
             private_worker: StdMutex::new(None),
             drop: StdMutex::new(None),
         }
@@ -68,6 +72,7 @@ impl Desktop {
         if let Some(lobby) = self.private.lock().await.take() {
             lobby.quit();
         }
+        self.dismissed_rooms.clear();
         if let Some(window) = app.get_webview_window(crate::private_runtime::INVITATION) {
             let _ = window.close();
         }
@@ -367,6 +372,8 @@ pub(crate) async fn private_send(state: State<'_, Desktop>, id: Uuid, text: Stri
 pub(crate) async fn private_end(state: State<'_, Desktop>, id: Uuid) -> Result<()> {
     if let Some(lobby) = state.private.lock().await.as_ref() {
         lobby.end(id);
+    } else {
+        state.dismissed_rooms.record(id);
     }
     Ok(())
 }

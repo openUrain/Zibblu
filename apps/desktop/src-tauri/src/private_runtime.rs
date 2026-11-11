@@ -88,6 +88,7 @@ pub(crate) async fn run(app: AppHandle, client: Arc<Client>) {
                     key.clone(),
                     cert.clone(),
                     memberships(&directory),
+                    desktop.dismissed_rooms.clone(),
                 )
             {
                 *current = Some(Arc::new(lobby));

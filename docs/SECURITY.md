@@ -17,6 +17,7 @@ We **cannot** promise protection from: screenshots or cameras, recipients manual
 - No cloud relay, no NAT traversal via Zibblu servers, and no fallback to ordinary online chat.
 - Content must not be sent to telemetry, logs, crash reports, normal-message storage, search indices, notifications or cloud AI.
 - Private text is kept in bounded memory during the session. End, disconnect, timeout and sign-out discard local private state. Switching conversations leaves the active background session running. A restart opens no private transcript.
+- Dismissing a disconnected room keeps only its ID in memory for the current sign-in, including after network changes. The client refuses automatic re-entry to that room. An explicit scan of a valid private QR code expresses fresh consent.
 - Connection UI must distinguish `connecting`, `verified private`, and `disconnected`. Never badge a session “private” based only on an SSID or IP range.
 - Block accidental exports, copy-to-normal-history and private-content previews in the first release.
 
