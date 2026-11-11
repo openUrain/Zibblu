@@ -10,6 +10,7 @@ import type { ConversationRequest, Directory, DropOffer, Session, ShareSource, T
 import { Avatar, Blank, Brand, Dialog, chatName } from "./common";
 import { ChatList, ChatView } from "./chat";
 import { FilesView } from "./files";
+import { PrivateChatView } from "./private-chat";
 
 const pages = [
   { name: "Chats", Icon: MessageSquare }, { name: "Contacts", Icon: UsersRound },
@@ -24,6 +25,7 @@ export function Workspace({ session, theme, setTheme, signedOut }: {
   const [directory, setDirectory] = useState<Directory>({ contacts: [], conversations: [] });
   const [selected, setSelected] = useState<string>();
   const [mobileChat, setMobileChat] = useState(false);
+  const [privateOpen, setPrivateOpen] = useState(false);
   const [revision, setRevision] = useState(0);
   const [connection, setConnection] = useState<"Connecting" | "Connected" | "Reconnecting" | "Session expired">("Connecting");
   const [transfers, setTransfers] = useState<Transfer[]>([]);
@@ -77,17 +79,28 @@ export function Workspace({ session, theme, setTheme, signedOut }: {
   }, []);
 
   const active = directory.conversations.find(chat => chat.id === selected);
-  const activeId = nav === "Chats" ? active?.id : undefined;
+  const privatePeer = privateOpen && active?.members.find(member => member.id !== session.user.id);
+  const activeId = nav === "Chats" && !privateOpen ? active?.id : undefined;
   useEffect(() => {
     const drop = listen<DropOffer>("attachment-drop", event => {
+      if (privateOpen) return;
       if (activeId) setOffer({ ...event.payload, conversation: activeId });
       else setFailure("Open a chat before dropping a file or folder.");
     });
-    const error = listen<string>("attachment-drop-error", event => setFailure(event.payload));
+    const error = listen<string>("attachment-drop-error", event => {
+      if (!privateOpen) setFailure(event.payload);
+    });
     return () => { void drop.then(unlisten => unlisten()); void error.then(unlisten => unlisten()); };
-  }, [activeId]);
+  }, [activeId, privateOpen]);
+
+  function navigate(page: Navigation) {
+    setPrivateOpen(false);
+    setNav(page);
+    if (page === "Chats") setMobileChat(false);
+  }
 
   function selectChat(id: string) {
+    setPrivateOpen(false);
     setSelected(id);
     setNav("Chats");
     setMobileChat(true);
@@ -123,13 +136,10 @@ export function Workspace({ session, theme, setTheme, signedOut }: {
       <div className="rail-brand"><Brand /></div>
       <div className="rail-links">{pages.map(({ name, Icon }) =>
         <button key={name} className={nav === name ? "nav-active" : ""} aria-label={name}
-          aria-current={nav === name ? "page" : undefined} onClick={() => {
-            setNav(name);
-            if (name === "Chats") setMobileChat(false);
-          }}>
+          aria-current={nav === name ? "page" : undefined} onClick={() => navigate(name)}>
           <Icon size={22} strokeWidth={1.9} /><span>{name}</span>
         </button>)}</div>
-      <button className="rail-account" title={"@" + session.user.handle} aria-label="Account settings" onClick={() => setNav("Settings")}>
+      <button className="rail-account" title={"@" + session.user.handle} aria-label="Account settings" onClick={() => navigate("Settings")}>
         <Avatar name={session.user.handle} />
       </button>
     </nav>
@@ -145,9 +155,13 @@ export function Workspace({ session, theme, setTheme, signedOut }: {
       </div>}
       {nav === "Chats" && <div className={"chat-layout" + (mobileChat && active ? " mobile-chat-open" : "")}>
         <ChatList chats={directory.conversations} own={session.user} selected={selected} open={selectChat} newChat={() => setNewChat(true)} />
-        {active ? <ChatView key={active.id} chat={active} own={session.user} revision={revision}
-          transfers={transfers} changed={changed} refresh={refresh} back={() => setMobileChat(false)}
-          share={source => share(active.id, source)} />
+        {active ? privatePeer
+          ? <PrivateChatView key={active.id} conversation={active.id} peer={privatePeer}
+              back={() => { setOffer(undefined); setPrivateOpen(false); }} />
+          : <ChatView key={active.id} chat={active} own={session.user} revision={revision}
+              transfers={transfers} changed={changed} refresh={refresh} back={() => setMobileChat(false)}
+              share={source => share(active.id, source)}
+              openPrivate={() => { setOffer(undefined); setPrivateOpen(true); }} />
           : <section className="chat-blank"><Blank icon={<MessageCircle size={31} />} title="Your conversations">
             <p>Open a chat to read messages or start a new one.</p>
             <button className="button primary" onClick={() => setNewChat(true)}>New conversation <ArrowRight size={16} /></button>
@@ -158,9 +172,9 @@ export function Workspace({ session, theme, setTheme, signedOut }: {
       {nav === "Settings" && <SettingsView {...{ session, theme, setTheme, leaving, signOut }} />}
     </div>
     {newChat && <NewChat contacts={directory.contacts} create={create} close={() => setNewChat(false)} findPeople={() => {
-      setNewChat(false); setNav("Contacts");
+      setNewChat(false); navigate("Contacts");
     }} />}
-    {offer && offeredChat && <Dialog title="Share this attachment?" close={() => { if (!sharing) setOffer(undefined); }}>
+    {!privateOpen && offer && offeredChat && <Dialog title="Share this attachment?" close={() => { if (!sharing) setOffer(undefined); }}>
       <p className="drop-confirm"><strong>{offer.name}</strong> will be shared in <strong>{chatName(offeredChat, session.user.id)}</strong>.</p>
       <div className="dialog-actions">
         <button className="button subtle" onClick={() => setOffer(undefined)} disabled={sharing}>Cancel</button>

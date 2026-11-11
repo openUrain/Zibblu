@@ -1,5 +1,5 @@
 import {
-  ArrowDown, ArrowLeft, FilePlus2, FolderOpen, Globe2, MessageCircle, Paperclip, Plus, Search, Send,
+  ArrowDown, ArrowLeft, FilePlus2, FolderOpen, Ghost, Globe2, MessageCircle, Paperclip, Plus, Search, Send,
 } from "lucide-react";
 import { Fragment, useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
@@ -36,9 +36,9 @@ export function ChatList({ chats, own, selected, open, newChat }: {
   </aside>;
 }
 
-export function ChatView({ chat, own, revision, transfers, changed, refresh, back, share }: {
+export function ChatView({ chat, own, revision, transfers, changed, refresh, back, share, openPrivate }: {
   chat: Conversation; own: User; revision: number; transfers: Transfer[]; changed: () => void;
-  refresh: () => Promise<void>; back: () => void; share: (source: ShareSource) => Promise<void>;
+  refresh: () => Promise<void>; back: () => void; share: (source: ShareSource) => Promise<void>; openPrivate: () => void;
 }) {
   const [showFiles, setShowFiles] = useState(false);
   const name = chatName(chat, own.id);
@@ -50,6 +50,9 @@ export function ChatView({ chat, own, revision, transfers, changed, refresh, bac
         <span>{chat.title ? chat.members.length + " members" : "@" + name}</span>
       </div>
       <span className="online-mode" title="Messages and attachments are delivered through your Zibblu server"><Globe2 size={15} /> Normal chat</span>
+      {chat.title === null && chat.members.length === 2 &&
+        <button className="icon-button" aria-label="Open private chat" title="Open private chat"
+          onClick={openPrivate}><Ghost size={20} /></button>}
       <button className={"button subtle header-files" + (showFiles ? " toggled" : "")} aria-pressed={showFiles}
         onClick={() => setShowFiles(!showFiles)}><FolderOpen size={17} /> <span>{showFiles ? "Back to messages" : "Shared files"}</span></button>
     </header>

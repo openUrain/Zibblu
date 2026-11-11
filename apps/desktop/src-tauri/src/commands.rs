@@ -8,6 +8,7 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 use uuid::Uuid;
+use zibblu_core::private_chat::{PrivateChat, PrivateView};
 use zibblu_core::{
     Client, ConversationRequest, Credentials, Direction, Directory, FileFilter, OnlineError, Page,
     SendMessage, Transfer, User,
@@ -17,6 +18,7 @@ pub(crate) struct Desktop {
     data: PathBuf,
     preferences: StdMutex<Preferences>,
     session: Mutex<Option<Arc<Client>>>,
+    private: Mutex<Option<(Uuid, PrivateChat)>>,
     pub drop: StdMutex<Option<(Uuid, PathBuf)>>,
 }
 
@@ -30,6 +32,7 @@ impl Desktop {
             data,
             preferences: StdMutex::new(preferences),
             session: Mutex::new(None),
+            private: Mutex::new(None),
             drop: StdMutex::new(None),
         }
     }
@@ -52,6 +55,13 @@ impl Desktop {
             .await
             .clone()
             .context("Sign in to continue")?)
+    }
+
+    pub async fn close_private(&self) {
+        let private = self.private.lock().await.take();
+        if let Some((_, chat)) = private {
+            chat.end().await;
+        }
     }
 }
 
@@ -167,6 +177,7 @@ pub(crate) async fn login(
 #[tauri::command]
 pub(crate) async fn logout(state: State<'_, Desktop>) -> Result<()> {
     let mut session = state.session.lock().await;
+    state.close_private().await;
     *state.drop.lock().expect("drop state") = None;
     if let Some(client) = session.take() {
         client.logout().await?;
@@ -236,6 +247,89 @@ pub(crate) async fn send_message(
         .await?
         .send_message(conversation, message)
         .await?)
+}
+
+#[tauri::command]
+pub(crate) async fn private_start(state: State<'_, Desktop>, conversation: Uuid) -> Result<Uuid> {
+    let session = state.session.lock().await;
+    let client = session
+        .as_ref()
+        .context("Sign in to start a private chat.")?;
+    let directory = client.directory().await?;
+    let chat = directory
+        .conversations
+        .iter()
+        .find(|chat| chat.id == conversation && chat.title.is_none() && chat.members.len() == 2)
+        .context("Open a one-to-one chat first.")?;
+    if !chat
+        .members
+        .iter()
+        .any(|member| member.id == client.user.id)
+    {
+        return Err(anyhow!("Open one of your own conversations.").into());
+    }
+    let peer = chat
+        .members
+        .iter()
+        .find(|member| member.id != client.user.id)
+        .context("The private contact is missing.")?;
+    let mut active = state.private.lock().await;
+    if active.as_ref().is_some_and(|(_, chat)| !chat.finished()) {
+        return Err(anyhow!("End the current private session first.").into());
+    }
+    let id = Uuid::new_v4();
+    *active = Some((
+        id,
+        PrivateChat::start(client.server(), client.user.id, peer.id),
+    ));
+    Ok(id)
+}
+
+#[tauri::command]
+pub(crate) async fn private_view(
+    state: State<'_, Desktop>,
+    id: Uuid,
+    after: u64,
+) -> Result<PrivateView> {
+    let active = state.private.lock().await;
+    let (_, chat) = active
+        .as_ref()
+        .filter(|(session, _)| *session == id)
+        .context("The private session has ended.")?;
+    Ok(chat.view(after))
+}
+
+#[tauri::command]
+pub(crate) async fn private_verify(
+    state: State<'_, Desktop>,
+    id: Uuid,
+    matches: bool,
+) -> Result<()> {
+    let mut active = state.private.lock().await;
+    let (_, chat) = active
+        .as_mut()
+        .filter(|(session, _)| *session == id)
+        .context("The private session has ended.")?;
+    Ok(chat.verify(matches)?)
+}
+
+#[tauri::command]
+pub(crate) async fn private_send(state: State<'_, Desktop>, id: Uuid, text: String) -> Result<()> {
+    let active = state.private.lock().await;
+    let (_, chat) = active
+        .as_ref()
+        .filter(|(session, _)| *session == id)
+        .context("The private session has ended.")?;
+    Ok(chat.send(text)?)
+}
+
+#[tauri::command]
+pub(crate) async fn private_end(state: State<'_, Desktop>, id: Uuid) -> Result<()> {
+    let mut active = state.private.lock().await;
+    if let Some((_, chat)) = active.take_if(|(session, _)| *session == id) {
+        chat.end().await;
+    }
+    Ok(())
 }
 
 #[tauri::command]

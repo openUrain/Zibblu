@@ -22,7 +22,7 @@ Scope:
 **Deliverable:** explicit temporary **text** sessions on the same reachable LAN, separate from normal chats.
 
 Scope:
-- Small lock control in chat; peer discovery, consent and authenticated local transport.
+- Ghost control in a one-to-one chat; peer discovery, consent and authenticated local transport.
 - Clear verified/private/failed states.
 - Memory-scoped conversation and session keys.
 - End/disconnect/timeout cleanup; fail closed without online relay.

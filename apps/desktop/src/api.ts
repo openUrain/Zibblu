@@ -26,6 +26,12 @@ export type ConversationRequest =
   | { kind: "group"; title: string; contact_ids: string[] };
 export type DropOffer = { ticket: string; name: string };
 export type ShareSource = { kind: "file" | "folder" } | { kind: "dropped"; ticket: string };
+export type PrivateStatus =
+  | { state: "discovering" | "connecting" | "connected" | "ended" }
+  | { state: "verify" | "waiting_for_peer"; code: string }
+  | { state: "failed"; reason: string };
+export type PrivateMessage = { seq: number; mine: boolean; text: string };
+type PrivateView = PrivateStatus & { messages: PrivateMessage[] };
 
 export const api = {
   preferences: () => invoke<Preferences>("preferences"),
@@ -43,6 +49,11 @@ export const api = {
   create: (request: ConversationRequest) => invoke<string>("create_conversation", { request }),
   send: (conversation: string, text: string, nonce: string) =>
     invoke<void>("send_message", { conversation, message: { text, nonce } }),
+  startPrivate: (conversation: string) => invoke<string>("private_start", { conversation }),
+  viewPrivate: (id: string, after: number) => invoke<PrivateView>("private_view", { id, after }),
+  verifyPrivate: (id: string, matches: boolean) => invoke<void>("private_verify", { id, matches }),
+  sendPrivate: (id: string, text: string) => invoke<void>("private_send", { id, text }),
+  endPrivate: (id: string) => invoke<void>("private_end", { id }),
   share: (conversation: string, source: ShareSource) => invoke<Transfer | null>("share", { conversation, source }),
   save: (id: string) => invoke<Transfer | null>("save_attachment", { id }),
   transfers: () => invoke<Transfer[]>("transfers"),

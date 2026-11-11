@@ -1,6 +1,6 @@
 # Security & privacy boundaries
 
-This document records the M1 security boundary and the requirements for later modules.
+This document records the M1 and M2 security boundaries and the requirements for M3.
 
 ## Threats and limits
 
@@ -11,9 +11,11 @@ We **cannot** promise protection from: screenshots or cameras, recipients manual
 ## Private LAN sessions
 
 - A private session requires **both participants' affirmative action**, contact authentication and a verified encrypted LAN P2P path.
+- mDNS supplies a temporary address and certificate. To bind the encrypted connection to the intended account, compare the full per-connection TLS exporter code with that person in person or over an already trusted call. Both must confirm a match. Decline on a mismatch. The code changes on every connection.
+- The first release accepts direct UDP on the same RFC 1918 or IPv4 link-local subnet and applies an outgoing TTL of one. This relies on the operating system's view of the local link. A bridged network can extend that link, and local observers can see discovery metadata.
 - No cloud relay, no NAT traversal via Zibblu servers, and no fallback to ordinary online chat.
 - Content must not be sent to telemetry, logs, crash reports, normal-message storage, search indices, notifications or cloud AI.
-- Private text is memory-first and session-scoped. End, disconnect and restart must not reopen its transcript. Clear accessible buffers and session keys on close; account for abnormal exits.
+- Private text is kept in bounded memory during the session. End, disconnect, timeout, sign-out and leaving the view discard the app's transcript and connection state. A restart opens no private transcript.
 - Connection UI must distinguish `connecting`, `verified private`, and `disconnected`. Never badge a session “private” based only on an SSID or IP range.
 - Block accidental exports, copy-to-normal-history and private-content previews in the first release.
 

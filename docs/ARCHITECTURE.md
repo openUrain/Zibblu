@@ -20,7 +20,7 @@ The three modules share UI primitives and contact identity but **do not share im
 - Desktop: Tauri 2, React, TypeScript. Start on Windows; cross-platform only when core flows are working.
 - Core: Rust + Tokio for transport, file streams and privacy-critical checks.
 - Normal chat: SQLite locally; minimum online Rust service and PostgreSQL where remote messaging actually needs them.
-- Private LAN: mDNS/DNS-SD for discovery; authenticated QUIC peer-to-peer channel (e.g., Quinn), with peer/contact binding. Discovery alone is not authentication.
+- Private LAN: mDNS/DNS-SD discovery and Quinn peer-to-peer transport, with per-session verification by both participants.
 - AI: provider configuration and a narrowly scoped `read_selected_context` flow. Providers receive the prepared snapshot, never a broad database handle or writable file system.
 
 **Folder layout when code exists** (do not create placeholders):
@@ -51,13 +51,20 @@ Use fewer packages if implementation proves simpler.
 
 Important: ordinary online messaging should target authenticated, encrypted transport and later end-to-end encrypted message content. Do not advertise full E2EE until a concrete protocol, key lifecycle and verification exist.
 
-## Transport state machine
+## M2 private transport
+
+The desktop resolves the other member from the signed-in account's cached one-to-one directory. The server origin and the ordered account IDs define the discovery tag and TLS exporter context. Both people start discovery. The lower account ID advertises a temporary QUIC endpoint and self-signed certificate by mDNS, and the other device dials a numeric on-link address using that certificate as its TLS trust anchor.
+
+The two ends compare the conversation tag on the stream. Each displays the same 128-bit TLS exporter code for the same connection. The people verify all code groups with the expected contact over a trusted channel. Each endpoint requires local approval and the peer's approval on that stream before passing text. The discovery listener closes after one connection. There is no stored peer key or transcript.
+
+The transport filters both IPv4 source and destination to an on-link private or link-local subnet and sets the QUIC UDP TTL to one. Discovery and confirmation are time-bounded. QUIC detects a broken link through keepalive and idle timeout. A verified session also expires after 15 minutes without private text. The private transport owns no M1 client or storage handle. The desktop clears the draft and the bounded in-memory transcript on end, failure or leaving the view.
 
 ```text
-Normal chat ──[tap private]──> Discovering
-Discovering ──[peer found + both consent + auth]──> Private connected
-Discovering ──[failure/timeout/refusal]──> Normal chat (no private data sent)
-Private connected ──[end/disconnect/timeout]──> Clear ephemeral state ──> Normal chat
+Normal chat ──[ghost + start discovery]──> Discovering
+Discovering ──[peer found]──> Connecting and verifying
+Connecting and verifying ──[both confirm matching codes]──> Verified private
+Active attempt or session ──[end/disconnect/timeout/refusal]──> Clear ephemeral state
+Ended or failed ──[select Normal chat]──> Normal chat
 ```
 
 Private data does **not** travel on the normal channel during discovery, failure, reconnection or cleanup. Explicit confirmation is required for a new private session.
@@ -71,9 +78,8 @@ Private data does **not** travel on the normal channel during discovery, failure
 
 ## Design trade-offs pending implementation
 
-- Private peer identity binding and group membership changes beyond M1.
+- Group membership changes beyond M1.
 - Choice and audit of an established E2EE protocol for online messages.
-- Private LAN authentication UX (trusted key, fingerprint or peer verification).
 - Mobile background constraints and platform-specific discovery.
 - Provider-specific AI usage disclosure and optional on-device models.
 

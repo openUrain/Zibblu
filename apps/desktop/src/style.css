@@ -250,6 +250,18 @@ svg { vertical-align: middle; }
 .send-button { min-width: 86px; }
 .more { display: flex; margin: 6px auto 14px; }
 
+.private-ghost { flex: none; color: var(--accent); }
+.private-status { flex: 1; min-height: 0; overflow: auto; }
+.private-status .blank { min-height: 100%; }
+.private-code {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;
+  padding: 11px 14px; margin-top: 7px; border: 1px solid var(--line);
+  border-radius: 10px; background: var(--panel); font-size: 15px; letter-spacing: .055em;
+}
+.private-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.private-timeline { user-select: none; }
+.private-composer-bar { justify-content: flex-end; }
+
 .workspace-heading { margin-bottom: 22px; }
 .workspace-heading h1 { font-size: 32px; }
 .workspace-heading p { color: var(--muted); margin-top: 7px; line-height: 1.5; }

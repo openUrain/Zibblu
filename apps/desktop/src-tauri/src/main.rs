@@ -24,6 +24,12 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if matches!(event, WindowEvent::Destroyed) {
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    app.state::<Desktop>().close_private().await;
+                });
+            }
             let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event else {
                 return;
             };
@@ -58,6 +64,11 @@ fn main() {
             commands::remove_contact,
             commands::create_conversation,
             commands::send_message,
+            commands::private_start,
+            commands::private_view,
+            commands::private_verify,
+            commands::private_send,
+            commands::private_end,
             commands::share,
             commands::save_attachment,
             commands::transfers,

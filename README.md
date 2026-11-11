@@ -4,7 +4,7 @@
 
 A modern messenger with a clean interface, serious file sharing, opt-in LAN-only private chats, and AI assistants you control.
 
-> **Status:** M1 normal chat and files. The LAN private chat and AI modules are planned.
+> **Status:** M1 normal chat and files and M2 LAN private text chat. The AI module is planned.
 
 ## What makes Zibblu different?
 
@@ -55,6 +55,14 @@ The focused HTTP and SQLite acceptance test uses a disposable PostgreSQL databas
 $env:ZIBBLU_TEST_DATABASE_URL = 'postgres://zibblu:<password>@127.0.0.1:5432/zibblu_test'
 cargo test --locked -p zibblu-online --test m1 -- --nocapture
 ```
+
+## Try a private LAN chat
+
+Sign in as two different accounts on the same Zibblu server. On two Windows devices on the same private IPv4 subnet, open your direct conversation with each other. Both people select the **ghost** and choose **Start discovery**. The LAN and each device's firewall must allow mDNS (UDP 5353) and direct UDP traffic for Zibblu on the private network.
+
+Compare all eight code groups in person or over an already trusted call. Both people choose **Codes match** only when every group agrees, then exchange a message each way. Choose **Decline** for a mismatch. After ending the session, the other device should also leave the verified state and both transcripts should disappear. Use **Normal chat** to return explicitly.
+
+For the focused failure check, start discovery with the other device absent or on a different subnet, then disconnect a device during a verified session. The private composer should stay unavailable after failure. After restarting both apps, check that the private text is absent from the normal chat and the test profiles' SQLite databases, service feed and logs. Send a regular message and share and download a file to check normal chat still works.
 
 ## Documentation
 
