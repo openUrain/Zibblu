@@ -36,6 +36,7 @@ These are working choices, not a reason to scaffold unused services or introduce
 - [Roadmap and acceptance](docs/ROADMAP.md)
 - [Decision log](docs/DECISIONS.md)
 - [Codex working rules](AGENTS.md)
+- [Pull request template](.github/PULL_REQUEST_TEMPLATE.md) — concise human-readable implementation and review report
 - [Repository Skills](docs/SKILLS.md) — vendored Codex skills and usage boundaries
 
 ## Development workflow
