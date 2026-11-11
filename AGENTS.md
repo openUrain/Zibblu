@@ -1,6 +1,6 @@
 # Codex instructions — Zibblu
 
-This file defines project expectations. Read the linked docs before changing a module. The requested `stop-that-shit` behavior is the external **stop-that-shit** Skill / Guard: instructions here cannot install or arm it by themselves.
+This file defines project expectations. Read the linked docs before changing a module. Repository-scoped skills are installed in `.agents/skills/` (see [docs/SKILLS.md](docs/SKILLS.md)). The **stop-that-shit Skill is present**, but its runtime Guard and Ponytail hooks are **not** installed or armed by this repository.
 
 ## Scope contract
 
@@ -19,7 +19,7 @@ The first non-empty line of each **actual Codex task prompt** should contain exa
 - Implementation: `$stop-that-shit change -- Implement the assigned Zibblu module within its documented acceptance criteria. Avoid unrelated changes and run minimal focused verification only after completion.`
 - Review: `$stop-that-shit review -- Review this PR against the assigned module and security constraints. Report actionable defects; make no edits.`
 
-For stronger enforcement, install the Codex Skill **and Guard** using the upstream documentation: https://github.com/lennney/stop-that-shit . A Skill-only instruction is advisory. An installed Guard needs an explicit mode to arm; don't claim it blocked an action without evidence.
+For stronger enforcement, separately install and review the upstream Codex **Guard** plugin: https://github.com/lennney/stop-that-shit . The repository Skill is advisory; its presence does not activate host Hooks. An installed Guard still needs an explicit mode to arm. Do not claim enforcement without evidence.
 
 Use `lock ... files=...` only when the complete file boundary is already known. Don't invent file lists. Don't grant `deps=allow`, `hash=allow` or agent budgets unless the real task calls for them.
 
@@ -38,3 +38,13 @@ Use `lock ... files=...` only when the complete file boundary is already known. 
 - Stop after the requested work. Do not begin the next module, merge, deploy or publish releases without instruction.
 
 If requirements conflict, preserve privacy/permission safety and ask for a specific decision instead of silently weakening it.
+
+## Available repository skills
+
+Use vendored skills from [docs/SKILLS.md](docs/SKILLS.md), but do not trigger extra workflows merely because they are installed:
+
+- `stop-that-shit` and `ponytail`: default scope control and the smallest **complete** solution.
+- Matt Pocock subset: `codebase-design`, `diagnosing-bugs`, `code-review`, `setup-matt-pocock-skills`; activate only when relevant or requested. Do not spawn review subagents or scaffold workflow docs automatically.
+- `improve`: advisory codebase audit/plans when explicitly requested; not an implementation shortcut or an authorization to dispatch agents.
+
+**Priority:** current user task, this file, and [docs/SECURITY.md](docs/SECURITY.md) override general-purpose skill workflows. M1's cryptographic file-integrity check is explicitly required; do not remove it as an “unnecessary checksum.” Finishing a whole module and running its focused acceptance checks remains mandatory.
