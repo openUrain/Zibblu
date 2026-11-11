@@ -9,7 +9,7 @@
 
 Main navigation: **Chats · Contacts · Files · Settings**.
 
-- Chat view: uncluttered conversation list and composer; attachment action and a small **lock** entry for private sessions.
+- Chat view: uncluttered conversation list and composer; attachment action and a small **ghost** entry for private sessions.
 - Files view: per-conversation files, global filters by person/type/date, preview where feasible, download location and transfer progress.
 - AI is invoked **inside the existing composer** with `@custom-name`; it is not a constantly running participant or an autonomous agent.
 - Light/dark themes; playful Zibblu brand but calm, readable message surfaces. Use ordinary system accessibility controls.
@@ -28,7 +28,7 @@ Avoid in v1: voice/video, social feeds, bots, automatic cloud-drive sync, comple
 
 ## 02 — Private Chat (opt-in LAN-only mode)
 
-**User flow:** open a normal conversation → tap lock → discover reachable peer on LAN → both explicitly accept → enter separate temporary conversation → either party ends → session content clears.
+**User flow:** open a normal conversation → tap ghost → discover reachable peer on LAN → both explicitly accept → enter separate temporary conversation → either party ends → session content clears.
 
 Rules:
 - Both users must be on a mutually reachable local network. Same Wi-Fi name is not sufficient proof.
