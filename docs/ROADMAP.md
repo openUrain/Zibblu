@@ -22,15 +22,15 @@ Scope:
 **Deliverable:** explicit temporary **text** sessions on the same reachable LAN, separate from normal chats.
 
 Scope:
-- Ghost control in a one-to-one chat; peer discovery, consent and authenticated local transport.
+- Ghost control in direct and group chats, in-app full-window invitations, lower-right prompts when minimized on Windows, QR rooms, account-wide approval, and authenticated local transport.
 - Clear verified/private/failed states.
 - Memory-scoped conversation and session keys.
-- End/disconnect/timeout cleanup; fail closed without online relay.
+- End/disconnect/timeout cleanup and view-independent sessions. Support routed internal subnets under an explicit company LAN policy.
 - No server transcripts, no cloud AI, no private-content notifications or indexing.
 
 **Done when:** two LAN peers start by consent, exchange text, close and see no persisted private history; out-of-LAN/unreachable peers cannot silently send via cloud.
 
-**Minimum test at completion:** successful LAN text exchange; denied/unreachable peer fails closed; end/restart and relevant storage/log checks show no private transcript.
+**Minimum test at completion:** direct invitation, staggered group and same-account device joins, QR expiry, cross-VLAN discovery with approved routing, and denied or unreachable peers. Verify no private transcript after restart and that group QR users see only post-join normal history.
 
 ## M3 — AI Assistants
 

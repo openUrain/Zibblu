@@ -4,21 +4,22 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex as StdMutex},
 };
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 use uuid::Uuid;
-use zibblu_core::private_chat::{PrivateChat, PrivateView};
+use zibblu_core::private_chat::{Phase, PrivateCode, PrivateLobby, PrivateSummary, PrivateView};
 use zibblu_core::{
-    Client, ConversationRequest, Credentials, Direction, Directory, FileFilter, OnlineError, Page,
-    SendMessage, Transfer, User,
+    Client, ConversationRequest, Credentials, Direction, Directory, FileFilter, GroupInvite,
+    GroupInvitePreview, OnlineError, Page, SendMessage, Transfer, User,
 };
 
 pub(crate) struct Desktop {
     data: PathBuf,
     preferences: StdMutex<Preferences>,
     session: Mutex<Option<Arc<Client>>>,
-    private: Mutex<Option<(Uuid, PrivateChat)>>,
+    pub(crate) private: Mutex<Option<Arc<PrivateLobby>>>,
+    private_worker: StdMutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub drop: StdMutex<Option<(Uuid, PathBuf)>>,
 }
 
@@ -33,6 +34,7 @@ impl Desktop {
             preferences: StdMutex::new(preferences),
             session: Mutex::new(None),
             private: Mutex::new(None),
+            private_worker: StdMutex::new(None),
             drop: StdMutex::new(None),
         }
     }
@@ -57,11 +59,35 @@ impl Desktop {
             .context("Sign in to continue")?)
     }
 
-    pub async fn close_private(&self) {
-        let private = self.private.lock().await.take();
-        if let Some((_, chat)) = private {
-            chat.end().await;
+    pub async fn close_private(&self, app: &AppHandle) {
+        let task = self.private_worker.lock().expect("private worker").take();
+        if let Some(task) = task {
+            task.abort();
+            let _ = task.await;
         }
+        if let Some(lobby) = self.private.lock().await.take() {
+            lobby.quit();
+        }
+        if let Some(window) = app.get_webview_window(crate::private_runtime::INVITATION) {
+            let _ = window.close();
+        }
+    }
+
+    async fn lobby(&self) -> Result<Arc<PrivateLobby>> {
+        Ok(self
+            .private
+            .lock()
+            .await
+            .clone()
+            .context("Private chat is unavailable. Check the local network and sign-in.")?)
+    }
+
+    pub(crate) fn private_quiet(&self) -> bool {
+        self.preferences.lock().expect("preferences").private_quiet
+    }
+
+    pub(crate) fn webview_directory(&self) -> PathBuf {
+        self.data.join("webview")
     }
 }
 
@@ -78,6 +104,8 @@ pub(crate) enum Theme {
 pub(crate) struct Preferences {
     server: String,
     theme: Theme,
+    #[serde(default)]
+    private_quiet: bool,
 }
 
 impl Default for Preferences {
@@ -85,6 +113,7 @@ impl Default for Preferences {
         Self {
             server: "http://127.0.0.1:7841".into(),
             theme: Theme::System,
+            private_quiet: false,
         }
     }
 }
@@ -142,6 +171,7 @@ pub(crate) fn set_theme(state: State<'_, Desktop>, theme: Theme) -> Result<()> {
 
 #[tauri::command]
 pub(crate) async fn login(
+    app: AppHandle,
     state: State<'_, Desktop>,
     server: String,
     handle: String,
@@ -170,14 +200,17 @@ pub(crate) async fn login(
         user: client.user.clone(),
         server,
     };
-    *session = Some(client);
+    *session = Some(client.clone());
+    *state.private_worker.lock().expect("private worker") = Some(tauri::async_runtime::spawn(
+        crate::private_runtime::run(app, client),
+    ));
     Ok(result)
 }
 
 #[tauri::command]
-pub(crate) async fn logout(state: State<'_, Desktop>) -> Result<()> {
+pub(crate) async fn logout(app: AppHandle, state: State<'_, Desktop>) -> Result<()> {
     let mut session = state.session.lock().await;
-    state.close_private().await;
+    state.close_private(&app).await;
     *state.drop.lock().expect("drop state") = None;
     if let Some(client) = session.take() {
         client.logout().await?;
@@ -187,7 +220,17 @@ pub(crate) async fn logout(state: State<'_, Desktop>) -> Result<()> {
 
 #[tauri::command]
 pub(crate) async fn sync(state: State<'_, Desktop>) -> Result<Directory> {
-    Ok(state.client().await?.sync().await?)
+    let client = state.client().await?;
+    let directory = client.sync().await?;
+    let session = state.session.lock().await;
+    if session
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(current, &client))
+        && let Some(lobby) = state.private.lock().await.as_ref()
+    {
+        lobby.set_memberships(crate::private_runtime::memberships(&directory));
+    }
+    Ok(directory)
 }
 
 #[tauri::command]
@@ -250,39 +293,38 @@ pub(crate) async fn send_message(
 }
 
 #[tauri::command]
-pub(crate) async fn private_start(state: State<'_, Desktop>, conversation: Uuid) -> Result<Uuid> {
-    let session = state.session.lock().await;
-    let client = session
+pub(crate) async fn private_start(
+    state: State<'_, Desktop>,
+    conversation: Option<Uuid>,
+    invited: Vec<Uuid>,
+    open: bool,
+) -> Result<Uuid> {
+    Ok(state.lobby().await?.create(conversation, invited, open)?)
+}
+
+#[derive(Serialize)]
+pub(crate) struct PrivateList {
+    rooms: Vec<PrivateSummary>,
+    prompt: Option<Uuid>,
+}
+
+#[tauri::command]
+pub(crate) async fn private_list(
+    state: State<'_, Desktop>,
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<PrivateList> {
+    let rooms = state
+        .private
+        .lock()
+        .await
         .as_ref()
-        .context("Sign in to start a private chat.")?;
-    let directory = client.directory().await?;
-    let chat = directory
-        .conversations
-        .iter()
-        .find(|chat| chat.id == conversation && chat.title.is_none() && chat.members.len() == 2)
-        .context("Open a one-to-one chat first.")?;
-    if !chat
-        .members
-        .iter()
-        .any(|member| member.id == client.user.id)
-    {
-        return Err(anyhow!("Open one of your own conversations.").into());
-    }
-    let peer = chat
-        .members
-        .iter()
-        .find(|member| member.id != client.user.id)
-        .context("The private contact is missing.")?;
-    let mut active = state.private.lock().await;
-    if active.as_ref().is_some_and(|(_, chat)| !chat.finished()) {
-        return Err(anyhow!("End the current private session first.").into());
-    }
-    let id = Uuid::new_v4();
-    *active = Some((
-        id,
-        PrivateChat::start(client.server(), client.user.id, peer.id),
-    ));
-    Ok(id)
+        .map_or_else(Vec::new, |lobby| lobby.list());
+    let prompt = crate::private_runtime::prompt_window(&app, &state)
+        .filter(|label| *label == window.label())
+        .and_then(|_| rooms.iter().find(|room| room.phase == Phase::Invited))
+        .map(|room| room.id);
+    Ok(PrivateList { rooms, prompt })
 }
 
 #[tauri::command]
@@ -291,45 +333,82 @@ pub(crate) async fn private_view(
     id: Uuid,
     after: u64,
 ) -> Result<PrivateView> {
-    let active = state.private.lock().await;
-    let (_, chat) = active
-        .as_ref()
-        .filter(|(session, _)| *session == id)
-        .context("The private session has ended.")?;
-    Ok(chat.view(after))
+    Ok(state.lobby().await?.view(id, after)?)
 }
 
 #[tauri::command]
-pub(crate) async fn private_verify(
+pub(crate) async fn private_respond(
     state: State<'_, Desktop>,
+    app: AppHandle,
+    window: WebviewWindow,
     id: Uuid,
-    matches: bool,
+    accept: bool,
 ) -> Result<()> {
-    let mut active = state.private.lock().await;
-    let (_, chat) = active
-        .as_mut()
-        .filter(|(session, _)| *session == id)
-        .context("The private session has ended.")?;
-    Ok(chat.verify(matches)?)
+    let conversation = state.lobby().await?.respond(id, accept)?;
+    if accept && let Some(main) = app.get_webview_window("main") {
+        let _ = main.emit(
+            "private-invitation-accepted",
+            serde_json::json!({ "id": id, "conversation": conversation }),
+        );
+        if window.label() == crate::private_runtime::INVITATION {
+            let _ = main.unminimize();
+            let _ = main.set_focus();
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
 pub(crate) async fn private_send(state: State<'_, Desktop>, id: Uuid, text: String) -> Result<()> {
-    let active = state.private.lock().await;
-    let (_, chat) = active
-        .as_ref()
-        .filter(|(session, _)| *session == id)
-        .context("The private session has ended.")?;
-    Ok(chat.send(text)?)
+    Ok(state.lobby().await?.send(id, text)?)
 }
 
 #[tauri::command]
 pub(crate) async fn private_end(state: State<'_, Desktop>, id: Uuid) -> Result<()> {
-    let mut active = state.private.lock().await;
-    if let Some((_, chat)) = active.take_if(|(session, _)| *session == id) {
-        chat.end().await;
+    if let Some(lobby) = state.private.lock().await.as_ref() {
+        lobby.end(id);
     }
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn private_qr(state: State<'_, Desktop>, id: Uuid) -> Result<PrivateCode> {
+    Ok(state.lobby().await?.code(id)?)
+}
+
+#[tauri::command]
+pub(crate) async fn private_scan(state: State<'_, Desktop>, code: PrivateCode) -> Result<Uuid> {
+    Ok(state.lobby().await?.scan(code).await?)
+}
+
+#[tauri::command]
+pub(crate) fn set_private_quiet(state: State<'_, Desktop>, quiet: bool) -> Result<()> {
+    Ok(state.update_preferences(|preferences| preferences.private_quiet = quiet)?)
+}
+
+#[tauri::command]
+pub(crate) async fn group_invite(
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+) -> Result<GroupInvite> {
+    Ok(state
+        .client()
+        .await?
+        .issue_group_invite(conversation)
+        .await?)
+}
+
+#[tauri::command]
+pub(crate) async fn group_preview(
+    state: State<'_, Desktop>,
+    code: Uuid,
+) -> Result<GroupInvitePreview> {
+    Ok(state.client().await?.preview_group_invite(code).await?)
+}
+
+#[tauri::command]
+pub(crate) async fn group_join(state: State<'_, Desktop>, code: Uuid) -> Result<Uuid> {
+    Ok(state.client().await?.join_group_invite(code).await?)
 }
 
 #[tauri::command]

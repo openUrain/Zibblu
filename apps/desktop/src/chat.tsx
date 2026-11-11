@@ -1,22 +1,28 @@
 import {
-  ArrowDown, ArrowLeft, FilePlus2, FolderOpen, Ghost, Globe2, MessageCircle, Paperclip, Plus, Search, Send,
+  ArrowDown, ArrowLeft, FilePlus2, FolderOpen, Ghost, Globe2, MessageCircle, Paperclip, Plus, QrCode, Search, Send,
 } from "lucide-react";
 import { Fragment, useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, errorMessage } from "./api";
-import type { Conversation, ShareSource, Transfer, User } from "./api";
+import type { Conversation, PrivateSummary, ShareSource, Transfer, User } from "./api";
 import { Avatar, Blank, chatName, dateLabel, timeLabel, usePage } from "./common";
 import { FilesView, SharedFile, TransferList } from "./files";
+import { privatePhaseLabel, privateTitle } from "./private-chat";
 
-export function ChatList({ chats, own, selected, open, newChat }: {
+export function ChatList({ chats, own, selected, open, newChat, rooms, activePrivate, openPrivate, createQr }: {
   chats: Conversation[]; own: User; selected?: string; open: (id: string) => void; newChat: () => void;
+  rooms: PrivateSummary[]; activePrivate?: string; openPrivate: (id: string) => void; createQr: () => void;
 }) {
   const [search, setSearch] = useState("");
   const query = search.trim().toLocaleLowerCase();
   const filtered = chats.filter(chat => chatName(chat, own.id).toLocaleLowerCase().includes(query));
   return <aside className="chat-list">
     <div className="chat-list-head"><div><h1>Chats</h1></div>
-      <button className="square-primary" aria-label="New conversation" title="New conversation" onClick={newChat}><Plus size={22} /></button>
+      <div className="chat-actions">
+        <button className="icon-button" aria-label="Start private QR chat" title="Start private QR chat"
+          onClick={createQr}><QrCode size={20} /></button>
+        <button className="square-primary" aria-label="New conversation" title="New conversation" onClick={newChat}><Plus size={22} /></button>
+      </div>
     </div>
     <label className="search"><Search size={17} /><input aria-label="Search conversations"
       placeholder="Search conversations" value={search} onChange={event => setSearch(event.target.value)} /></label>
@@ -32,13 +38,24 @@ export function ChatList({ chats, own, selected, open, newChat }: {
         </button>;
       })}
       {filtered.length === 0 && <p className="list-empty muted">{search ? "No matching chats." : "Start a chat with a contact."}</p>}
+      {rooms.length > 0 && <div className="private-rows" aria-label="Private chats">
+        <h2>Private chats</h2>
+        {rooms.map(room => <button key={room.id} className={"chat-row" + (room.id === activePrivate ? " selected" : "")}
+          aria-current={room.id === activePrivate ? "true" : undefined} onClick={() => openPrivate(room.id)}>
+          <Ghost size={20} className="private-ghost" />
+          <span className="chat-row-text"><strong>{privateTitle(room, own.id)}</strong><small>
+            {room.phase === "waiting" && room.open ? "Waiting for a QR scan" : privatePhaseLabel[room.phase]}
+          </small></span>
+        </button>)}
+      </div>}
     </div>
   </aside>;
 }
 
-export function ChatView({ chat, own, revision, transfers, changed, refresh, back, share, openPrivate }: {
+export function ChatView({ chat, own, revision, transfers, changed, refresh, back, share, openPrivate, groupCode }: {
   chat: Conversation; own: User; revision: number; transfers: Transfer[]; changed: () => void;
   refresh: () => Promise<void>; back: () => void; share: (source: ShareSource) => Promise<void>; openPrivate: () => void;
+  groupCode: () => void;
 }) {
   const [showFiles, setShowFiles] = useState(false);
   const name = chatName(chat, own.id);
@@ -50,9 +67,10 @@ export function ChatView({ chat, own, revision, transfers, changed, refresh, bac
         <span>{chat.title ? chat.members.length + " members" : "@" + name}</span>
       </div>
       <span className="online-mode" title="Messages and attachments are delivered through your Zibblu server"><Globe2 size={15} /> Normal chat</span>
-      {chat.title === null && chat.members.length === 2 &&
-        <button className="icon-button" aria-label="Open private chat" title="Open private chat"
-          onClick={openPrivate}><Ghost size={20} /></button>}
+      <button className="icon-button" aria-label="Open private chat" title="Open private chat"
+        onClick={openPrivate}><Ghost size={20} /></button>
+      {chat.title && <button className="icon-button" aria-label="Group invite QR code" title="Group invite QR code"
+        onClick={groupCode}><QrCode size={20} /></button>}
       <button className={"button subtle header-files" + (showFiles ? " toggled" : "")} aria-pressed={showFiles}
         onClick={() => setShowFiles(!showFiles)}><FolderOpen size={17} /> <span>{showFiles ? "Back to messages" : "Shared files"}</span></button>
     </header>

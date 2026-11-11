@@ -36,7 +36,7 @@ Use fewer packages if implementation proves simpler.
 ## M1 delivery and storage
 
 - A single Axum service serves normal-chat HTTP requests. It binds to loopback and expects an HTTPS reverse proxy for remote clients. Tauri commands use the Rust client for HTTP, SQLite, and local file access.
-- Accounts belong to one service. Contacts are saved by exact handle. Group membership is set at creation and stays fixed in M1. Removing a contact removes the address-book entry and preserves existing chats.
+- Accounts belong to one service. Contacts are saved by exact handle or contact QR code. Group QR admission stores a message sequence cutoff under the same transaction lock used to publish messages and attachments. Removing a contact removes the address-book entry and preserves existing chats.
 - PostgreSQL stores the normal-chat feed and retains messages while recipients are offline. Clients poll for changes and commit batches into per-server, per-account SQLite profiles. The same feed supplies chat history and attachment metadata. A client must be signed in to use its profile. Sending a new message requires reaching the service.
 - An upload holds a stable ID, expected size and SHA-256. PostgreSQL commits each chunk with its offset and publishes the attachment message only after verification. Downloads resume from a local partial file and verify SHA-256 before publishing to the selected destination.
 
@@ -53,18 +53,18 @@ Important: ordinary online messaging should target authenticated, encrypted tran
 
 ## M2 private transport
 
-The desktop resolves the other member from the signed-in account's cached one-to-one directory. The server origin and the ordered account IDs define the discovery tag and TLS exporter context. Both people start discovery. The lower account ID advertises a temporary QUIC endpoint and self-signed certificate by mDNS, and the other device dials a numeric on-link address using that certificate as its TLS trust anchor.
+Each signed-in desktop generates an in-memory key and obtains a short-lived client and server certificate over the authenticated account-service connection. It advertises its private UDP endpoint via mDNS and a server-scoped account tag. An optional company discovery domain is queried through DNS-SD for approved routed subnets. Discovery records never grant access to a chat.
 
-The two ends compare the conversation tag on the stream. Each displays the same 128-bit TLS exporter code for the same connection. The people verify all code groups with the expected contact over a trusted channel. Each endpoint requires local approval and the peer's approval on that stream before passing text. The discovery listener closes after one connection. There is no stored peer key or transcript.
+The host device coordinates a temporary room over mutually authenticated QUIC streams. Named room scope identifies the source conversation and exact invited accounts, and the receiver checks that scope against its cached directory. The first device decision for an account is applied by the host. The accepting device signs the session scope. Other devices verify that approval before they enter automatically. A QR join presents an expiring capability through the authenticated stream. The host sends participant metadata and new text to currently joined devices, with no historical replay.
 
-The transport filters both IPv4 source and destination to an on-link private or link-local subnet and sets the QUIC UDP TTL to one. Discovery and confirmation are time-bounded. QUIC detects a broken link through keepalive and idle timeout. A verified session also expires after 15 minutes without private text. The private transport owns no M1 client or storage handle. The desktop clears the draft and the bounded in-memory transcript on end, failure or leaving the view.
+Ordinary private transport filters both IPv4 source and destination to a directly connected subnet and applies TTL one. An explicitly configured company site binds to an approved local interface and allows direct UDP among the specified private prefixes. The private runtime owns no M1 storage handle. A desktop worker manages certificate renewal, network changes and invitation windows separately from the currently selected chat.
 
 ```text
-Normal chat ──[ghost + start discovery]──> Discovering
-Discovering ──[peer found]──> Connecting and verifying
-Connecting and verifying ──[both confirm matching codes]──> Verified private
-Active attempt or session ──[end/disconnect/timeout/refusal]──> Clear ephemeral state
-Ended or failed ──[select Normal chat]──> Normal chat
+Existing chat ──[ghost]──> Named invitation
+Private QR ──[valid scan]──> Joining
+Named invitation ──[verified account accepts]──> Joined on eligible devices
+Joined ──[switch views]──> Session continues in background
+Host ends or exits ──> Clear room state
 ```
 
 Private data does **not** travel on the normal channel during discovery, failure, reconnection or cleanup. Explicit confirmation is required for a new private session.
@@ -78,7 +78,6 @@ Private data does **not** travel on the normal channel during discovery, failure
 
 ## Design trade-offs pending implementation
 
-- Group membership changes beyond M1.
 - Choice and audit of an established E2EE protocol for online messages.
 - Mobile background constraints and platform-specific discovery.
 - Provider-specific AI usage disclosure and optional on-device models.

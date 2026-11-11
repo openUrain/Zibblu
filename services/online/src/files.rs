@@ -245,7 +245,9 @@ pub(crate) async fn read_chunk(
         "SELECT c.data FROM attachment_chunks c
          JOIN attachments f ON f.id = c.attachment_id
          JOIN members m ON m.conversation_id = f.conversation_id AND m.account_id = $3
-         WHERE c.attachment_id = $1 AND c.byte_offset = $2 AND f.complete",
+         JOIN messages published ON published.attachment_id = f.id
+         WHERE c.attachment_id = $1 AND c.byte_offset = $2 AND f.complete
+               AND published.seq > m.joined_after",
     )
     .bind(id)
     .bind(offset)

@@ -1,16 +1,18 @@
 import { listen } from "@tauri-apps/api/event";
 import {
   ArrowRight, CircleUserRound, FolderOpen, Laptop, LogOut, MessageCircle, MessageSquare, Moon,
-  Search, Settings, Sun, UserPlus, UserRoundMinus, UsersRound, X,
+  QrCode, ScanLine, Search, Settings, Sun, UserPlus, UserRoundMinus, UsersRound, X,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, errorMessage, isExpired } from "./api";
-import type { ConversationRequest, Directory, DropOffer, Session, ShareSource, Theme, Transfer, User } from "./api";
+import type { Conversation, ConversationRequest, Directory, DropOffer, Session, ShareSource, Theme, Transfer, User } from "./api";
 import { Avatar, Blank, Brand, Dialog, chatName } from "./common";
 import { ChatList, ChatView } from "./chat";
 import { FilesView } from "./files";
-import { PrivateChatView } from "./private-chat";
+import { PrivateChatView, PrivateInvitationOverlay, PrivateTargets, usePrivateRooms } from "./private-chat";
+import { ScanQr, ShareQr } from "./qr";
+import type { SharedCode } from "./qr";
 
 const pages = [
   { name: "Chats", Icon: MessageSquare }, { name: "Contacts", Icon: UsersRound },
@@ -18,14 +20,21 @@ const pages = [
 ] as const;
 type Navigation = typeof pages[number]["name"];
 
-export function Workspace({ session, theme, setTheme, signedOut }: {
+export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQuiet, signedOut }: {
   session: Session; theme: Theme; setTheme: (theme: Theme) => Promise<void>; signedOut: (notice?: string) => void;
+  privateQuiet: boolean; setPrivateQuiet: (quiet: boolean) => Promise<void>;
 }) {
   const [nav, setNav] = useState<Navigation>("Chats");
   const [directory, setDirectory] = useState<Directory>({ contacts: [], conversations: [] });
   const [selected, setSelected] = useState<string>();
   const [mobileChat, setMobileChat] = useState(false);
-  const [privateOpen, setPrivateOpen] = useState(false);
+  const [privateId, setPrivateId] = useState<string>();
+  const [privateTargets, setPrivateTargets] = useState<Conversation>();
+  const [shareCode, setShareCode] = useState<SharedCode>();
+  const [scanning, setScanning] = useState(false);
+  const { rooms: privateRooms, prompt } = usePrivateRooms();
+  const joined = useRef(new Set<string>());
+  const privateOpen = privateId !== undefined;
   const [revision, setRevision] = useState(0);
   const [connection, setConnection] = useState<"Connecting" | "Connected" | "Reconnecting" | "Session expired">("Connecting");
   const [transfers, setTransfers] = useState<Transfer[]>([]);
@@ -79,8 +88,17 @@ export function Workspace({ session, theme, setTheme, signedOut }: {
   }, []);
 
   const active = directory.conversations.find(chat => chat.id === selected);
-  const privatePeer = privateOpen && active?.members.find(member => member.id !== session.user.id);
   const activeId = nav === "Chats" && !privateOpen ? active?.id : undefined;
+  useEffect(() => {
+    const connected = privateRooms.filter(room => room.phase === "connected");
+    const opened = connected.find(room => !joined.current.has(room.id) && room.conversation === selected);
+    joined.current = new Set(connected.map(room => room.id));
+    if (opened && nav === "Chats" && !privateId) {
+      setOffer(undefined);
+      setPrivateId(opened.id);
+      setMobileChat(true);
+    }
+  }, [nav, privateId, privateRooms, selected]);
   useEffect(() => {
     const drop = listen<DropOffer>("attachment-drop", event => {
       if (privateOpen) return;
@@ -94,16 +112,82 @@ export function Workspace({ session, theme, setTheme, signedOut }: {
   }, [activeId, privateOpen]);
 
   function navigate(page: Navigation) {
-    setPrivateOpen(false);
+    setPrivateId(undefined);
     setNav(page);
     if (page === "Chats") setMobileChat(false);
   }
 
   function selectChat(id: string) {
-    setPrivateOpen(false);
+    setPrivateId(undefined);
     setSelected(id);
     setNav("Chats");
     setMobileChat(true);
+  }
+
+  const showPrivate = useCallback((id: string, conversation?: string | null) => {
+    if (conversation) setSelected(conversation);
+    setOffer(undefined);
+    setNav("Chats");
+    setPrivateId(id);
+    setMobileChat(true);
+  }, []);
+
+  useEffect(() => {
+    const accepted = listen<{ id: string; conversation: string | null }>("private-invitation-accepted", ({ payload }) => {
+      setPrivateTargets(undefined);
+      setShareCode(undefined);
+      setScanning(false);
+      setNewChat(false);
+      showPrivate(payload.id, payload.conversation);
+    });
+    return () => { void accepted.then(unlisten => unlisten()); };
+  }, [showPrivate]);
+
+  function selectPrivate(id: string) {
+    showPrivate(id, privateRooms.find(room => room.id === id)?.conversation);
+  }
+
+  async function startPrivate(chat: Conversation, invited: string[]) {
+    const id = await api.startPrivate(chat.id, invited);
+    setPrivateTargets(undefined);
+    showPrivate(id, chat.id);
+  }
+
+  async function invitePrivate(chat: Conversation) {
+    if (chat.title) {
+      setPrivateTargets(chat);
+      return;
+    }
+    try {
+      const { rooms } = await api.privateRooms();
+      const existing = rooms.find(room => room.conversation === chat.id
+        && room.phase !== "ended" && room.phase !== "missed" && room.phase !== "failed");
+      if (existing) showPrivate(existing.id, chat.id);
+      else await startPrivate(chat, chat.members.filter(person => person.id !== session.user.id).map(person => person.id));
+    } catch (error) {
+      setFailure(errorMessage(error));
+    }
+  }
+
+  async function showPrivateCode(id: string) {
+    const code = await api.privateCode(id);
+    setShareCode({ kind: "private", name: "Private chat QR code",
+      value: JSON.stringify(code), expiresAt: code.expires_at });
+  }
+
+  async function createPrivateCode() {
+    try {
+      const id = await api.startPrivate(null, [], true);
+      selectPrivate(id);
+      await showPrivateCode(id);
+    } catch (error) { setFailure(errorMessage(error)); }
+  }
+
+  async function showGroupCode(chat: Conversation) {
+    try {
+      const invite = await api.groupInvite(chat.id);
+      setShareCode({ kind: "group", name: chat.title ?? "Group invite", value: invite.code, expiresAt: invite.expires_at });
+    } catch (error) { setFailure(errorMessage(error)); }
   }
 
   async function create(request: ConversationRequest) {
@@ -130,6 +214,7 @@ export function Workspace({ session, theme, setTheme, signedOut }: {
     .map(user => [user.id, user])).values()].sort((a, b) => a.handle.localeCompare(b.handle));
   const offeredChat = directory.conversations.find(chat => chat.id === offer?.conversation);
   const connected = connection === "Connected";
+  const invitation = privateRooms.find(room => room.id === prompt);
 
   return <main className="shell">
     <nav className="rail" aria-label="Main navigation">
@@ -144,24 +229,27 @@ export function Workspace({ session, theme, setTheme, signedOut }: {
       </button>
     </nav>
     <div className="shell-main">
-      <header className="topbar"><span className="app-name">Zibblu</span>
+      <header className="topbar"><span className="app-name">Zibblu</span><div className="chat-actions">
+        <button className="icon-button" aria-label="Scan QR code" title="Scan QR code"
+          onClick={() => setScanning(true)}><ScanLine size={20} /></button>
         <div className={"connection " + (connected ? "connected" : "disconnected")} role="status">
           <span className="connection-dot" />{connection}
           {connection === "Session expired" && <button className="text-button" disabled={leaving} onClick={() => void signOut()}>Sign in again</button>}
-        </div>
+        </div></div>
       </header>
       {failure && <div className="workspace-error" role="alert">{failure}
         <button className="icon-button" aria-label="Dismiss error" onClick={() => setFailure("")}><X size={17} /></button>
       </div>}
-      {nav === "Chats" && <div className={"chat-layout" + (mobileChat && active ? " mobile-chat-open" : "")}>
-        <ChatList chats={directory.conversations} own={session.user} selected={selected} open={selectChat} newChat={() => setNewChat(true)} />
-        {active ? privatePeer
-          ? <PrivateChatView key={active.id} conversation={active.id} peer={privatePeer}
-              back={() => { setOffer(undefined); setPrivateOpen(false); }} />
-          : <ChatView key={active.id} chat={active} own={session.user} revision={revision}
-              transfers={transfers} changed={changed} refresh={refresh} back={() => setMobileChat(false)}
-              share={source => share(active.id, source)}
-              openPrivate={() => { setOffer(undefined); setPrivateOpen(true); }} />
+      {nav === "Chats" && <div className={"chat-layout" + (mobileChat && (active || privateOpen) ? " mobile-chat-open" : "")}>
+        <ChatList chats={directory.conversations} own={session.user} selected={privateOpen ? undefined : selected}
+          open={selectChat} newChat={() => setNewChat(true)} rooms={privateRooms} activePrivate={privateId}
+          openPrivate={selectPrivate} createQr={() => void createPrivateCode()} />
+        {privateId ? <PrivateChatView key={privateId} id={privateId} own={session.user}
+            back={() => { setPrivateId(undefined); if (!active) setMobileChat(false); }} showCode={showPrivateCode} />
+          : active ? <ChatView key={active.id} chat={active} own={session.user} revision={revision}
+            transfers={transfers} changed={changed} refresh={refresh} back={() => setMobileChat(false)}
+            share={source => share(active.id, source)} openPrivate={() => void invitePrivate(active)}
+            groupCode={() => void showGroupCode(active)} />
           : <section className="chat-blank"><Blank icon={<MessageCircle size={31} />} title="Your conversations">
             <p>Open a chat to read messages or start a new one.</p>
             <button className="button primary" onClick={() => setNewChat(true)}>New conversation <ArrowRight size={16} /></button>
@@ -169,8 +257,16 @@ export function Workspace({ session, theme, setTheme, signedOut }: {
       </div>}
       {nav === "Contacts" && <Contacts own={session.user} contacts={directory.contacts} refresh={refresh} create={create} />}
       {nav === "Files" && <FilesView people={people} revision={revision} transfers={transfers} onChanged={changed} />}
-      {nav === "Settings" && <SettingsView {...{ session, theme, setTheme, leaving, signOut }} />}
+      {nav === "Settings" && <SettingsView {...{ session, theme, setTheme, leaving, signOut, privateQuiet, setPrivateQuiet }}
+        contactCode={() => setShareCode({ kind: "contact", name: "Your contact QR code", value: session.user.handle })} />}
     </div>
+    {privateTargets && <PrivateTargets people={privateTargets.members.filter(user => user.id !== session.user.id)}
+      close={() => setPrivateTargets(undefined)} start={invited => startPrivate(privateTargets, invited)} />}
+    {shareCode && <ShareQr code={shareCode} server={session.server} close={() => setShareCode(undefined)} />}
+    {scanning && <ScanQr session={session} close={() => setScanning(false)}
+      contactAdded={() => { setScanning(false); navigate("Contacts"); void refresh(); }}
+      groupJoined={id => { setScanning(false); selectChat(id); void refresh(); }}
+      privateJoined={id => { setScanning(false); selectPrivate(id); }} />}
     {newChat && <NewChat contacts={directory.contacts} create={create} close={() => setNewChat(false)} findPeople={() => {
       setNewChat(false); navigate("Contacts");
     }} />}
@@ -186,6 +282,7 @@ export function Workspace({ session, theme, setTheme, signedOut }: {
         }}>{sharing ? "Preparing…" : "Share"}</button>
       </div>
     </Dialog>}
+    {invitation && <PrivateInvitationOverlay key={invitation.id} room={invitation} />}
   </main>;
 }
 
@@ -295,8 +392,9 @@ function NewChat({ contacts, create, close, findPeople }: {
   </Dialog>;
 }
 
-function SettingsView({ session, theme, setTheme, leaving, signOut }: {
+function SettingsView({ session, theme, setTheme, leaving, signOut, contactCode, privateQuiet, setPrivateQuiet }: {
   session: Session; theme: Theme; setTheme: (theme: Theme) => Promise<void>; leaving: boolean; signOut: () => Promise<void>;
+  contactCode: () => void; privateQuiet: boolean; setPrivateQuiet: (quiet: boolean) => Promise<void>;
 }) {
   const [failure, setFailure] = useState("");
   const appearances = [{ value: "system", label: "System", Icon: Laptop }, { value: "light", label: "Light", Icon: Sun },
@@ -308,7 +406,10 @@ function SettingsView({ session, theme, setTheme, leaving, signOut }: {
       <div className="account-row"><Avatar name={session.user.handle} large /><div><strong>@{session.user.handle}</strong>
         <p className="muted server-address">{session.server}</p></div></div>
       <p className="muted">Normal chats use your server to deliver and store messages and attachments.</p>
-      <button className="button subtle" disabled={leaving} onClick={() => void signOut()}><LogOut size={16} />{leaving ? "Signing out…" : "Sign out"}</button>
+      <div className="chat-actions">
+        <button className="button subtle" onClick={contactCode}><QrCode size={17} /> Your QR code</button>
+        <button className="button subtle" disabled={leaving} onClick={() => void signOut()}><LogOut size={16} />{leaving ? "Signing out…" : "Sign out"}</button>
+      </div>
     </div>
     <div className="surface settings-card"><h2><Sun size={20} /> Appearance</h2>
       <div className="appearance">{appearances.map(({ value, label, Icon }) => <button className={"button subtle" + (theme === value ? " toggled" : "")}
@@ -317,6 +418,15 @@ function SettingsView({ session, theme, setTheme, leaving, signOut }: {
           try { await setTheme(value); } catch (error) { setFailure(errorMessage(error)); }
         }}><Icon size={17} />{label}</button>)}</div>
       {failure && <p className="inline-error" role="alert">{failure}</p>}
+    </div>
+    <div className="surface settings-card">
+      <label className="check-contact">
+        <input type="checkbox" checked={privateQuiet} onChange={async event => {
+          setFailure("");
+          try { await setPrivateQuiet(event.target.checked); } catch (error) { setFailure(errorMessage(error)); }
+        }} /> Pause private invitation pop-ups
+      </label>
+      <p className="muted">Use this while sharing your screen. Pending invitations stay in Private chats.</p>
     </div>
   </section>;
 }

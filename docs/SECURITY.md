@@ -10,12 +10,13 @@ We **cannot** promise protection from: screenshots or cameras, recipients manual
 
 ## Private LAN sessions
 
-- A private session requires **both participants' affirmative action**, contact authentication and a verified encrypted LAN P2P path.
-- mDNS supplies a temporary address and certificate. To bind the encrypted connection to the intended account, compare the full per-connection TLS exporter code with that person in person or over an already trusted call. Both must confirm a match. Decline on a mismatch. The code changes on every connection.
-- The first release accepts direct UDP on the same RFC 1918 or IPv4 link-local subnet and applies an outgoing TTL of one. This relies on the operating system's view of the local link. A bridged network can extend that link, and local observers can see discovery metadata.
+- A device generates its private key in memory. The authenticated account service certifies that device's public key and account for at most one hour. Mutual QUIC TLS proves possession and verifies the account. The issuer is trusted for identity and keeps its signing key in the service database. It receives no LAN invitations, membership decisions or private messages.
+- Named invitations are restricted to the existing direct conversation or selected members of a shared group. The first valid response is authoritative for that account. An approval is signed by that account's device and bound to the host device and exact session scope, so a host cannot enroll other devices by asserting consent alone.
+- A private QR room is open to signed-in LAN holders of its bearer code for 15 minutes. A photograph or forwarded copy grants the same access within that window. A new device receives only messages sent after joining.
+- The default UDP policy limits peers to a directly connected RFC 1918 or IPv4 link-local subnet and sets the outgoing TTL to one. A managed site can opt in to explicitly approved private IPv4 prefixes and internal DNS-SD discovery. Network administration controls routing and firewall scope for those prefixes. Private IPv4 addresses alone cannot prove physical proximity. Local observers can see discovery and traffic metadata.
 - No cloud relay, no NAT traversal via Zibblu servers, and no fallback to ordinary online chat.
 - Content must not be sent to telemetry, logs, crash reports, normal-message storage, search indices, notifications or cloud AI.
-- Private text is kept in bounded memory during the session. End, disconnect, timeout, sign-out and leaving the view discard the app's transcript and connection state. A restart opens no private transcript.
+- Private text is kept in bounded memory during the session. End, disconnect, timeout and sign-out discard local private state. Switching conversations leaves the active background session running. A restart opens no private transcript.
 - Connection UI must distinguish `connecting`, `verified private`, and `disconnected`. Never badge a session “private” based only on an SSID or IP range.
 - Block accidental exports, copy-to-normal-history and private-content previews in the first release.
 
@@ -40,6 +41,8 @@ M1 uses Argon2id password hashes and expiring opaque session tokens. The service
 Downloads require authenticated conversation membership for each chunk. Upload changes require ownership, and incomplete uploads are unavailable to recipients. A file or folder archive is limited to 256 MiB. The service reserves attachment storage up to 2 GiB and 256 transfers per account, and 16 GiB and 4,096 transfers overall. Unfinished uploads can be discarded. Published attachment retention is indefinite in M1, so an operator must budget for the database and its write-ahead log.
 
 Local attachment paths come from a native picker or an explicitly confirmed drop. The app does not extract received archives or overwrite existing destinations.
+
+Normal group join codes are renewable bearer invitations available to group members. The server stores a hash and expires each code after seven days. QR admission records a message sequence cutoff, enforced on synchronized messages, previews and file downloads. Existing group members retain the history they could already access.
 
 ## Minimal security acceptance at module completion
 

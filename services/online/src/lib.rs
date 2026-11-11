@@ -1,6 +1,8 @@
 mod accounts;
 mod chats;
 mod files;
+mod group_invites;
+mod lan_credentials;
 
 use axum::{
     Json, Router,
@@ -21,19 +23,25 @@ use zibblu_core::CHUNK_SIZE;
 struct App {
     db: PgPool,
     password_work: Arc<Semaphore>,
+    lan_authority: Arc<lan_credentials::Authority>,
 }
 
 pub async fn router(db: PgPool) -> anyhow::Result<Router> {
     sqlx::migrate!().run(&db).await?;
+    let lan_authority = Arc::new(lan_credentials::Authority::load(&db).await?);
     let json_routes = Router::new()
         .route("/v1/register", post(accounts::register))
         .route("/v1/login", post(accounts::login))
         .route("/v1/session", delete(accounts::logout))
+        .route("/v1/lan/credential", post(lan_credentials::issue))
         .route("/v1/users/{handle}", get(accounts::find_user))
         .route("/v1/contacts", post(accounts::add_contact))
         .route("/v1/contacts/{id}", delete(accounts::remove_contact))
         .route("/v1/sync", get(chats::sync))
         .route("/v1/conversations", post(chats::create))
+        .route("/v1/conversations/{id}/invite", post(group_invites::issue))
+        .route("/v1/group-invites/preview", post(group_invites::preview))
+        .route("/v1/group-invites/join", post(group_invites::join))
         .route("/v1/conversations/{id}/messages", post(chats::send))
         .route("/v1/conversations/{id}/uploads", post(files::begin))
         .route("/v1/files/{id}", delete(files::discard))
@@ -48,12 +56,14 @@ pub async fn router(db: PgPool) -> anyhow::Result<Router> {
     Ok(json_routes.merge(chunks).with_state(App {
         db,
         password_work: Arc::new(Semaphore::new(4)),
+        lan_authority,
     }))
 }
 
 struct Auth {
     user_id: Uuid,
     token_hash: Vec<u8>,
+    expires_at: i64,
 }
 
 impl FromRequestParts<App> for Auth {
@@ -68,8 +78,9 @@ impl FromRequestParts<App> for Auth {
             .filter(|token| token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()))
             .ok_or_else(Error::unauthorized)?;
         let token_hash = Sha256::digest(token.as_bytes()).to_vec();
-        let user_id = sqlx::query_scalar(
-            "SELECT account_id FROM sessions WHERE token_hash = $1 AND expires_at > now()",
+        let (user_id, expires_at) = sqlx::query_as(
+            "SELECT account_id, floor(extract(epoch FROM expires_at))::BIGINT
+             FROM sessions WHERE token_hash = $1 AND expires_at > now()",
         )
         .bind(&token_hash)
         .fetch_optional(&app.db)
@@ -78,6 +89,7 @@ impl FromRequestParts<App> for Auth {
         Ok(Self {
             user_id,
             token_hash,
+            expires_at,
         })
     }
 }

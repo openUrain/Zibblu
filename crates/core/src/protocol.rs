@@ -26,6 +26,22 @@ pub struct Session {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct LanCredentialRequest {
+    pub public_key: Vec<u8>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct LanCredential {
+    pub certificate: Vec<u8>,
+    pub authority: Vec<u8>,
+    pub expires_at: i64,
+}
+
+pub fn lan_peer_name(account: Uuid) -> String {
+    format!("{}.zibblu.invalid", account.simple())
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct ContactRequest {
     pub user_id: Uuid,
 }
@@ -54,6 +70,24 @@ pub enum ConversationRequest {
 #[derive(Serialize, Deserialize)]
 pub struct ConversationCreated {
     pub id: Uuid,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct GroupInvite {
+    pub code: Uuid,
+    pub expires_at: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct GroupInviteRequest {
+    pub code: Uuid,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct GroupInvitePreview {
+    pub id: Uuid,
+    pub title: String,
+    pub member_count: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

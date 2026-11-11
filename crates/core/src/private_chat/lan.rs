@@ -1,201 +1,373 @@
-use super::END;
-use anyhow::{Context, Result, bail, ensure};
+use super::identity::Identity;
+use crate::lan_peer_name;
+use anyhow::{Context, Result, ensure};
+use hickory_resolver::{
+    TokioResolver,
+    proto::rr::{RData, RecordType},
+};
 use if_addrs::{IfAddr, Ifv4Addr};
-use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent, ServiceInfo, TxtProperty};
+use ipnet::Ipv4Net;
+use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
 use quinn::{
-    AsyncUdpSocket, ClientConfig, Connection, Endpoint, Runtime, ServerConfig, TokioRuntime,
-    TransportConfig, UdpPoller,
-    rustls::{RootCertStore, pki_types::PrivatePkcs8KeyDer},
+    AsyncUdpSocket, Connection, Endpoint, Runtime, TokioRuntime, TransportConfig, UdpPoller,
     udp::{RecvMeta, Transmit},
 };
+use sha2::{Digest, Sha256};
 use std::{
+    collections::{HashMap, HashSet},
     io::{self, IoSliceMut},
-    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
     task::{Context as TaskContext, Poll, ready},
     time::Duration,
 };
-use tokio::time::timeout;
+use tokio::{task::JoinHandle, time::timeout};
 use uuid::Uuid;
 
 const SERVICE: &str = "_zibblu-private._udp.local.";
-const TLS_NAME: &str = "zibblu-private.invalid";
-const TXT_CHUNK: usize = 220;
 const ATTEMPT: Duration = Duration::from_secs(3);
+type Records = Arc<Mutex<HashMap<String, (String, Vec<SocketAddr>)>>>;
 
-pub(super) struct Link {
-    pub(super) connection: Connection,
-    _endpoint: Endpoint,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Scope {
+    pub interfaces: Vec<Ifv4Addr>,
+    enterprise: Vec<Ipv4Net>,
+    dns_domain: Option<String>,
+    port: u16,
 }
 
-impl Drop for Link {
-    fn drop(&mut self) {
-        self.connection.close(END.into(), b"");
-    }
-}
-
-pub(super) async fn connect(host: bool, tag: &[u8; 32], connecting: impl Fn()) -> Result<Link> {
-    let networks: Vec<_> = if_addrs::get_if_addrs()
-        .context("Could not read the local network interfaces.")?
-        .into_iter()
-        .filter(|interface| interface.is_oper_up() && !interface.is_p2p())
-        .filter_map(|interface| match interface.addr {
-            IfAddr::V4(address) if (1..=31).contains(&address.prefixlen) && lan_ip(address.ip) => {
-                Some(address)
-            }
-            _ => None,
-        })
-        .collect();
-    ensure!(
-        !networks.is_empty(),
-        "No private IPv4 LAN interface is available."
-    );
-    let networks = Arc::<[Ifv4Addr]>::from(networks);
-    let discovery = Discovery::new(&networks).context("Could not start local discovery.")?;
-    let result = if host {
-        listen(discovery, networks, tag, connecting).await
-    } else {
-        browse(discovery, networks, tag, connecting).await
-    };
-    result.context("Could not establish a private connection on this LAN.")
-}
-
-struct Discovery {
-    daemon: ServiceDaemon,
-    service: Option<String>,
-}
-
-impl Discovery {
-    fn new(networks: &[Ifv4Addr]) -> Result<Self> {
-        let discovery = Self {
-            daemon: ServiceDaemon::new()?,
-            service: None,
+impl Scope {
+    pub fn current() -> Result<Self> {
+        let enterprise = match std::env::var("ZIBBLU_LAN_SITE_SUBNETS") {
+            Ok(value) => value
+                .split(',')
+                .map(|cidr| {
+                    let net: Ipv4Net =
+                        cidr.trim().parse().context("Invalid company LAN subnet.")?;
+                    ensure!(
+                        net.network().is_private() && net.broadcast().is_private(),
+                        "Company LAN subnets must be private IPv4 ranges."
+                    );
+                    Ok(net)
+                })
+                .collect::<Result<Vec<_>>>()?,
+            Err(std::env::VarError::NotPresent) => Vec::new(),
+            Err(error) => return Err(error.into()),
         };
-        discovery.daemon.disable_interface(IfKind::All)?;
-        discovery.daemon.enable_interface(
-            networks
-                .iter()
-                .map(|address| IpAddr::V4(address.ip))
-                .collect::<Vec<_>>(),
-        )?;
-        Ok(discovery)
+        let port = match std::env::var("ZIBBLU_LAN_PORT") {
+            Ok(value) => {
+                let port = value.parse::<u16>().context("Invalid company LAN port.")?;
+                ensure!(
+                    !enterprise.is_empty() && port != 0,
+                    "Set a valid company LAN port."
+                );
+                port
+            }
+            Err(std::env::VarError::NotPresent) => 0,
+            Err(error) => return Err(error.into()),
+        };
+        let dns_domain = std::env::var("ZIBBLU_LAN_DISCOVERY_DOMAIN")
+            .ok()
+            .map(|domain| {
+                let domain = domain.trim().trim_end_matches('.');
+                ensure!(
+                    !enterprise.is_empty()
+                        && domain.len() <= 230
+                        && domain.contains('.')
+                        && domain.split('.').all(|label| !label.is_empty()
+                            && label.len() <= 63
+                            && label
+                                .bytes()
+                                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')),
+                    "Set a valid company DNS-SD discovery domain."
+                );
+                Ok(domain.to_owned())
+            })
+            .transpose()?;
+        let mut interfaces: Vec<_> = if_addrs::get_if_addrs()?
+            .into_iter()
+            .filter(|interface| interface.is_oper_up() && !interface.is_p2p())
+            .filter_map(|interface| match interface.addr {
+                IfAddr::V4(ip) if (1..=31).contains(&ip.prefixlen) => Some(ip),
+                _ => None,
+            })
+            .filter(|ip| {
+                if enterprise.is_empty() {
+                    ip.ip.is_private() || ip.ip.is_link_local()
+                } else {
+                    enterprise.iter().any(|net| net.contains(&ip.ip))
+                }
+            })
+            .collect();
+        interfaces.sort_by_key(|interface| interface.ip);
+        ensure!(
+            !interfaces.is_empty(),
+            "No approved IPv4 LAN interface is available."
+        );
+        Ok(Self {
+            interfaces,
+            enterprise,
+            dns_domain,
+            port,
+        })
+    }
+
+    fn allows(&self, peer: SocketAddr) -> bool {
+        let SocketAddr::V4(peer) = peer else {
+            return false;
+        };
+        if peer.port() == 0 {
+            return false;
+        }
+        let ip = *peer.ip();
+        if !self.enterprise.is_empty() {
+            return self.enterprise.iter().any(|net| {
+                net.contains(&ip)
+                    && (net.prefix_len() >= 31 || (ip != net.network() && ip != net.broadcast()))
+            });
+        }
+        if !ip.is_private() && !ip.is_link_local() {
+            return false;
+        }
+        self.interfaces.iter().any(|local| {
+            let net = Ipv4Net::new(local.ip, local.prefixlen).expect("IPv4 interface prefix");
+            net.contains(&ip)
+                && (net.prefix_len() >= 31 || (ip != net.network() && ip != net.broadcast()))
+        })
     }
 }
 
-impl Drop for Discovery {
-    fn drop(&mut self) {
-        if let Some(service) = &self.service {
-            let _ = self.daemon.unregister(service);
+pub(super) struct Lan {
+    pub endpoint: Endpoint,
+    pub scope: Scope,
+    origin: String,
+    bound: Vec<SocketAddr>,
+    records: Records,
+    daemon: ServiceDaemon,
+    service_name: String,
+    task: JoinHandle<()>,
+    resolver: Option<TokioResolver>,
+}
+
+impl Lan {
+    pub fn new(scope: Scope, identity: &Identity, origin: String, account: Uuid) -> Result<Self> {
+        let bind = if scope.enterprise.is_empty() {
+            Ipv4Addr::UNSPECIFIED
+        } else {
+            scope.interfaces[0].ip
+        };
+        let socket = UdpSocket::bind((bind, scope.port))?;
+        socket.set_ttl(if scope.enterprise.is_empty() { 1 } else { 16 })?;
+        let runtime = Arc::new(TokioRuntime);
+        let udp = Arc::new(LanSocket {
+            udp: runtime.wrap_udp_socket(socket)?,
+            scope: scope.clone(),
+        });
+        let endpoint = Endpoint::new_with_abstract_socket(
+            Default::default(),
+            Some(server_config(identity)),
+            udp,
+            runtime,
+        )?;
+        let port = endpoint.local_addr()?.port();
+        let addresses: Vec<_> = scope
+            .interfaces
+            .iter()
+            .filter(|iface| bind.is_unspecified() || iface.ip == bind)
+            .map(|iface| IpAddr::V4(iface.ip))
+            .collect();
+        let bound = addresses
+            .iter()
+            .map(|ip| SocketAddr::new(*ip, port))
+            .collect();
+
+        let resolver = scope
+            .dns_domain
+            .as_ref()
+            .map(|_| TokioResolver::builder_tokio().map(|builder| builder.build()))
+            .transpose()?;
+        let daemon = ServiceDaemon::new()?;
+        let device = Uuid::new_v4().simple().to_string();
+        let props = [("account", account_tag(&origin, account))];
+        let info = ServiceInfo::new(
+            SERVICE,
+            &device,
+            &format!("{device}.local."),
+            addresses.as_slice(),
+            port,
+            props.as_slice(),
+        )?;
+        let service_name = info.get_fullname().to_owned();
+        let setup = (|| {
+            daemon.disable_interface(IfKind::All)?;
+            daemon.enable_interface(addresses)?;
+            let events = daemon.browse(SERVICE)?;
+            daemon.register(info)?;
+            Ok::<_, mdns_sd::Error>(events)
+        })();
+        let events = match setup {
+            Ok(events) => events,
+            Err(error) => {
+                let _ = daemon.shutdown();
+                return Err(error.into());
+            }
+        };
+        let records = Records::default();
+        let discovered = records.clone();
+        let task = tokio::spawn(async move {
+            while let Ok(event) = events.recv_async().await {
+                match event {
+                    ServiceEvent::ServiceResolved(info) => {
+                        let Some(tag) = info
+                            .get_property_val_str("account")
+                            .filter(|tag| tag.len() == 64)
+                        else {
+                            continue;
+                        };
+                        let addresses = info
+                            .get_addresses_v4()
+                            .into_iter()
+                            .map(|ip| SocketAddr::V4(SocketAddrV4::new(ip, info.get_port())))
+                            .collect();
+                        let mut discovered = discovered.lock().expect("LAN discovery records");
+                        if discovered.len() < 512 || discovered.contains_key(info.get_fullname()) {
+                            discovered.insert(
+                                info.get_fullname().to_owned(),
+                                (tag.to_owned(), addresses),
+                            );
+                        }
+                    }
+                    ServiceEvent::ServiceRemoved(_, name) => {
+                        discovered
+                            .lock()
+                            .expect("LAN discovery records")
+                            .remove(&name);
+                    }
+                    _ => {}
+                }
+            }
+        });
+        Ok(Self {
+            endpoint,
+            scope,
+            origin,
+            bound,
+            records,
+            daemon,
+            service_name,
+            task,
+            resolver,
+        })
+    }
+
+    pub fn addresses(&self) -> &[SocketAddr] {
+        &self.bound
+    }
+
+    pub fn set_identity(&self, identity: &Identity) {
+        self.endpoint
+            .set_server_config(Some(server_config(identity)));
+    }
+
+    pub async fn candidates(&self, accounts: &[Uuid]) -> Vec<(Uuid, SocketAddr)> {
+        let tags: HashMap<_, _> = accounts
+            .iter()
+            .map(|&account| (account_tag(&self.origin, account), account))
+            .collect();
+        let mut peers = HashSet::new();
+        {
+            let records = self.records.lock().expect("LAN discovery records");
+            for (tag, addresses) in records.values() {
+                if let Some(&account) = tags.get(tag) {
+                    peers.extend(addresses.iter().copied().map(|address| (account, address)));
+                }
+            }
         }
+        if let (Some(resolver), Some(domain)) = (&self.resolver, &self.scope.dns_domain) {
+            if let Ok(Ok(entries)) =
+                timeout(ATTEMPT, site_candidates(resolver, domain, &tags)).await
+            {
+                peers.extend(entries);
+            }
+        }
+        peers
+            .into_iter()
+            .filter(|(_, addr)| self.scope.allows(*addr) && !self.bound.contains(addr))
+            .collect()
+    }
+
+    pub async fn connect(
+        &self,
+        identity: &Identity,
+        account: Uuid,
+        address: SocketAddr,
+    ) -> Result<Connection> {
+        ensure!(
+            self.scope.allows(address),
+            "This device is outside the allowed LAN."
+        );
+        let mut client = identity.client.clone();
+        client.transport_config(transport());
+        let connection = self
+            .endpoint
+            .connect_with(client, address, &lan_peer_name(account))?;
+        Ok(timeout(ATTEMPT, connection).await??)
+    }
+}
+
+impl Drop for Lan {
+    fn drop(&mut self) {
+        self.endpoint.close(0_u32.into(), b"");
+        self.task.abort();
+        let _ = self.daemon.unregister(&self.service_name);
         let _ = self.daemon.shutdown();
     }
 }
 
-async fn listen(
-    mut discovery: Discovery,
-    networks: Arc<[Ifv4Addr]>,
-    tag: &[u8; 32],
-    connecting: impl Fn(),
-) -> Result<Link> {
-    let identity = rcgen::generate_simple_self_signed(vec![TLS_NAME.into()])?;
-    let certificate = identity.cert.der();
-    let mut server = ServerConfig::with_single_cert(
-        vec![certificate.clone()],
-        PrivatePkcs8KeyDer::from(identity.signing_key.serialize_der()).into(),
-    )?;
-    server.migration(false);
-    server.max_incoming(4);
-    server.transport_config(transport());
-    let endpoint = endpoint(networks.clone(), Some(server))?;
-
-    let certificate = certificate.as_ref();
-    ensure!(
-        certificate.len() <= 2 * TXT_CHUNK,
-        "The local certificate is too large for discovery."
-    );
-    let (first, second) = certificate.split_at(certificate.len().min(TXT_CHUNK));
-    let properties = vec![
-        TxtProperty::from(("pair", tag.as_slice())),
-        TxtProperty::from(("cert-a", first)),
-        TxtProperty::from(("cert-b", second)),
-    ];
-    let name = Uuid::new_v4().simple().to_string();
-    let ips = networks
-        .iter()
-        .map(|address| IpAddr::V4(address.ip))
-        .collect::<Vec<_>>();
-    let info = ServiceInfo::new(
-        SERVICE,
-        &name,
-        &format!("{name}.local."),
-        ips.as_slice(),
-        endpoint.local_addr()?.port(),
-        properties,
-    )?;
-    discovery.service = Some(info.get_fullname().to_owned());
-    discovery.daemon.register(info)?;
-    drop(identity);
-
-    while let Some(incoming) = endpoint.accept().await {
-        connecting();
-        if let Ok(Ok(connection)) = timeout(ATTEMPT, incoming).await {
-            endpoint.set_server_config(None);
-            return Ok(Link {
-                connection,
-                _endpoint: endpoint,
-            });
-        }
-    }
-    bail!("The local listener closed.")
+fn account_tag(origin: &str, account: Uuid) -> String {
+    format!(
+        "{:x}",
+        Sha256::new()
+            .chain_update(origin)
+            .chain_update(account.as_bytes())
+            .finalize()
+    )
 }
 
-async fn browse(
-    discovery: Discovery,
-    networks: Arc<[Ifv4Addr]>,
-    tag: &[u8; 32],
-    connecting: impl Fn(),
-) -> Result<Link> {
-    let events = discovery.daemon.browse(SERVICE)?;
-    let endpoint = endpoint(networks.clone(), None)?;
-    while let Ok(event) = events.recv_async().await {
-        let ServiceEvent::ServiceResolved(info) = event else {
+async fn site_candidates(
+    resolver: &TokioResolver,
+    domain: &str,
+    tags: &HashMap<String, Uuid>,
+) -> Result<Vec<(Uuid, SocketAddr)>> {
+    let service = format!("_zibblu-private._udp.{domain}.");
+    let records = resolver.lookup(service, RecordType::PTR).await?;
+    let mut addresses = Vec::new();
+    for record in records.iter().take(128) {
+        let RData::PTR(ptr) = record else { continue };
+        let Ok(txt) = resolver.txt_lookup(ptr.0.clone()).await else {
             continue;
         };
-        if info.get_property_val("pair").flatten() != Some(tag.as_slice()) {
-            continue;
-        }
-        let Some(first) = info.get_property_val("cert-a").flatten() else {
+        let account = txt
+            .iter()
+            .flat_map(|txt| txt.txt_data())
+            .filter_map(|field| std::str::from_utf8(field).ok()?.strip_prefix("account="))
+            .find_map(|tag| tags.get(tag).copied());
+        let Some(account) = account else { continue };
+        let Ok(services) = resolver.srv_lookup(ptr.0.clone()).await else {
             continue;
         };
-        let Some(second) = info.get_property_val("cert-b").flatten() else {
-            continue;
-        };
-        if first.len() > TXT_CHUNK || second.len() > TXT_CHUNK {
-            continue;
-        }
-        let mut roots = RootCertStore::empty();
-        if roots.add([first, second].concat().into()).is_err() {
-            continue;
-        }
-        let mut client = ClientConfig::with_root_certificates(Arc::new(roots))?;
-        client.transport_config(transport());
-        for ip in info.get_addresses_v4() {
-            if !on_link(&networks, IpAddr::V4(ip)) || info.get_port() == 0 {
+        for service in services.iter() {
+            let Ok(ips) = resolver.ipv4_lookup(service.target().clone()).await else {
                 continue;
-            }
-            connecting();
-            let peer = SocketAddr::from((ip, info.get_port()));
-            let attempt = endpoint.connect_with(client.clone(), peer, TLS_NAME)?;
-            if let Ok(Ok(connection)) = timeout(ATTEMPT, attempt).await {
-                return Ok(Link {
-                    connection,
-                    _endpoint: endpoint,
-                });
-            }
+            };
+            addresses.extend(
+                ips.iter()
+                    .map(|ip| (account, SocketAddr::from((ip.0, service.port())))),
+            );
         }
     }
-    bail!("Local discovery stopped.")
+    Ok(addresses)
 }
 
 fn transport() -> Arc<TransportConfig> {
@@ -213,42 +385,18 @@ fn transport() -> Arc<TransportConfig> {
     Arc::new(transport)
 }
 
-fn lan_ip(ip: Ipv4Addr) -> bool {
-    ip.is_private() || ip.is_link_local()
-}
-
-fn on_link(networks: &[Ifv4Addr], ip: IpAddr) -> bool {
-    let IpAddr::V4(ip) = ip else { return false };
-    lan_ip(ip)
-        && networks.iter().any(|network| {
-            let mask = u32::from(network.netmask);
-            let host = u32::from(ip);
-            host & mask == u32::from(network.ip) & mask
-                && (network.prefixlen >= 31 || (host & !mask != 0 && host & !mask != !mask))
-        })
-}
-
-fn endpoint(networks: Arc<[Ifv4Addr]>, server: Option<ServerConfig>) -> Result<Endpoint> {
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
-    // Apply the hop limit to every QUIC packet, including path validation.
-    socket.set_ttl(1)?;
-    let runtime = Arc::new(TokioRuntime);
-    let socket = LanSocket {
-        udp: runtime.wrap_udp_socket(socket)?,
-        networks,
-    };
-    Ok(Endpoint::new_with_abstract_socket(
-        Default::default(),
-        server,
-        Arc::new(socket),
-        runtime,
-    )?)
+fn server_config(identity: &Identity) -> quinn::ServerConfig {
+    let mut config = identity.server.clone();
+    config.migration(false);
+    config.max_incoming(16);
+    config.transport_config(transport());
+    config
 }
 
 #[derive(Debug)]
 struct LanSocket {
     udp: Arc<dyn AsyncUdpSocket>,
-    networks: Arc<[Ifv4Addr]>,
+    scope: Scope,
 }
 
 impl AsyncUdpSocket for LanSocket {
@@ -257,7 +405,7 @@ impl AsyncUdpSocket for LanSocket {
     }
 
     fn try_send(&self, transmit: &Transmit<'_>) -> io::Result<()> {
-        if !on_link(&self.networks, transmit.destination.ip()) {
+        if !self.scope.allows(transmit.destination) {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         self.udp.try_send(transmit)
@@ -270,7 +418,7 @@ impl AsyncUdpSocket for LanSocket {
         meta: &mut [RecvMeta],
     ) -> Poll<io::Result<usize>> {
         let count = ready!(self.udp.poll_recv(cx, &mut buffers[..1], &mut meta[..1]))?;
-        if count != 0 && !on_link(&self.networks, meta[0].addr.ip()) {
+        if count != 0 && !self.scope.allows(meta[0].addr) {
             cx.waker().wake_by_ref();
             return Poll::Pending;
         }
@@ -291,29 +439,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lan_policy_rejects_public_and_off_subnet_addresses() {
-        let local = Ifv4Addr {
-            ip: Ipv4Addr::new(192, 168, 20, 2),
-            netmask: Ipv4Addr::new(255, 255, 255, 0),
-            prefixlen: 24,
-            broadcast: Some(Ipv4Addr::new(192, 168, 20, 255)),
+    fn ordinary_and_company_networks_fail_closed() {
+        let mut scope = Scope {
+            interfaces: vec![Ifv4Addr {
+                ip: "192.168.20.2".parse().unwrap(),
+                netmask: "255.255.255.0".parse().unwrap(),
+                prefixlen: 24,
+                broadcast: None,
+            }],
+            enterprise: Vec::new(),
+            dns_domain: None,
+            port: 0,
         };
-        assert!(on_link(
-            std::slice::from_ref(&local),
-            "192.168.20.3".parse().unwrap()
-        ));
+        assert!(scope.allows("192.168.20.3:1234".parse().unwrap()));
+        assert!(!scope.allows("192.168.21.3:1234".parse().unwrap()));
+        scope.enterprise = vec![
+            "192.168.20.0/24".parse().unwrap(),
+            "192.168.21.0/24".parse().unwrap(),
+        ];
+        assert!(scope.allows("192.168.21.3:1234".parse().unwrap()));
         for address in [
-            "192.168.20.0",
-            "192.168.20.255",
-            "192.168.21.3",
-            "127.0.0.1",
-            "8.8.8.8",
-            "::1",
+            "192.168.20.0:1234",
+            "192.168.20.255:1234",
+            "192.168.22.3:1234",
+            "127.0.0.1:1234",
+            "8.8.8.8:1234",
+            "[::1]:1234",
         ] {
-            assert!(!on_link(
-                std::slice::from_ref(&local),
-                address.parse().unwrap()
-            ));
+            assert!(!scope.allows(address.parse().unwrap()));
         }
     }
 }

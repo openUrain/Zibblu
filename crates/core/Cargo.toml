@@ -11,17 +11,21 @@ client = [
   "dep:tempfile", "dep:thiserror", "dep:tokio", "dep:walkdir", "dep:zip",
 ]
 private-chat = [
-  "dep:anyhow", "dep:if-addrs", "dep:mdns-sd", "dep:quinn", "dep:rcgen",
-  "dep:sha2", "dep:tokio", "tokio/net", "tokio/time",
+  "dep:anyhow", "dep:hickory-resolver", "dep:if-addrs", "dep:ipnet", "dep:mdns-sd",
+  "dep:quinn", "dep:rcgen", "dep:ring", "dep:serde_json", "dep:sha2",
+  "dep:tokio", "dep:x509-parser", "tokio/net", "tokio/time",
 ]
 
 [dependencies]
 anyhow = { workspace = true, optional = true }
+hickory-resolver = { version = "0.25", default-features = false, features = ["tokio", "system-config"], optional = true }
 if-addrs = { version = "0.15", optional = true }
+ipnet = { version = "2", optional = true }
 mdns-sd = { version = "0.21", default-features = false, features = ["async"], optional = true }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
 rcgen = { version = "0.14", default-features = false, features = ["ring"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }
+ring = { version = "0.17", optional = true }
 serde.workspace = true
 serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
@@ -31,4 +35,5 @@ thiserror = { version = "2", optional = true }
 tokio = { workspace = true, features = ["fs", "io-util"], optional = true }
 uuid.workspace = true
 walkdir = { version = "2", optional = true }
+x509-parser = { version = "0.18", optional = true }
 zip = { version = "4.6", default-features = false, optional = true }

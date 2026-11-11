@@ -140,6 +140,17 @@ impl Client {
         self.api.base.as_str()
     }
 
+    pub async fn lan_credential(&self, public_key: Vec<u8>) -> Result<LanCredential> {
+        Ok(self
+            .api
+            .json(
+                self.api
+                    .request(Method::POST, "/v1/lan/credential")
+                    .json(&LanCredentialRequest { public_key }),
+            )
+            .await?)
+    }
+
     pub async fn sync(&self) -> Result<Directory> {
         let _sync = self.sync_gate.lock().await;
         let mut after: i64 = sqlx::query_scalar("SELECT coalesce(max(seq), 0) FROM inbox")
@@ -289,6 +300,39 @@ impl Client {
             )
             .await?;
         Ok(result.id)
+    }
+
+    pub async fn issue_group_invite(&self, conversation: Uuid) -> Result<GroupInvite> {
+        Ok(self
+            .api
+            .json(self.api.request(
+                Method::POST,
+                &format!("/v1/conversations/{conversation}/invite"),
+            ))
+            .await?)
+    }
+
+    pub async fn preview_group_invite(&self, code: Uuid) -> Result<GroupInvitePreview> {
+        Ok(self
+            .api
+            .json(
+                self.api
+                    .request(Method::POST, "/v1/group-invites/preview")
+                    .json(&GroupInviteRequest { code }),
+            )
+            .await?)
+    }
+
+    pub async fn join_group_invite(&self, code: Uuid) -> Result<Uuid> {
+        let group: ConversationCreated = self
+            .api
+            .json(
+                self.api
+                    .request(Method::POST, "/v1/group-invites/join")
+                    .json(&GroupInviteRequest { code }),
+            )
+            .await?;
+        Ok(group.id)
     }
 
     pub async fn send_message(&self, conversation: Uuid, message: SendMessage) -> Result<()> {

@@ -141,7 +141,7 @@ async fn normal_chat_and_files() -> Result<()> {
         .post(format!("{server}/v1/register"))
         .json(&Credentials {
             handle: outsider_handle,
-            password,
+            password: password.clone(),
         })
         .send()
         .await?
@@ -168,6 +168,96 @@ async fn normal_chat_and_files() -> Result<()> {
         404
     );
     println!("The service rejected unauthenticated reads and nonmember reads/writes");
+
+    alice.add_contact(outsider.user.id).await?;
+    let group = alice
+        .create_conversation(ConversationRequest::Group {
+            title: "QR acceptance".into(),
+            contact_ids: vec![bob.user.id, outsider.user.id],
+        })
+        .await?;
+    alice.sync().await?;
+    send(&alice, group, "Before joining").await?;
+    let old_path = first.path().join("before-join.bin");
+    std::fs::write(&old_path, b"Old attachment")?;
+    let old_attachment = alice.queue_upload(group, old_path).await?.attachment.id;
+    wait_transfer(&alice, old_attachment, Direction::Upload, |transfer| {
+        transfer.status == TransferStatus::Complete
+    })
+    .await?;
+    let third = tempfile::tempdir()?;
+    let scanner_handle = format!("scanner_{suffix}");
+    let scanner = sign_in(third.path(), &server, &scanner_handle, &password, true).await?;
+    assert!(scanner.issue_group_invite(group).await.is_err());
+    let invite = alice.issue_group_invite(group).await?;
+    assert_eq!(
+        scanner
+            .preview_group_invite(invite.code)
+            .await?
+            .member_count,
+        3
+    );
+    assert_eq!(scanner.join_group_invite(invite.code).await?, group);
+    let directory = scanner.sync().await?;
+    assert!(
+        directory
+            .conversations
+            .iter()
+            .find(|chat| chat.id == group)
+            .unwrap()
+            .preview
+            .is_none()
+    );
+    assert!(scanner.messages(group, None).await?.items.is_empty());
+    let scanner_session: Session = http
+        .post(format!("{server}/v1/login"))
+        .json(&Credentials {
+            handle: scanner_handle,
+            password,
+        })
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        http.get(format!("{server}/v1/files/{old_attachment}/chunks/0"))
+            .bearer_auth(&scanner_session.token)
+            .send()
+            .await?
+            .status(),
+        404
+    );
+    send(&alice, group, "After joining").await?;
+    let new_path = first.path().join("after-join.bin");
+    std::fs::write(&new_path, b"New attachment")?;
+    let new_attachment = alice.queue_upload(group, new_path).await?.attachment.id;
+    wait_transfer(&alice, new_attachment, Direction::Upload, |transfer| {
+        transfer.status == TransferStatus::Complete
+    })
+    .await?;
+    assert_eq!(
+        scanner.join_group_invite(invite.code).await?,
+        group,
+        "Retry is idempotent"
+    );
+    scanner.sync().await?;
+    let messages = scanner.messages(group, None).await?.items;
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].attachment.as_ref().unwrap().id, new_attachment);
+    assert_eq!(messages[1].text.as_deref(), Some("After joining"));
+    assert_eq!(
+        http.get(format!("{server}/v1/files/{new_attachment}/chunks/0"))
+            .bearer_auth(&scanner_session.token)
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?
+            .as_ref(),
+        b"New attachment"
+    );
+    println!("QR admission exposed only post-join messages, previews and attachments");
     task.abort();
     Ok(())
 }
