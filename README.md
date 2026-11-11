@@ -6,14 +6,14 @@
 
 A modern messenger with a clean interface, serious file sharing, opt-in LAN-only private chats, and AI assistants you control.
 
-> **Status:** M1 normal chat and files. The LAN private chat and AI modules are planned.
+> **Status:** M1 normal chat and files and M2 LAN private text chat. The AI module is planned.
 
 ## What makes Zibblu different?
 
 | Module | What it does | Core promise |
 | --- | --- | --- |
 | **01 / Chat & Files** | Everyday chats, groups, message history and reliable large-file sharing with a dedicated files view. | Familiar, simple UX with practical file tools. |
-| **02 / Private Chat** | Tap the ghost icon to start a temporary peer-to-peer session with a contact on the same reachable LAN. | No message payloads on Zibblu servers, no internet fallback, no persistent private history. |
+| **02 / Private Chat** | Tap the ghost icon to invite people from a chat or start a temporary QR session on a reachable LAN. | No message payloads on Zibblu servers, no internet fallback, no persistent private history. |
 | **03 / AI Assistants** | Call a custom-named AI using `@name`; explicitly select the messages and optional files it may read. | One request, one bounded read-only authorization. No edits, background access or autonomous actions. |
 
 ### A few non-negotiables
@@ -57,6 +57,22 @@ The focused HTTP and SQLite acceptance test uses a disposable PostgreSQL databas
 $env:ZIBBLU_TEST_DATABASE_URL = 'postgres://zibblu:<password>@127.0.0.1:5432/zibblu_test'
 cargo test --locked -p zibblu-online --test m1 -- --nocapture
 ```
+
+## Try a private LAN chat
+
+Use the same Zibblu server on two Windows devices. On a regular home or office subnet, allow mDNS (UDP 5353) and Zibblu's direct UDP traffic on the private network. Start from a shared direct conversation or group. The person starting the session selects the **ghost** and, in a group, chooses the invitees. The invitation covers the Zibblu window. When that window is minimized on Windows, a compact invitation appears above the taskbar at the lower right. Accepting opens the private chat. Declining leaves the main window minimized. A valid response applies to that account's devices. Participants can switch to another conversation and return without ending the session.
+
+Use **Start private QR chat** for an open, temporary session. Anyone signed in to the same server with the code and a permitted LAN connection can join during the 15-minute window. Late accounts and devices see live text from their own join point. Use **Scan a QR code** with a camera or saved image. Your contact code is in **Settings**. A normal group's header provides its join code. Creating a new normal group code replaces the prior one. Joining a normal group grants access to messages and attachments published after admission.
+
+Zibblu postpones invitations when Windows reports that notifications are unavailable, such as during screen lock or Windows presentation mode. Use **Pause private invitation pop-ups** in Settings for Do Not Disturb or screen sharing that Windows does not report to desktop apps. A named invitation without an accepted participant expires after 90 seconds.
+
+For the focused check, receive an invite with Zibblu open, then repeat with the main window minimized. Check the in-app overlay and the lower-right prompt, including decline while minimized. Use two recipient devices on the same account and a third account. Accept on one device, let the other join, and check that a private message sent before the second device joined is absent there. Invite two members from a group, accept at different times and check that a non-invited member receives nothing. Check a QR scan before and after expiration. Cancel while an invitation is paused and check for a missed item after resuming. End the session or exit the hosting app, then check that reopening restores only normal history.
+
+### Managed company networks
+
+For two internal subnets that IT routes directly within one site, set `ZIBBLU_LAN_SITE_SUBNETS` on each desktop to the approved comma-separated private IPv4 CIDRs, for example `10.20.10.0/24,10.20.20.0/24`. Keep this setting within the local site. Set `ZIBBLU_LAN_PORT` to a fixed UDP port such as `7842` to scope the bidirectional firewall rules for the approved subnets. Clients without that setting use an ephemeral port. A private QR code carries a direct endpoint. For automatic cross-subnet invitations, configure your internal DNS-SD discovery proxy and set `ZIBBLU_LAN_DISCOVERY_DOMAIN` to its service domain. The client browses `_zibblu-private._udp.<domain>.`. Both endpoints must be directly routable. Separate routers with NAT or client isolation need routing and firewall changes from IT.
+
+Verify across two approved VLANs, then repeat from a subnet or firewall segment outside the configured policy and confirm neither the invitation nor the QR establishes a private connection there. The server supplies device certificates through the existing authenticated sign-in service. Deploy the updated server before enabling private chats on upgraded clients.
 
 ## Documentation
 

@@ -1,7 +1,7 @@
 # Product specification
 
 **Product:** Zibblu — *Chat freely. Share privately.*  
-**Stage:** M1 normal chat and files; desktop-first (Windows initially).
+**Stage:** M1 normal chat and files and M2 private LAN text chat on Windows.
 
 **Goal:** Familiar everyday messaging, powerful file utilities, a truly separate LAN-only private mode and explicitly scoped AI assistance.
 
@@ -28,14 +28,15 @@ Avoid in v1: voice/video, social feeds, bots, automatic cloud-drive sync, comple
 
 ## 02 — Private Chat (opt-in LAN-only mode)
 
-**User flow:** open a normal conversation → tap ghost → discover reachable peer on LAN → both explicitly accept → enter separate temporary conversation → either party ends → session content clears.
+**User flow:** open a direct conversation or select members from a shared group → send a private invitation → each receiving account accepts on any device → exchange text in a separate temporary view. An open private QR session provides a 15-minute join window for signed-in devices on the LAN.
 
 Rules:
-- Both users must be on a mutually reachable local network. Same Wi-Fi name is not sufficient proof.
-- Authenticate the intended contact and secure peer transport before showing **Private connected**.
+- Devices need direct UDP on the same subnet or between explicitly approved subnets inside a managed site. The app verifies account-bound device certificates before showing an invitation.
+- A direct invitation shows the sender and **Accept** and **Decline**. A group invitation also shows the invitees. Accepted accounts can join as they respond, and a late account or device sees new text only.
+- Invitations cover the app window. Windows shows a compact lower-right prompt while the main window is minimized. Accepting brings the private chat forward. Declining keeps the main window minimized.
 - No server relay, online forwarding or unnoticed switch back to normal mode. Connection failure means private mode is unavailable.
 - No private messages or attachments written to normal chat history. MVP private mode supports **text**; private file transfer requires a separate later decision.
-- Ending closes the channel, clears in-memory messages/keys and attempts to notify the peer. Timeouts/crash/restart must not restore a private transcript.
+- Switching views keeps the private session available alongside ordinary chats. Ending the session or quitting the host closes the channel and clears the in-memory conversation.
 - No cloud AI, push-notification excerpts, search indexing, previews, analytics payloads or logging of private content.
 - The app cannot retract screenshots, recipient copies or guarantee removal of OS memory/swap remnants. UX copy must not claim absolute erasure.
 

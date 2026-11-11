@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod private_runtime;
 
 use commands::{Desktop, DropOffer};
 use std::path::PathBuf;
@@ -24,6 +25,15 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if matches!(event, WindowEvent::Destroyed) {
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    app.state::<Desktop>().close_private(&app).await;
+                });
+            }
             let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event else {
                 return;
             };
@@ -57,7 +67,19 @@ fn main() {
             commands::add_contact,
             commands::remove_contact,
             commands::create_conversation,
+            commands::group_invite,
+            commands::group_preview,
+            commands::group_join,
             commands::send_message,
+            commands::private_start,
+            commands::private_list,
+            commands::private_view,
+            commands::private_respond,
+            commands::private_send,
+            commands::private_end,
+            commands::private_qr,
+            commands::private_scan,
+            commands::set_private_quiet,
             commands::share,
             commands::save_attachment,
             commands::transfers,

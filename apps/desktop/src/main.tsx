@@ -2,13 +2,15 @@ import { ArrowRight, Globe2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { createRoot } from "react-dom/client";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, errorMessage } from "./api";
 import type { Preferences, Session, Theme } from "./api";
 import { Brand } from "./common";
 import { Workspace } from "./workspace";
+import { PrivateInvitationWindow } from "./private-chat";
 import "./style.css";
 
-const defaults: Preferences = { server: "http://127.0.0.1:7841", theme: "system" };
+const defaults: Preferences = { server: "http://127.0.0.1:7841", theme: "system", private_quiet: false };
 
 function App() {
   const [preferences, setPreferences] = useState<Preferences>();
@@ -37,7 +39,11 @@ function App() {
   }
 
   if (session) {
-    return <Workspace session={session} theme={preferences.theme} setTheme={setTheme} signedOut={message => {
+    return <Workspace session={session} theme={preferences.theme} setTheme={setTheme}
+      privateQuiet={preferences.private_quiet} setPrivateQuiet={async quiet => {
+        await api.setPrivateQuiet(quiet);
+        setPreferences(current => ({ ...(current ?? defaults), private_quiet: quiet }));
+      }} signedOut={message => {
       setNotice(message ?? "");
       setSession(undefined);
     }} />;
@@ -113,4 +119,5 @@ function SignIn({ initialServer, notice, signedIn }: {
   </main>;
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+const invitation = getCurrentWindow().label === "private-invitation";
+createRoot(document.getElementById("root")!).render(invitation ? <PrivateInvitationWindow /> : <App />);

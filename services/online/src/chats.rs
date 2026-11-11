@@ -67,7 +67,8 @@ pub(crate) async fn sync(
          LEFT JOIN LATERAL (
              SELECT m.created_at, coalesce(left(m.text, 100), f.name) AS preview
              FROM messages m LEFT JOIN attachments f ON f.id = m.attachment_id
-             WHERE m.conversation_id = c.id ORDER BY m.seq DESC LIMIT 1
+             WHERE m.conversation_id = c.id AND m.seq > own.joined_after
+             ORDER BY m.seq DESC LIMIT 1
          ) latest ON true
          WHERE own.account_id = $1 ORDER BY activity_at DESC, c.id",
     ).bind(auth.user_id).fetch_all(&mut *tx).await?;
@@ -79,7 +80,7 @@ pub(crate) async fn sync(
          FROM messages m JOIN accounts a ON a.id = m.sender_id
          JOIN members own ON own.conversation_id = m.conversation_id AND own.account_id = $1
          LEFT JOIN attachments f ON f.id = m.attachment_id
-         WHERE m.seq > $2 ORDER BY m.seq LIMIT $3",
+         WHERE m.seq > $2 AND m.seq > own.joined_after ORDER BY m.seq LIMIT $3",
     )
     .bind(auth.user_id)
     .bind(cursor.after)

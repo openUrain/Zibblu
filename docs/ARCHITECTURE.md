@@ -20,7 +20,7 @@ The three modules share UI primitives and contact identity but **do not share im
 - Desktop: Tauri 2, React, TypeScript. Start on Windows; cross-platform only when core flows are working.
 - Core: Rust + Tokio for transport, file streams and privacy-critical checks.
 - Normal chat: SQLite locally; minimum online Rust service and PostgreSQL where remote messaging actually needs them.
-- Private LAN: mDNS/DNS-SD for discovery; authenticated QUIC peer-to-peer channel (e.g., Quinn), with peer/contact binding. Discovery alone is not authentication.
+- Private LAN: mDNS/DNS-SD discovery and Quinn peer-to-peer transport, with per-session verification by both participants.
 - AI: provider configuration and a narrowly scoped `read_selected_context` flow. Providers receive the prepared snapshot, never a broad database handle or writable file system.
 
 **Folder layout when code exists** (do not create placeholders):
@@ -36,7 +36,7 @@ Use fewer packages if implementation proves simpler.
 ## M1 delivery and storage
 
 - A single Axum service serves normal-chat HTTP requests. It binds to loopback and expects an HTTPS reverse proxy for remote clients. Tauri commands use the Rust client for HTTP, SQLite, and local file access.
-- Accounts belong to one service. Contacts are saved by exact handle. Group membership is set at creation and stays fixed in M1. Removing a contact removes the address-book entry and preserves existing chats.
+- Accounts belong to one service. Contacts are saved by exact handle or contact QR code. Group QR admission stores a message sequence cutoff under the same transaction lock used to publish messages and attachments. Removing a contact removes the address-book entry and preserves existing chats.
 - PostgreSQL stores the normal-chat feed and retains messages while recipients are offline. Clients poll for changes and commit batches into per-server, per-account SQLite profiles. The same feed supplies chat history and attachment metadata. A client must be signed in to use its profile. Sending a new message requires reaching the service.
 - An upload holds a stable ID, expected size and SHA-256. PostgreSQL commits each chunk with its offset and publishes the attachment message only after verification. Downloads resume from a local partial file and verify SHA-256 before publishing to the selected destination.
 
@@ -51,13 +51,20 @@ Use fewer packages if implementation proves simpler.
 
 Important: ordinary online messaging should target authenticated, encrypted transport and later end-to-end encrypted message content. Do not advertise full E2EE until a concrete protocol, key lifecycle and verification exist.
 
-## Transport state machine
+## M2 private transport
+
+Each signed-in desktop generates an in-memory key and obtains a short-lived client and server certificate over the authenticated account-service connection. It advertises its private UDP endpoint via mDNS and a server-scoped account tag. An optional company discovery domain is queried through DNS-SD for approved routed subnets. Discovery records never grant access to a chat.
+
+The host device coordinates a temporary room over mutually authenticated QUIC streams. Named room scope identifies the source conversation and exact invited accounts, and the receiver checks that scope against its cached directory. The first device decision for an account is applied by the host. The accepting device signs the session scope. Other devices verify that approval before they enter automatically. A QR join presents an expiring capability through the authenticated stream. The host sends participant metadata and new text to currently joined devices, with no historical replay.
+
+Ordinary private transport filters both IPv4 source and destination to a directly connected subnet and applies TTL one. An explicitly configured company site binds to an approved local interface and allows direct UDP among the specified private prefixes. The private runtime owns no M1 storage handle. A desktop worker manages certificate renewal, network changes and invitation windows separately from the currently selected chat.
 
 ```text
-Normal chat ──[tap private]──> Discovering
-Discovering ──[peer found + both consent + auth]──> Private connected
-Discovering ──[failure/timeout/refusal]──> Normal chat (no private data sent)
-Private connected ──[end/disconnect/timeout]──> Clear ephemeral state ──> Normal chat
+Existing chat ──[ghost]──> Named invitation
+Private QR ──[valid scan]──> Joining
+Named invitation ──[verified account accepts]──> Joined on eligible devices
+Joined ──[switch views]──> Session continues in background
+Host ends or exits ──> Clear room state
 ```
 
 Private data does **not** travel on the normal channel during discovery, failure, reconnection or cleanup. Explicit confirmation is required for a new private session.
@@ -71,9 +78,7 @@ Private data does **not** travel on the normal channel during discovery, failure
 
 ## Design trade-offs pending implementation
 
-- Private peer identity binding and group membership changes beyond M1.
 - Choice and audit of an established E2EE protocol for online messages.
-- Private LAN authentication UX (trusted key, fingerprint or peer verification).
 - Mobile background constraints and platform-specific discovery.
 - Provider-specific AI usage disclosure and optional on-device models.
 

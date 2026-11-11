@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 export type Theme = "system" | "light" | "dark";
 export type User = { id: string; handle: string };
 export type Session = { user: User; server: string };
-export type Preferences = { theme: Theme; server: string };
+export type Preferences = { theme: Theme; server: string; private_quiet: boolean };
 export type Conversation = {
   id: string; title: string | null; members: User[]; activity_at: number; preview: string | null;
 };
@@ -26,6 +26,17 @@ export type ConversationRequest =
   | { kind: "group"; title: string; contact_ids: string[] };
 export type DropOffer = { ticket: string; name: string };
 export type ShareSource = { kind: "file" | "folder" } | { kind: "dropped"; ticket: string };
+export type GroupInvite = { code: string; expires_at: number };
+export type GroupPreview = { id: string; title: string; member_count: number };
+export type PrivateSummary = {
+  id: string; conversation: string | null; host: User; invited: User[]; participants: User[];
+  phase: "discovering" | "waiting" | "invited" | "authenticating" | "connected" | "missed" | "failed" | "ended";
+  open: boolean; hosted: boolean;
+};
+export type PrivateList = { rooms: PrivateSummary[]; prompt: string | null };
+export type PrivateMessage = { seq: number; sender: User; text: string };
+export type PrivateCode = { room: string; host: string; addresses: string[]; secret: string; expires_at: number };
+type PrivateView = PrivateSummary & { connection: string; messages: PrivateMessage[] };
 
 export const api = {
   preferences: () => invoke<Preferences>("preferences"),
@@ -43,6 +54,19 @@ export const api = {
   create: (request: ConversationRequest) => invoke<string>("create_conversation", { request }),
   send: (conversation: string, text: string, nonce: string) =>
     invoke<void>("send_message", { conversation, message: { text, nonce } }),
+  groupInvite: (conversation: string) => invoke<GroupInvite>("group_invite", { conversation }),
+  groupPreview: (code: string) => invoke<GroupPreview>("group_preview", { code }),
+  groupJoin: (code: string) => invoke<string>("group_join", { code }),
+  startPrivate: (conversation: string | null, invited: string[], open = false) =>
+    invoke<string>("private_start", { conversation, invited, open }),
+  privateRooms: () => invoke<PrivateList>("private_list"),
+  viewPrivate: (id: string, after: number) => invoke<PrivateView>("private_view", { id, after }),
+  respondPrivate: (id: string, accept: boolean) => invoke<void>("private_respond", { id, accept }),
+  sendPrivate: (id: string, text: string) => invoke<void>("private_send", { id, text }),
+  endPrivate: (id: string) => invoke<void>("private_end", { id }),
+  privateCode: (id: string) => invoke<PrivateCode>("private_qr", { id }),
+  scanPrivate: (code: PrivateCode) => invoke<string>("private_scan", { code }),
+  setPrivateQuiet: (quiet: boolean) => invoke<void>("set_private_quiet", { quiet }),
   share: (conversation: string, source: ShareSource) => invoke<Transfer | null>("share", { conversation, source }),
   save: (id: string) => invoke<Transfer | null>("save_attachment", { id }),
   transfers: () => invoke<Transfer[]>("transfers"),

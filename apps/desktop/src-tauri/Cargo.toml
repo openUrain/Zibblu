@@ -17,7 +17,7 @@ tauri-plugin-dialog = "2"
 tempfile = "3"
 tokio.workspace = true
 uuid.workspace = true
-zibblu-core = { workspace = true, features = ["client"] }
+zibblu-core = { workspace = true, features = ["client", "private-chat"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
