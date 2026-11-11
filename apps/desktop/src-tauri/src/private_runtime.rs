@@ -114,7 +114,8 @@ pub(crate) async fn run(app: AppHandle, client: Arc<Client>) {
             Some(invitation)
                 if window.is_none()
                     && shown != Some(invitation.id)
-                    && show_desktop_prompt(&app, &desktop).is_ok() =>
+                    && show_desktop_prompt(&app, &desktop, invitation.invited.len() > 1)
+                        .is_ok() =>
             {
                 shown = Some(invitation.id);
             }
@@ -123,7 +124,11 @@ pub(crate) async fn run(app: AppHandle, client: Arc<Client>) {
     }
 }
 
-fn show_desktop_prompt(app: &AppHandle, desktop: &Desktop) -> tauri::Result<()> {
+fn show_desktop_prompt(
+    app: &AppHandle,
+    desktop: &Desktop,
+    show_invitees: bool,
+) -> tauri::Result<()> {
     let Some(main) = app.get_webview_window("main") else {
         return Ok(());
     };
@@ -132,7 +137,8 @@ fn show_desktop_prompt(app: &AppHandle, desktop: &Desktop) -> tauri::Result<()> 
     };
     let area = monitor.work_area();
     let scale = monitor.scale_factor();
-    let size: PhysicalSize<u32> = LogicalSize::new(336.0, 208.0).to_physical(scale);
+    let height = if show_invitees { 276.0 } else { 208.0 };
+    let size: PhysicalSize<u32> = LogicalSize::new(336.0, height).to_physical(scale);
     let gap = (16.0 * scale).round() as i32;
     let window = WebviewWindowBuilder::new(app, INVITATION, WebviewUrl::App("index.html".into()))
         .title("Zibblu")

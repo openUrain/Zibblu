@@ -277,6 +277,9 @@ svg { vertical-align: middle; }
 .private-invite.compact h2 { font-size: 18px; }
 .invitees { list-style: none; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 0; padding: 0; }
 .invitees li { border-radius: 10px; padding: 5px 9px; background: var(--panel); }
+.private-invite.compact .invitees { width: 100%; max-height: 76px; overflow: auto; align-content: flex-start; gap: 5px; }
+.private-invite.compact .invitees li { padding: 4px 7px; font-size: 13px; overflow-wrap: anywhere; }
+.private-invite.compact .private-actions { flex-shrink: 0; }
 .qr-content { display: grid; justify-items: center; gap: 14px; padding: 0 2px 8px; text-align: center; }
 .qr-image { width: min(280px, 100%); aspect-ratio: 1; border-radius: 12px; }
 .qr-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }

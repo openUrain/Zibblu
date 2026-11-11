@@ -57,7 +57,7 @@ pub struct PrivateSummary {
     pub id: Uuid,
     conversation: Option<Uuid>,
     host: User,
-    invited: Vec<User>,
+    pub invited: Vec<User>,
     participants: Vec<User>,
     pub phase: Phase,
     open: bool,

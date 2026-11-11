@@ -70,7 +70,7 @@ function InvitePrompt({ room, compact = false }: { room: PrivateSummary; compact
   return <div className={"private-invite" + (compact ? " compact" : "")}>
     <Avatar name={room.host.handle} large />
     <h2>@{room.host.handle}</h2>
-    {!compact && room.invited.length > 1 && <ul className="invitees" aria-label="Invited accounts">
+    {room.invited.length > 1 && <ul className="invitees" aria-label="Invited accounts" tabIndex={compact ? 0 : undefined}>
       {room.invited.map(person => <li key={person.id}>@{person.handle}</li>)}
     </ul>}
     <div className="private-actions">
