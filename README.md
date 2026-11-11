@@ -2,6 +2,8 @@
 
 **Chat freely. Share privately.**
 
+[![Zibblu CI](https://github.com/openUrain/Zibblu/actions/workflows/ci.yml/badge.svg)](https://github.com/openUrain/Zibblu/actions/workflows/ci.yml)
+
 A modern messenger with a clean interface, serious file sharing, opt-in LAN-only private chats, and AI assistants you control.
 
 > **Status:** M1 normal chat and files. The LAN private chat and AI modules are planned.
@@ -69,7 +71,11 @@ cargo test --locked -p zibblu-online --test m1 -- --nocapture
 
 ## Development workflow
 
-**One module → one scoped implementation → minimal acceptance checks → PR/review.** Build no abstractions, compatibility layers, migrations or test suites without a concrete need.
+**One module → one scoped implementation → minimal acceptance checks → PR → CI + Codex review → Owner merge.** Build no abstractions, compatibility layers, migrations or test suites without a concrete need.
+
+The [GitHub Actions CI workflow](.github/workflows/ci.yml) runs on PRs targeting `main` and pushes to `main`. It currently checks **M1 Rust/PostgreSQL integration**, **React/TypeScript build**, and **Windows Tauri Rust compilation** (after building the frontend assets). These checks do **not** verify an installer, real Windows GUI behavior, or M2 LAN-only peer communication. Record those acceptance results separately in each PR.
+
+Codex automatic review and CI are complementary: review comments are not passing test results. Before merging, the Owner checks relevant CI results, outstanding actionable review findings and the PR's known limitations. Branch protection for this private GitHub Free organization repository is currently **not enforced**; these checks are an Owner-maintained process, not a GitHub-enforced merge gate.
 
 Use the [stop-that-shit](https://github.com/lennney/stop-that-shit) contract in Codex task prompts (for example `$stop-that-shit change -- ...`). The Skill is now checked into `.agents/skills/` for repository discovery; the optional Guard and its Hooks are **not** installed or activated by this repository. See [Skills](docs/SKILLS.md).
 
