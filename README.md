@@ -36,12 +36,13 @@ These are working choices, not a reason to scaffold unused services or introduce
 - [Roadmap and acceptance](docs/ROADMAP.md)
 - [Decision log](docs/DECISIONS.md)
 - [Codex working rules](AGENTS.md)
+- [Repository Skills](docs/SKILLS.md) — vendored Codex skills and usage boundaries
 
 ## Development workflow
 
 **One module → one scoped implementation → minimal acceptance checks → PR/review.** Build no abstractions, compatibility layers, migrations or test suites without a concrete need.
 
-Use the [stop-that-shit](https://github.com/lennney/stop-that-shit) contract in Codex task prompts (for example `$stop-that-shit change -- ...`). The skill and optional Guard must be installed in Codex: merely mentioning them in this repository does not activate runtime enforcement.
+Use the [stop-that-shit](https://github.com/lennney/stop-that-shit) contract in Codex task prompts (for example `$stop-that-shit change -- ...`). The Skill is now checked into `.agents/skills/` for repository discovery; the optional Guard and its Hooks are **not** installed or activated by this repository. See [Skills](docs/SKILLS.md).
 
 ---
 
