@@ -11,7 +11,7 @@ A modern messenger with a clean interface, serious file sharing, opt-in LAN-only
 | Module | What it does | Core promise |
 | --- | --- | --- |
 | **01 / Chat & Files** | Everyday chats, groups, message history and reliable large-file sharing with a dedicated files view. | Familiar, simple UX with practical file tools. |
-| **02 / Private Chat** | Tap the lock button to start a temporary peer-to-peer session with a contact on the same reachable LAN. | No message payloads on Zibblu servers, no internet fallback, no persistent private history. |
+| **02 / Private Chat** | Tap the ghost icon to start a temporary peer-to-peer session with a contact on the same reachable LAN. | No message payloads on Zibblu servers, no internet fallback, no persistent private history. |
 | **03 / AI Assistants** | Call a custom-named AI using `@name`; explicitly select the messages and optional files it may read. | One request, one bounded read-only authorization. No edits, background access or autonomous actions. |
 
 ### A few non-negotiables
