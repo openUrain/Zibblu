@@ -42,6 +42,20 @@ jobs:
           ZIBBLU_TEST_DATABASE_URL: postgres://zibblu:ci_test_password@localhost:5432/zibblu_test
         run: cargo test --locked -p zibblu-online --test m1
 
+  desktop-rust:
+    name: Tauri Rust (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check desktop Rust
+        run: cargo check --locked -p zibblu-desktop --features custom-protocol
+
   frontend:
     name: React + TypeScript
     runs-on: ubuntu-latest
