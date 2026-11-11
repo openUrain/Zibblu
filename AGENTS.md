@@ -22,7 +22,7 @@ Zibblu 是单一 GitHub 组织仓库，**正常流程不需要 `upstream`**：
 2. 从最新的 `main` 创建任务分支，例如 `feat/m1-chat-files`、`fix/file-resume`、`docs/review-guidelines`。
 3. 只实现当前 Issue / 明确授权范围。完成后推送该分支，向 **`openUrain/Zibblu:main`** 提 PR。
 4. 遵循 [PR 模板](.github/PULL_REQUEST_TEMPLATE.md)，写清实现内容、原因、验证结果和风险。**PR 是给人看的，不是 Agent 运行日志。**
-5. 开启 Codex Code Review 后，等待或手动触发审查，处理实际可复现的关键问题；有新提交时按已配置的 review trigger 复审。
+5. PR 创建后检查 [GitHub Actions CI](.github/workflows/ci.yml) 和 Codex Code Review；处理真实失败及可复现的重要审查意见，有新提交时重新检查对应状态。**没有实际运行的检查不能标为通过。**
 
 Issue 明确要求“提交 PR”（如 M1 Issue #1）时，视为该任务已授权**推送任务分支和创建 PR**；不是授权合并、发布或修改组织设置。
 
@@ -83,13 +83,15 @@ Issue 明确要求“提交 PR”（如 M1 Issue #1）时，视为该任务已�
 
 ## 7. 仓库目录与 Skills
 
-**目前已存在的路径**：
+**目前已存在的主要路径**：
 
+- `apps/desktop/`：Tauri + React 桌面客户端与原生 Rust 入口。
+- `crates/core/`：Rust 核心客户端、数据与传输能力。
+- `services/online/`：Rust 在线服务及 PostgreSQL 相关代码。
 - `docs/`：产品、架构、安全、路线图、决策及 Skill 来源。
 - `.agents/skills/`：仓库级 Skills，包括 `stop-that-shit`、`ponytail`、`improve`、Matt Pocock 精选工程 Skills。
+- `.github/workflows/ci.yml`：PR 和 `main` push 的 CI 检查。
 - `.github/PULL_REQUEST_TEMPLATE.md`：人类与 Agent 共用的 PR 描述模板。
-
-**计划中的源码目录**（创建前以 Issue 和实际实现为准）：`apps/desktop/`、`crates/core/`、`services/online/`。不存在时不要编造其已实现行为。
 
 - 实现任务优先使用 `$stop-that-shit change -- ...`，需要时配合 `ponytail`，以最少代码完成**全部**责任。
 - `improve` 仅用于明确要求的代码库审计与改进计划；Matt Pocock 的 `code-review`、`diagnosing-bugs`、`codebase-design` 按需使用，不自动触发多 Agent 流程。
@@ -125,6 +127,15 @@ Codex 官方 **Code Review** 需在 Codex 设置中为本仓库开启 `Code revi
 2. 开发 Agent 在**当前 PR 分支**修复明确的问题，给出必要的最小复测证据，更新 PR 描述的“审查与返修”。
 3. 不得因机器人评论“没有问题”便声称测试已通过。Codex 评论不是 CI、人工验收或强制合并门禁。
 4. **人类 Owner 负责最终合并**。任何自动审查、返修结果都不自动授权合并。
+
+### 合并前的人工核对
+
+- [ ] 查看 PR 的 [GitHub Actions CI](.github/workflows/ci.yml) 状态：`Rust + PostgreSQL`（M1 集成测试）、`React + TypeScript`（前端构建）和 `Tauri Rust (Windows)`（先构建前端产物再执行桌面 Rust 编译检查）。若检查失败或未运行，先明确原因，不得写作 PASS。
+- [ ] Codex 自动审查已结束；实质性审查发现已修复或说明剩余风险；审查无发现不等于功能测试通过。
+- [ ] 对照当前 Issue 确认验收证据与未验证场景，特别注意 CI **不覆盖** Windows 安装包、实际 GUI 手势和 M2 真实跨设备局域网连接。
+- [ ] Owner 明确决定是否合并；**不允许 Agent 自动合并**。
+
+当前 `openUrain` 的 GitHub Free 组织下，私有仓库 `main` 分支保护规则显示 **Not enforced**。因此以上是必须人工遵守的流程，而不是 GitHub 技术上强制执行的合并门禁；不要宣称 GitHub 已阻止绕过检查的合并。
 
 ## Code Review Rules
 
