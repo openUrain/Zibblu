@@ -10,10 +10,11 @@ Small, durable decisions only. Add a dated entry when an actual choice changes; 
 | D-004 | Cloud AI is invoked through custom `@name`, receives only one explicitly authorized read-only context snapshot. | Minimize disclosure and prevent modification of data. | Accepted |
 | D-005 | Desktop-first; start with Tauri/React/TypeScript and Rust. | Reuse one Rust core for networking and file handling without premature platform work. | Provisional |
 | D-006 | Implement an entire module, then run the smallest meaningful acceptance checks. Use stop-that-shit prompts/Guard where installed. | Keep Codex scoped and avoid overengineering. | Accepted |
+| D-007 | M1 uses an authenticated PostgreSQL feed and resumable attachment chunks, with SQLite and staged transfers per local account. | One online service can deliver offline history and verify uploads without a separate relay, queue, or object store. | Accepted |
 
 ## Open decisions
 
-1. Exact identity/account design and trustworthy authentication of LAN peers.
+1. Trustworthy authentication and account identity binding for LAN peers.
 2. Online-message encryption protocol and key lifecycle; do not claim E2EE until implemented.
 3. How group AI output is displayed and how group participants are informed about cloud disclosure.
 4. Private file transfer, mobile clients and multi-device sync are **deferred**, not silently included.

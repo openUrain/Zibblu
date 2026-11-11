@@ -1,7 +1,8 @@
 # Product specification
 
 **Product:** Zibblu — *Chat freely. Share privately.*  
-**Stage:** Pre-implementation; desktop-first (Windows initially).  
+**Stage:** M1 normal chat and files; desktop-first (Windows initially).
+
 **Goal:** Familiar everyday messaging, powerful file utilities, a truly separate LAN-only private mode and explicitly scoped AI assistance.
 
 ## Interface
@@ -19,7 +20,7 @@ Main navigation: **Chats · Contacts · Files · Settings**.
 
 Initial functional scope:
 - Direct and basic group chat, local message history and offline delivery through the online service.
-- Sending files/folders; clear transfer state, file metadata, pause/resume and integrity verification.
+- Sending files/folders; clear transfer state, file metadata, pause/resume and integrity verification. Folders are shared as ZIP downloads.
 - Dedicated Files page and per-chat file history. Failure/retry is visible, not silently hidden.
 - Standard online routing is **separate** from private mode; ordinary messages can involve the server.
 
