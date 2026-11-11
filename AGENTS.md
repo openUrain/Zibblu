@@ -2,6 +2,8 @@
 
 本文件是 **openUrain/Zibblu** 给 Codex / Claude Code / Cursor 等 AI 编码助手的协作约束，供人类协作者参考。任何 Agent 在本仓库修改代码或审查 PR 前，先阅读本文件和当前 Issue 对应的文档。
 
+**交互语言规则（默认强制）**：面向仓库 Owner / 用户的所有自然语言沟通默认使用**简体中文**，包括开发计划、进度、完工汇报、PR 标题及正文、审查意见、返修说明与风险总结。代码标识符、命令、文件路径、协议名称、原样错误日志和必要的技术专有名词保留英文；不要为了翻译破坏代码或接口契约。用户针对某次任务明确要求其他语言时，以当次要求为准。不要因语言要求增加额外文档或翻译工作。
+
 > **产品**：Zibblu — *Chat freely. Share privately.* 简洁聊天、可靠文件传输、局域网私密会话、用户按需授权的只读 AI。
 >
 > **仓库**：`openUrain/Zibblu`（GitHub），默认分支 **`main`**，不使用 agent-insight 的 GitCode / fork / upstream 流程。
@@ -125,6 +127,9 @@ Codex 官方 **Code Review** 需在 Codex 设置中为本仓库开启 `Code revi
 4. **人类 Owner 负责最终合并**。任何自动审查、返修结果都不自动授权合并。
 
 ## Code Review Rules
+
+### Review language
+Write all human-facing review findings, summaries, and suggested fixes in **Simplified Chinese** by default. Keep code identifiers, paths, commands, and quotations of exact source code in their original form. Be concise, actionable, and avoid translating technical identifiers.
 
 ### Private transport and retention
 **Flag any change** that can send M2 private-session payloads to a relay, online-chat path, persistent DB, logs, notifications, analytics or cloud AI; or mark a session as verified before peer authentication and mutual consent. Safe behavior is an authenticated, encrypted LAN-only path that fails closed. Security documentation must not promise impossible forensic erasure.
