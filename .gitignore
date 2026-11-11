@@ -1,0 +1,12 @@
+/.local/
+/target/
+**/node_modules/
+**/dist/
+**/src-tauri/gen/
+.env
+.env.*
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+*.sqlite3-*

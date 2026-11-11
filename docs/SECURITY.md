@@ -1,6 +1,6 @@
 # Security & privacy boundaries
 
-**Design requirements, not shipped guarantees.** Never claim the repository currently provides secure chat.
+This document records the M1 security boundary and the requirements for later modules.
 
 ## Threats and limits
 
@@ -32,6 +32,12 @@ We **cannot** promise protection from: screenshots or cameras, recipients manual
 - Authenticate users and secure transport; design eventual message E2EE with a standard, reviewed approach rather than inventing cryptography.
 - Bound file sizes/resources, validate transfers, apply integrity checks and avoid overwriting unrelated destination files.
 - Clearly distinguish privacy expectations of normal server-assisted traffic and LAN-only temporary traffic.
+
+M1 uses Argon2id password hashes and expiring opaque session tokens. The service stores token hashes and the client holds the token in memory. Remote clients require HTTPS with normal certificate verification. Plain HTTP is available on loopback for local use. The online service can read normal chat messages and attachments. M1 has no end-to-end message encryption, and its local SQLite and staged files use the OS account's file permissions.
+
+Downloads require authenticated conversation membership for each chunk. Upload changes require ownership, and incomplete uploads are unavailable to recipients. A file or folder archive is limited to 256 MiB. The service reserves attachment storage up to 2 GiB and 256 transfers per account, and 16 GiB and 4,096 transfers overall. Unfinished uploads can be discarded. Published attachment retention is indefinite in M1, so an operator must budget for the database and its write-ahead log.
+
+Local attachment paths come from a native picker or an explicitly confirmed drop. The app does not extract received archives or overwrite existing destinations.
 
 ## Minimal security acceptance at module completion
 

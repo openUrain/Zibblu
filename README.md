@@ -4,7 +4,7 @@
 
 A modern messenger with a clean interface, serious file sharing, opt-in LAN-only private chats, and AI assistants you control.
 
-> **Status:** Design / planning. No app functionality is implemented yet.
+> **Status:** M1 normal chat and files. The LAN private chat and AI modules are planned.
 
 ## What makes Zibblu different?
 
@@ -24,9 +24,37 @@ A modern messenger with a clean interface, serious file sharing, opt-in LAN-only
 
 ## Intended technology
 
-Desktop-first: **Tauri 2 + React + TypeScript**, with a **Rust/Tokio** messaging and transfer core. Normal-chat data uses **SQLite**; an online **Rust/PostgreSQL** service will be added only when Module 01 needs remote delivery. Private sessions target **mDNS/DNS-SD discovery + authenticated QUIC** with fail-closed behavior.
+M1 uses **Tauri 2 + React + TypeScript**, a **Rust/Tokio** client, per-account **SQLite** history, and one **Rust/PostgreSQL** service for authentication, message delivery, and attachments. Private sessions target **mDNS/DNS-SD discovery + authenticated QUIC** with fail-closed behavior.
 
-These are working choices, not a reason to scaffold unused services or introduce dependencies prematurely.
+## Run M1 on Windows
+
+Install Rust 1.90 or newer, Node.js 22.12 or newer, PostgreSQL, and the [Tauri Windows prerequisites](https://v2.tauri.app/start/prerequisites/#windows). Use a Visual Studio x64 developer terminal to load MSVC and the Windows SDK. Create an empty PostgreSQL database owned by a dedicated Zibblu database user. From the repository root, start the service with that user's connection string.
+
+```powershell
+$env:DATABASE_URL = 'postgres://zibblu:<password>@127.0.0.1:5432/zibblu'
+cargo run --locked -p zibblu-online
+```
+
+In another terminal, run the desktop app.
+
+```powershell
+cd apps/desktop
+npm ci
+npm run tauri dev
+```
+
+Create an account at `http://127.0.0.1:7841` and add another account by its handle in **Contacts**. For remote users, terminate HTTPS at a reverse proxy in front of the loopback service and give both clients the same HTTPS origin. Configure rate limiting for login and registration and keep the database reachable only by trusted services.
+
+Use the paperclip or folder button to share an attachment. Dropping one file or folder into an open chat brings up a confirmation. Folders arrive as ZIP archives. **Shared files** in a chat and the global **Files** workspace show attachments and transfers. Save a download to an unused filename. If a transfer pauses or fails, choose **Resume** or **Retry** to continue.
+
+For two independent local profiles, launch the Windows executable with a different `ZIBBLU_DATA_DIR` in each process. By default, the app uses its Windows local app data directory.
+
+The focused HTTP and SQLite acceptance test uses a disposable PostgreSQL database.
+
+```powershell
+$env:ZIBBLU_TEST_DATABASE_URL = 'postgres://zibblu:<password>@127.0.0.1:5432/zibblu_test'
+cargo test --locked -p zibblu-online --test m1 -- --nocapture
+```
 
 ## Documentation
 
@@ -49,4 +77,4 @@ Use the [stop-that-shit](https://github.com/lennney/stop-that-shit) contract in 
 
 **Zibblu** · *Chat freely. Share privately.*
 
-Features and security properties in this README are design goals until independently verified in a working build.
+Normal chat uses server-assisted delivery and storage. See [Security](docs/SECURITY.md) for the M1 boundary.

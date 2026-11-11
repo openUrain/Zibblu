@@ -33,6 +33,13 @@ docs/               # living product and engineering decisions
 
 Use fewer packages if implementation proves simpler.
 
+## M1 delivery and storage
+
+- A single Axum service serves normal-chat HTTP requests. It binds to loopback and expects an HTTPS reverse proxy for remote clients. Tauri commands use the Rust client for HTTP, SQLite, and local file access.
+- Accounts belong to one service. Contacts are saved by exact handle. Group membership is set at creation and stays fixed in M1. Removing a contact removes the address-book entry and preserves existing chats.
+- PostgreSQL stores the normal-chat feed and retains messages while recipients are offline. Clients poll for changes and commit batches into per-server, per-account SQLite profiles. The same feed supplies chat history and attachment metadata. A client must be signed in to use its profile. Sending a new message requires reaching the service.
+- An upload holds a stable ID, expected size and SHA-256. PostgreSQL commits each chunk with its offset and publishes the attachment message only after verification. Downloads resume from a local partial file and verify SHA-256 before publishing to the selected destination.
+
 ## Data ownership and flow
 
 | Data | Normal chat | Private chat | AI request |
@@ -64,7 +71,7 @@ Private data does **not** travel on the normal channel during discovery, failure
 
 ## Design trade-offs pending implementation
 
-- Exact account/identity and group synchronization design.
+- Private peer identity binding and group membership changes beyond M1.
 - Choice and audit of an established E2EE protocol for online messages.
 - Private LAN authentication UX (trusted key, fingerprint or peer verification).
 - Mobile background constraints and platform-specific discovery.
