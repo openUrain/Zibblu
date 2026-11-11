@@ -4,7 +4,7 @@ mod commands;
 
 use commands::{Desktop, DropOffer};
 use std::path::PathBuf;
-use tauri::{DragDropEvent, Emitter, Manager, WebviewEvent, WebviewWindowBuilder};
+use tauri::{DragDropEvent, Emitter, Manager, WebviewWindowBuilder, WindowEvent};
 use uuid::Uuid;
 
 fn main() {
@@ -23,13 +23,13 @@ fn main() {
                 .build()?;
             Ok(())
         })
-        .on_webview_event(|view, event| {
-            let WebviewEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event else {
+        .on_window_event(|window, event| {
+            let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event else {
                 return;
             };
-            let state = view.state::<Desktop>();
+            let state = window.state::<Desktop>();
             let [path] = paths.as_slice() else {
-                let _ = view.emit(
+                let _ = window.emit(
                     "attachment-drop-error",
                     "Drop one file or folder at a time.",
                 );
@@ -42,7 +42,7 @@ fn main() {
                 .to_string_lossy()
                 .into_owned();
             *state.drop.lock().expect("drop state") = Some((ticket, path.clone()));
-            let _ = view.emit("attachment-drop", DropOffer { ticket, name });
+            let _ = window.emit("attachment-drop", DropOffer { ticket, name });
         })
         .invoke_handler(tauri::generate_handler![
             commands::preferences,
