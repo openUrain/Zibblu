@@ -1,5 +1,5 @@
 import {
-  ArrowDown, ArrowLeft, ArrowRight, AtSign, Bot, FilePlus2, FolderOpen, Ghost, Globe2, MessageCircle, Paperclip, Plus, QrCode, Search, Send,
+  ArrowDown, ArrowLeft, ArrowRight, AtSign, Bot, FilePlus2, FolderOpen, Ghost, Globe2, MessageCircle, Paperclip, Plus, QrCode, Radar, Search, Send,
 } from "lucide-react";
 import { Fragment, useCallback, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
@@ -12,9 +12,10 @@ import { Avatar, Blank, chatName, dateLabel, timeLabel, usePage } from "./common
 import { FilesView, SharedFile, TransferList } from "./files";
 import { privatePhaseLabel, privateTitle } from "./private-chat";
 
-export function ChatList({ chats, own, selected, open, newChat, rooms, activePrivate, openPrivate, createQr }: {
+export function ChatList({ chats, own, selected, open, newChat, rooms, activePrivate, openPrivate, createQr, showNearby }: {
   chats: Conversation[]; own: User; selected?: string; open: (id: string) => void; newChat: () => void;
   rooms: PrivateSummary[]; activePrivate?: string; openPrivate: (id: string) => void; createQr: () => void;
+  showNearby: () => void;
 }) {
   const [search, setSearch] = useState("");
   const query = search.trim().toLocaleLowerCase();
@@ -22,6 +23,8 @@ export function ChatList({ chats, own, selected, open, newChat, rooms, activePri
   return <aside className="chat-list">
     <div className="chat-list-head"><div><h1>Chats</h1></div>
       <div className="chat-actions">
+        <button className="icon-button" aria-label="Nearby devices" title="Nearby devices"
+          onClick={showNearby}><Radar size={20} /></button>
         <button className="icon-button" aria-label="Start private QR chat" title="Start private QR chat"
           onClick={createQr}><QrCode size={20} /></button>
         <button className="square-primary" aria-label="New conversation" title="New conversation" onClick={newChat}><Plus size={22} /></button>

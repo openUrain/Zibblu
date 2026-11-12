@@ -84,6 +84,8 @@ fn main() {
             ai::ai_prepare,
             ai::ai_send,
             commands::private_start,
+            commands::private_nearby,
+            commands::private_invite_nearby,
             commands::private_list,
             commands::private_view,
             commands::private_respond,

@@ -9,7 +9,7 @@ use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use zibblu_core::private_chat::{
-    DismissedRooms, Phase, PrivateCode, PrivateLobby, PrivateSummary, PrivateView,
+    DismissedRooms, NearbyDevice, Phase, PrivateCode, PrivateLobby, PrivateSummary, PrivateView,
 };
 use zibblu_core::{
     Client, ConversationRequest, Credentials, Direction, Directory, FileFilter, GroupInvite,
@@ -308,6 +308,26 @@ pub(crate) async fn private_start(
     open: bool,
 ) -> Result<Uuid> {
     let id = state.lobby().await?.create(conversation, invited, open)?;
+    state.ai.lock().expect("AI state").clear();
+    Ok(id)
+}
+
+#[tauri::command]
+pub(crate) async fn private_nearby(state: State<'_, Desktop>) -> Result<Option<Vec<NearbyDevice>>> {
+    let lobby = state.private.lock().await.clone();
+    Ok(match lobby {
+        Some(lobby) => lobby.nearby_devices().await,
+        None => None,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn private_invite_nearby(
+    state: State<'_, Desktop>,
+    device: Uuid,
+    account: Uuid,
+) -> Result<Uuid> {
+    let id = state.lobby().await?.invite_nearby(device, account).await?;
     state.ai.lock().expect("AI state").clear();
     Ok(id)
 }

@@ -13,7 +13,7 @@ import type { Conversation, ConversationRequest, Directory, DropOffer, Session, 
 import { Avatar, Blank, Brand, Dialog, chatName } from "./common";
 import { ChatList, ChatView } from "./chat";
 import { FilesView } from "./files";
-import { PrivateChatView, PrivateInvitationOverlay, PrivateTargets, usePrivateRooms } from "./private-chat";
+import { NearbyDevices, PrivateChatView, PrivateInvitationOverlay, PrivateTargets, usePrivateRooms } from "./private-chat";
 import { ScanQr, ShareQr } from "./qr";
 import type { SharedCode } from "./qr";
 
@@ -36,6 +36,7 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
   const [mobileChat, setMobileChat] = useState(false);
   const [privateId, setPrivateId] = useState<string>();
   const [privateTargets, setPrivateTargets] = useState<Conversation>();
+  const [nearby, setNearby] = useState(false);
   const [shareCode, setShareCode] = useState<SharedCode>();
   const [scanning, setScanning] = useState(false);
   const { rooms: privateRooms, prompt } = usePrivateRooms();
@@ -148,6 +149,7 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
   useEffect(() => {
     const accepted = listen<{ id: string; conversation: string | null }>("private-invitation-accepted", ({ payload }) => {
       setPrivateTargets(undefined);
+      setNearby(false);
       setShareCode(undefined);
       setScanning(false);
       setNewChat(false);
@@ -256,7 +258,7 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
       {nav === "Chats" && <div className={"chat-layout" + (mobileChat && (active || privateOpen) ? " mobile-chat-open" : "")}>
         <ChatList chats={directory.conversations} own={session.user} selected={privateOpen ? undefined : selected}
           open={selectChat} newChat={() => setNewChat(true)} rooms={privateRooms} activePrivate={privateId}
-          openPrivate={selectPrivate} createQr={() => void createPrivateCode()} />
+          openPrivate={selectPrivate} createQr={() => void createPrivateCode()} showNearby={() => setNearby(true)} />
         {privateId ? <PrivateChatView key={privateId} id={privateId} own={session.user}
             back={() => { setPrivateId(undefined); if (!active) setMobileChat(false); }} showCode={showPrivateCode} />
           : active ? <ChatView key={active.id} chat={active} own={session.user} revision={revision}
@@ -288,6 +290,10 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
     </div>
     {privateTargets && <PrivateTargets people={privateTargets.members.filter(user => user.id !== session.user.id)}
       close={() => setPrivateTargets(undefined)} start={invited => startPrivate(privateTargets, invited)} />}
+    {nearby && <NearbyDevices own={session.user.id} close={() => setNearby(false)} invited={id => {
+      setNearby(false);
+      showPrivate(id);
+    }} />}
     {shareCode && <ShareQr code={shareCode} server={session.server} close={() => setShareCode(undefined)} />}
     {scanning && <ScanQr session={session} close={() => setScanning(false)}
       contactAdded={() => { setScanning(false); navigate("Contacts"); void refresh(); }}

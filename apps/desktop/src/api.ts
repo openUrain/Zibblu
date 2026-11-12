@@ -34,6 +34,7 @@ export type PrivateSummary = {
   open: boolean; hosted: boolean;
 };
 export type PrivateList = { rooms: PrivateSummary[]; prompt: string | null };
+export type NearbyDevice = { id: string; matched_account: User | null };
 export type PrivateMessage = { seq: number; sender: User; text: string };
 export type PrivateCode = { room: string; host: string; addresses: string[]; secret: string; expires_at: number };
 type PrivateView = PrivateSummary & { connection: string; messages: PrivateMessage[] };
@@ -59,6 +60,8 @@ export const api = {
   groupJoin: (code: string) => invoke<string>("group_join", { code }),
   startPrivate: (conversation: string | null, invited: string[], open = false) =>
     invoke<string>("private_start", { conversation, invited, open }),
+  nearbyDevices: () => invoke<NearbyDevice[] | null>("private_nearby"),
+  inviteNearby: (device: string, account: string) => invoke<string>("private_invite_nearby", { device, account }),
   privateRooms: () => invoke<PrivateList>("private_list"),
   viewPrivate: (id: string, after: number) => invoke<PrivateView>("private_view", { id, after }),
   respondPrivate: (id: string, accept: boolean) => invoke<void>("private_respond", { id, accept }),
