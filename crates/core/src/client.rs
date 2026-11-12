@@ -1,6 +1,8 @@
+mod ai_context;
 mod staging;
 mod transfer;
 
+pub use ai_context::AiScope;
 pub use transfer::{Direction, Transfer, TransferStatus};
 
 use crate::protocol::*;

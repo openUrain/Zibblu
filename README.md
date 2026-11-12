@@ -6,7 +6,7 @@
 
 A modern messenger with a clean interface, serious file sharing, opt-in LAN-only private chats, and AI assistants you control.
 
-> **Status:** M1 normal chat and files and M2 LAN private text chat. The AI module is planned.
+> **Status:** M1 normal chat and files, M2 LAN private text chat, and M3 scoped AI assistants on Windows.
 
 ## What makes Zibblu different?
 
@@ -28,7 +28,7 @@ A modern messenger with a clean interface, serious file sharing, opt-in LAN-only
 
 M1 uses **Tauri 2 + React + TypeScript**, a **Rust/Tokio** client, per-account **SQLite** history, and one **Rust/PostgreSQL** service for authentication, message delivery, and attachments. Private sessions target **mDNS/DNS-SD discovery + authenticated QUIC** with fail-closed behavior.
 
-## Run M1 on Windows
+## Run Zibblu on Windows
 
 Install Rust 1.90 or newer, Node.js 22.12 or newer, PostgreSQL, and the [Tauri Windows prerequisites](https://v2.tauri.app/start/prerequisites/#windows). Use a Visual Studio x64 developer terminal to load MSVC and the Windows SDK. Create an empty PostgreSQL database owned by a dedicated Zibblu database user. From the repository root, start the service with that user's connection string.
 
@@ -73,6 +73,14 @@ For the focused check, receive an invite with Zibblu open, then repeat with the 
 For two internal subnets that IT routes directly within one site, set `ZIBBLU_LAN_SITE_SUBNETS` on each desktop to the approved comma-separated private IPv4 CIDRs, for example `10.20.10.0/24,10.20.20.0/24`. Keep this setting within the local site. Set `ZIBBLU_LAN_PORT` to a fixed UDP port such as `7842` to scope the bidirectional firewall rules for the approved subnets. Clients without that setting use an ephemeral port. A private QR code carries a direct endpoint. For automatic cross-subnet invitations, configure your internal DNS-SD discovery proxy and set `ZIBBLU_LAN_DISCOVERY_DOMAIN` to its service domain. The client browses `_zibblu-private._udp.<domain>.`. Both endpoints must be directly routable. Separate routers with NAT or client isolation need routing and firewall changes from IT.
 
 Verify across two approved VLANs, then repeat from a subnet or firewall segment outside the configured policy and confirm neither the invitation nor the QR establishes a private connection there. The server supplies device certificates through the existing authenticated sign-in service. Deploy the updated server before enabling private chats on upgraded clients.
+
+## Ask a read-only AI assistant
+
+In **Settings → AI assistants**, choose OpenAI, DeepSeek, or Grok. Set a mention name, model ID and your own provider API key. Windows protects the key in the local Zibblu account profile.
+
+Start a normal chat message with `@name`, enter a prompt, then choose the context. You can use the prompt alone, pick up to 20 text messages from the current chat, or include the latest 5, 10 or 20. Add up to three individual UTF-8 text files of 32 KiB each. Review the exact text and provider before sending. The request leaves Zibblu over HTTPS.
+
+The latest answer in each chat stays in memory for your sign-in. To share one, choose **Review to share**, read the result, then use **Post reply**. The posted reply appears as a normal message under your account.
 
 ## Documentation
 

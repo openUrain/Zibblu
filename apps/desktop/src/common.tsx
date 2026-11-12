@@ -41,14 +41,16 @@ export function Blank({ icon, title, children }: { icon: ReactNode; title: strin
   </div>;
 }
 
-export function Dialog({ title, close, children }: { title: string; close: () => void; children: ReactNode }) {
+export function Dialog({ title, close, children, className }: {
+  title: string; close: () => void; children: ReactNode; className?: string;
+}) {
   const element = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const dialog = element.current;
     dialog?.showModal();
     return () => dialog?.close();
   }, []);
-  return <dialog ref={element} onCancel={event => { event.preventDefault(); close(); }} aria-label={title}>
+  return <dialog ref={element} className={className} onCancel={event => { event.preventDefault(); close(); }} aria-label={title}>
     <div className="dialog-head"><h2>{title}</h2>
       <button className="icon-button" aria-label="Close dialog" onClick={close}><X size={19} /></button>
     </div>

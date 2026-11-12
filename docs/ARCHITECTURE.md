@@ -69,6 +69,12 @@ Host ends or exits ──> Clear room state
 
 Private data does **not** travel on the normal channel during discovery, failure, reconnection or cleanup. Explicit confirmation is required for a new private session.
 
+## M3 assistant requests
+
+The Windows composer opens an AI draft in the active normal conversation. The native command checks the signed-in account's normal conversation directory, queries bounded SQLite text, and reads only the individual files selected via the native picker. It freezes the resulting prompt, messages and file text into an in-memory snapshot for review. A one-use confirmation ID releases that snapshot to the selected provider adapter over HTTPS. Closing the normal composer, accepting a private invitation or signing out clears pending authorization.
+
+The same Responses adapter handles OpenAI, DeepSeek and Grok with fixed endpoints. It receives serialized context and a provider-specific key, and returns text. Provider keys are protected with Windows DPAPI inside the per-account local profile. Local replies live in the signed-in desktop workspace. Posting a reviewed reply requires a separate user action through the ordinary message path.
+
 ## Boundaries worth keeping strict
 
 1. The private-session transport API has **no relay endpoint** and no permission to write a transcript to the persistent chat store.
@@ -80,6 +86,6 @@ Private data does **not** travel on the normal channel during discovery, failure
 
 - Choice and audit of an established E2EE protocol for online messages.
 - Mobile background constraints and platform-specific discovery.
-- Provider-specific AI usage disclosure and optional on-device models.
+- Optional on-device AI models and their privacy review.
 
 Record decisions in [DECISIONS.md](DECISIONS.md) when one is actually made.
