@@ -1,7 +1,7 @@
 # Product specification
 
 **Product:** Zibblu — *Chat freely. Share privately.*  
-**Stage:** M1 normal chat and files and M2 private LAN text chat on Windows.
+**Stage:** M1 normal chat and files, M2 private LAN text chat, and M3 scoped AI assistants on Windows.
 
 **Goal:** Familiar everyday messaging, powerful file utilities, a truly separate LAN-only private mode and explicitly scoped AI assistance.
 
@@ -42,7 +42,7 @@ Rules:
 
 ## 03 — AI Assistants (explicit read-only)
 
-**User flow:** configure provider and custom assistant name → type `@name` → choose context (current prompt / selected messages / bounded recent or time range) → optionally select specific files → review disclosure and send → receive answer.
+**User flow:** configure OpenAI, DeepSeek or Grok with a model, API key and custom assistant name → type `@name` in a normal chat → choose prompt only, selected text messages or a bounded recent range → optionally select individual text files → review the exact disclosure and send → receive answer.
 
 Rules:
 - No background access. Each request has a **fresh, one-time** authorization; it never inherits prior scopes.
@@ -50,7 +50,7 @@ Rules:
 - Assistant responses cannot overwrite message history or modify/delete local files. No execution, plugin actions, continuous agents or write tools.
 - Remote-provider use must disclose that selected content is sent outside Zibblu. Keep credentials in secure local storage rather than source control.
 - Private mode excludes cloud AI. A future on-device AI option needs a separate privacy review.
-- In groups, make it clear when a response will be visible to everyone; only the invoking user grants context from messages they can access.
+- Replies default to the invoking user. **Review to share** lets the user read the reply and explicitly post it as their normal message, visible to everyone in the conversation. Context selection covers only text the invoking user can access in that conversation.
 
 ## Brand
 

@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ai;
 mod commands;
 mod private_runtime;
 
@@ -71,6 +72,17 @@ fn main() {
             commands::group_preview,
             commands::group_join,
             commands::send_message,
+            ai::ai_assistants,
+            ai::ai_save_assistant,
+            ai::ai_remove_assistant,
+            ai::ai_open_view,
+            ai::ai_close_view,
+            ai::ai_begin,
+            ai::ai_cancel,
+            ai::ai_pick_file,
+            ai::ai_remove_file,
+            ai::ai_prepare,
+            ai::ai_send,
             commands::private_start,
             commands::private_list,
             commands::private_view,

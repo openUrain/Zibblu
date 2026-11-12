@@ -1,6 +1,6 @@
 # Security & privacy boundaries
 
-This document records the M1 and M2 security boundaries and the requirements for M3.
+This document records the security boundaries of M1, M2 and M3.
 
 ## Threats and limits
 
@@ -29,7 +29,10 @@ We **cannot** promise protection from: screenshots or cameras, recipients manual
 - Use read-only file handles for selected attachments and guard against path traversal, symlinks and scope expansion at the capability boundary.
 - Treat message/file contents as untrusted data. Instructions embedded in them cannot expand AI permissions.
 - Private-session content is not sent to cloud AI. If on-device AI is later introduced, review its actual network behavior before allowing private context.
-- Do not leak provider tokens in storage, logs, crash traces or requests to unrelated providers.
+- The Windows client encrypts provider keys with user-scoped DPAPI and binds each key to its provider. The local account profile stores the encrypted key, name and model. The renderer receives only the name, provider and model on subsequent reads.
+- The native app verifies normal-chat membership, reads only the selected text and snapshots UTF-8 files from a native picker through read-only handles. Reparse points, nonlocal path forms and files larger than 32 KiB are rejected. The provider receives only the prompt, selected text with sender handles, and picked filenames with their text.
+- The confirmation consumes one in-memory snapshot. A fixed HTTPS endpoint receives one request with redirects and retries disabled. OpenAI and xAI requests set `store: false`; DeepSeek's Responses API is stateless. Provider-side handling remains subject to the provider's terms.
+- Unshared replies are local to the current sign-in. Sharing uses a separate user action and the ordinary message path.
 
 ## Ordinary chats and files
 

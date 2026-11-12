@@ -20,6 +20,7 @@ pub(crate) struct Desktop {
     data: PathBuf,
     preferences: StdMutex<Preferences>,
     session: Mutex<Option<Arc<Client>>>,
+    pub(crate) ai: StdMutex<crate::ai::AiState>,
     pub(crate) private: Mutex<Option<Arc<PrivateLobby>>>,
     pub(crate) dismissed_rooms: DismissedRooms,
     private_worker: StdMutex<Option<tauri::async_runtime::JoinHandle<()>>>,
@@ -36,6 +37,7 @@ impl Desktop {
             data,
             preferences: StdMutex::new(preferences),
             session: Mutex::new(None),
+            ai: StdMutex::default(),
             private: Mutex::new(None),
             dismissed_rooms: DismissedRooms::default(),
             private_worker: StdMutex::new(None),
@@ -54,7 +56,7 @@ impl Desktop {
         Ok(())
     }
 
-    async fn client(&self) -> Result<Arc<Client>> {
+    pub(crate) async fn client(&self) -> Result<Arc<Client>> {
         Ok(self
             .session
             .lock()
@@ -140,7 +142,7 @@ impl From<anyhow::Error> for CommandError {
     }
 }
 
-type Result<T> = std::result::Result<T, CommandError>;
+pub(crate) type Result<T> = std::result::Result<T, CommandError>;
 
 #[derive(Serialize)]
 pub(crate) struct SignedIn {
@@ -215,6 +217,7 @@ pub(crate) async fn login(
 #[tauri::command]
 pub(crate) async fn logout(app: AppHandle, state: State<'_, Desktop>) -> Result<()> {
     let mut session = state.session.lock().await;
+    state.ai.lock().expect("AI state").clear();
     state.close_private(&app).await;
     *state.drop.lock().expect("drop state") = None;
     if let Some(client) = session.take() {
@@ -304,7 +307,9 @@ pub(crate) async fn private_start(
     invited: Vec<Uuid>,
     open: bool,
 ) -> Result<Uuid> {
-    Ok(state.lobby().await?.create(conversation, invited, open)?)
+    let id = state.lobby().await?.create(conversation, invited, open)?;
+    state.ai.lock().expect("AI state").clear();
+    Ok(id)
 }
 
 #[derive(Serialize)]
@@ -350,6 +355,9 @@ pub(crate) async fn private_respond(
     accept: bool,
 ) -> Result<()> {
     let conversation = state.lobby().await?.respond(id, accept)?;
+    if accept {
+        state.ai.lock().expect("AI state").clear();
+    }
     if accept && let Some(main) = app.get_webview_window("main") {
         let _ = main.emit(
             "private-invitation-accepted",
@@ -385,7 +393,9 @@ pub(crate) async fn private_qr(state: State<'_, Desktop>, id: Uuid) -> Result<Pr
 
 #[tauri::command]
 pub(crate) async fn private_scan(state: State<'_, Desktop>, code: PrivateCode) -> Result<Uuid> {
-    Ok(state.lobby().await?.scan(code).await?)
+    let id = state.lobby().await?.scan(code).await?;
+    state.ai.lock().expect("AI state").clear();
+    Ok(id)
 }
 
 #[tauri::command]

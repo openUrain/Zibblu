@@ -4,7 +4,10 @@ import {
   QrCode, ScanLine, Search, Settings, Sun, UserPlus, UserRoundMinus, UsersRound, X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
+import { ai } from "./ai-api";
+import type { AiReply, Assistant } from "./ai-api";
+import { AssistantSettings } from "./ai";
 import { api, errorMessage, isExpired } from "./api";
 import type { Conversation, ConversationRequest, Directory, DropOffer, Session, ShareSource, Theme, Transfer, User } from "./api";
 import { Avatar, Blank, Brand, Dialog, chatName } from "./common";
@@ -25,6 +28,9 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
   privateQuiet: boolean; setPrivateQuiet: (quiet: boolean) => Promise<void>;
 }) {
   const [nav, setNav] = useState<Navigation>("Chats");
+  const [assistants, setAssistants] = useState<Assistant[]>([]);
+  const [assistantFailure, setAssistantFailure] = useState("");
+  const [aiReplies, setAiReplies] = useState<Record<string, AiReply>>({});
   const [directory, setDirectory] = useState<Directory>({ contacts: [], conversations: [] });
   const [selected, setSelected] = useState<string>();
   const [mobileChat, setMobileChat] = useState(false);
@@ -43,6 +49,13 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
   const [offer, setOffer] = useState<DropOffer & { conversation: string }>();
   const [sharing, setSharing] = useState(false);
   const [leaving, setLeaving] = useState(false);
+
+  useEffect(() => {
+    let current = true;
+    void ai.assistants().then(value => { if (current) setAssistants(value); })
+      .catch(error => { if (current) setAssistantFailure(errorMessage(error)); });
+    return () => { current = false; };
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -249,7 +262,16 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
           : active ? <ChatView key={active.id} chat={active} own={session.user} revision={revision}
             transfers={transfers} changed={changed} refresh={refresh} back={() => setMobileChat(false)}
             share={source => share(active.id, source)} openPrivate={() => void invitePrivate(active)}
-            groupCode={() => void showGroupCode(active)} />
+            groupCode={() => void showGroupCode(active)} aiChat={{
+              assistants, settings: () => navigate("Settings"), reply: aiReplies[active.id],
+              answered: reply => setAiReplies(current => ({ ...current, [active.id]: reply })),
+              dismiss: id => setAiReplies(current => {
+                if (current[active.id]?.id !== id) return current;
+                const next = { ...current };
+                delete next[active.id];
+                return next;
+              }),
+            }} />
           : <section className="chat-blank"><Blank icon={<MessageCircle size={31} />} title="Your conversations">
             <p>Open a chat to read messages or start a new one.</p>
             <button className="button primary" onClick={() => setNewChat(true)}>New conversation <ArrowRight size={16} /></button>
@@ -258,6 +280,10 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
       {nav === "Contacts" && <Contacts own={session.user} contacts={directory.contacts} refresh={refresh} create={create} />}
       {nav === "Files" && <FilesView people={people} revision={revision} transfers={transfers} onChanged={changed} />}
       {nav === "Settings" && <SettingsView {...{ session, theme, setTheme, leaving, signOut, privateQuiet, setPrivateQuiet }}
+        assistantSettings={<AssistantSettings assistants={assistants} failure={assistantFailure} changed={next => {
+          setAssistants(next);
+          setAssistantFailure("");
+        }} />}
         contactCode={() => setShareCode({ kind: "contact", name: "Your contact QR code", value: session.user.handle })} />}
     </div>
     {privateTargets && <PrivateTargets people={privateTargets.members.filter(user => user.id !== session.user.id)}
@@ -392,15 +418,16 @@ function NewChat({ contacts, create, close, findPeople }: {
   </Dialog>;
 }
 
-function SettingsView({ session, theme, setTheme, leaving, signOut, contactCode, privateQuiet, setPrivateQuiet }: {
+function SettingsView({ session, theme, setTheme, leaving, signOut, contactCode, privateQuiet, setPrivateQuiet, assistantSettings }: {
   session: Session; theme: Theme; setTheme: (theme: Theme) => Promise<void>; leaving: boolean; signOut: () => Promise<void>;
   contactCode: () => void; privateQuiet: boolean; setPrivateQuiet: (quiet: boolean) => Promise<void>;
+  assistantSettings: ReactNode;
 }) {
   const [failure, setFailure] = useState("");
   const appearances = [{ value: "system", label: "System", Icon: Laptop }, { value: "light", label: "Light", Icon: Sun },
     { value: "dark", label: "Dark", Icon: Moon }] as const;
   return <section className="settings-page">
-    <header className="workspace-heading"><h1>Settings</h1><p>Manage your account and appearance.</p></header>
+    <header className="workspace-heading"><h1>Settings</h1><p>Manage your account, appearance and assistants.</p></header>
     <div className="surface settings-card">
       <h2><CircleUserRound size={20} /> Account</h2>
       <div className="account-row"><Avatar name={session.user.handle} large /><div><strong>@{session.user.handle}</strong>
@@ -411,6 +438,7 @@ function SettingsView({ session, theme, setTheme, leaving, signOut, contactCode,
         <button className="button subtle" disabled={leaving} onClick={() => void signOut()}><LogOut size={16} />{leaving ? "Signing out…" : "Sign out"}</button>
       </div>
     </div>
+    {assistantSettings}
     <div className="surface settings-card"><h2><Sun size={20} /> Appearance</h2>
       <div className="appearance">{appearances.map(({ value, label, Icon }) => <button className={"button subtle" + (theme === value ? " toggled" : "")}
         aria-pressed={theme === value} key={value} onClick={async () => {
