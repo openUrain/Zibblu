@@ -5,7 +5,7 @@ use hickory_resolver::{
     TokioResolver,
     proto::rr::{RData, RecordType},
 };
-use if_addrs::{IfAddr, Ifv4Addr};
+use if_addrs::{IfAddr, Interface};
 use ipnet::Ipv4Net;
 use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
 use quinn::{
@@ -36,7 +36,7 @@ pub(super) struct NearbyRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Scope {
-    pub interfaces: Vec<Ifv4Addr>,
+    interfaces: Vec<Interface>,
     enterprise: Vec<Ipv4Net>,
     dns_domain: Option<String>,
     port: u16,
@@ -93,11 +93,13 @@ impl Scope {
         let mut interfaces: Vec<_> = if_addrs::get_if_addrs()?
             .into_iter()
             .filter(|interface| interface.is_oper_up() && !interface.is_p2p())
-            .filter_map(|interface| match interface.addr {
-                IfAddr::V4(ip) if (1..=31).contains(&ip.prefixlen) => Some(ip),
-                _ => None,
-            })
-            .filter(|ip| {
+            .filter(|interface| {
+                let IfAddr::V4(ip) = &interface.addr else {
+                    return false;
+                };
+                if !(1..=31).contains(&ip.prefixlen) {
+                    return false;
+                }
                 if enterprise.is_empty() {
                     ip.ip.is_private() || ip.ip.is_link_local()
                 } else {
@@ -105,7 +107,7 @@ impl Scope {
                 }
             })
             .collect();
-        interfaces.sort_by_key(|interface| interface.ip);
+        interfaces.sort_by_key(|interface| (interface.ip(), interface.index));
         ensure!(
             !interfaces.is_empty(),
             "No approved IPv4 LAN interface is available."
@@ -136,6 +138,9 @@ impl Scope {
             return false;
         }
         self.interfaces.iter().any(|local| {
+            let IfAddr::V4(local) = &local.addr else {
+                return false;
+            };
             let net = Ipv4Net::new(local.ip, local.prefixlen).expect("IPv4 interface prefix");
             net.contains(&ip)
                 && (net.prefix_len() >= 31 || (ip != net.network() && ip != net.broadcast()))
@@ -158,9 +163,9 @@ pub(super) struct Lan {
 impl Lan {
     pub fn new(scope: Scope, identity: &Identity, origin: String, account: Uuid) -> Result<Self> {
         let bind = if scope.enterprise.is_empty() {
-            Ipv4Addr::UNSPECIFIED
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
         } else {
-            scope.interfaces[0].ip
+            scope.interfaces[0].ip()
         };
         let socket = UdpSocket::bind((bind, scope.port))?;
         socket.set_ttl(if scope.enterprise.is_empty() { 1 } else { 16 })?;
@@ -179,8 +184,8 @@ impl Lan {
         let addresses: Vec<_> = scope
             .interfaces
             .iter()
-            .filter(|iface| bind.is_unspecified() || iface.ip == bind)
-            .map(|iface| IpAddr::V4(iface.ip))
+            .map(Interface::ip)
+            .filter(|&ip| bind.is_unspecified() || ip == bind)
             .collect();
         let bound = addresses
             .iter()
@@ -278,6 +283,12 @@ impl Lan {
 
     pub fn discovery_available(&self) -> bool {
         !self.task.is_finished()
+    }
+
+    pub async fn announce_departure(&self) {
+        if let Ok(unregistered) = self.daemon.unregister(&self.service_name) {
+            let _ = unregistered.recv_async().await;
+        }
     }
 
     pub fn tag(&self, account: Uuid) -> String {
@@ -515,6 +526,24 @@ impl AsyncUdpSocket for LanSocket {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use if_addrs::{IfOperStatus, Ifv4Addr};
+
+    fn interface(index: u32, ip: Ipv4Addr) -> Interface {
+        Interface {
+            name: format!("LAN {index}"),
+            addr: IfAddr::V4(Ifv4Addr {
+                ip,
+                netmask: "255.255.255.0".parse().unwrap(),
+                prefixlen: 24,
+                broadcast: None,
+            }),
+            index: Some(index),
+            oper_status: IfOperStatus::Up,
+            is_p2p: false,
+            #[cfg(windows)]
+            adapter_name: format!("adapter-{index}"),
+        }
+    }
 
     #[test]
     fn nearby_identifies_service_instances_independently_of_account_tags() {
@@ -544,12 +573,7 @@ mod tests {
     #[test]
     fn ordinary_and_company_networks_fail_closed() {
         let mut scope = Scope {
-            interfaces: vec![Ifv4Addr {
-                ip: "192.168.20.2".parse().unwrap(),
-                netmask: "255.255.255.0".parse().unwrap(),
-                prefixlen: 24,
-                broadcast: None,
-            }],
+            interfaces: vec![interface(1, "192.168.20.2".parse().unwrap())],
             enterprise: Vec::new(),
             dns_domain: None,
             port: 0,
@@ -571,5 +595,21 @@ mod tests {
         ] {
             assert!(!scope.allows(address.parse().unwrap()));
         }
+    }
+
+    #[test]
+    fn switching_interfaces_invalidates_discovery_even_when_the_address_is_reused() {
+        let ip = "192.168.20.2".parse().unwrap();
+        let ethernet = Scope {
+            interfaces: vec![interface(1, ip)],
+            enterprise: Vec::new(),
+            dns_domain: None,
+            port: 0,
+        };
+        let wifi = Scope {
+            interfaces: vec![interface(2, ip)],
+            ..ethernet.clone()
+        };
+        assert_ne!(ethernet, wifi);
     }
 }

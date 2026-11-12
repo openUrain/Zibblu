@@ -51,6 +51,12 @@ Use the paperclip or folder button to share an attachment. Dropping one file or 
 
 For two independent local profiles, launch the Windows executable with a different `ZIBBLU_DATA_DIR` in each process. By default, the app uses its Windows local app data directory.
 
+### Build and check the Windows installer
+
+From `apps/desktop`, run `npm ci` and `npm run tauri build -- --bundles nsis -- --locked`. The x64 setup executable is in `target/release/bundle/nsis` at the repository root. The current-user installer uses the Tauri WebView2 bootstrapper when the runtime is missing. The default profile is under `%LOCALAPPDATA%\com.zibblu.desktop`, separate from the installed executable.
+
+On a clean Windows 10 or 11 system, install and sign in with a test account. Change the theme, open a normal chat and save an attachment. Minimize and restore the app from the taskbar, then close it with **X** and start it again. Sign in and check that the server, theme and chat history are still available. With the app closed, run setup again and repeat that check. Uninstall without selecting the option to delete app data, reinstall, and check that the profile is still present. Use a small display or higher DPI to check that the native file and invitation controls remain reachable.
+
 The focused HTTP and SQLite acceptance test uses a disposable PostgreSQL database.
 
 ```powershell
@@ -60,7 +66,9 @@ cargo test --locked -p zibblu-online --test m1 -- --nocapture
 
 ## Try a private LAN chat
 
-Use the same Zibblu server on two Windows devices. On a regular home or office subnet, allow mDNS (UDP 5353) and Zibblu's direct UDP traffic on the private network. Start from a shared direct conversation or group. The person starting the session selects the **ghost** and, in a group, chooses the invitees. The invitation covers the Zibblu window. When that window is minimized on Windows, a compact invitation appears above the taskbar at the lower right. Accepting opens the private chat. Declining leaves the main window minimized. A valid response applies to that account's devices. Participants can switch to another conversation and return without ending the session.
+Use the same Zibblu HTTPS server on two Windows devices signed in to different test accounts with a shared conversation. On a trusted home or office subnet, allow Zibblu through Windows Defender Firewall for the Private profile. Discovery needs mDNS (UDP 5353) or configured site DNS-SD, and private chat needs direct UDP. Open **Nearby devices** from the top bar on both devices and choose a matching account to invite. Check that both devices appear again after switching between Wi-Fi and Ethernet. Move one device outside the allowed LAN and check that a new private connection fails.
+
+The **ghost** in a normal conversation also starts a private invitation and lets you choose invitees in a group. The invitation covers the Zibblu window. When that window is minimized on Windows, a compact invitation appears above the taskbar at the lower right. Accepting opens the private chat. Declining leaves the main window minimized. A valid response applies to that account's devices. Participants can switch to another conversation and return without ending the session. Minimizing keeps Zibblu running on the taskbar. Closing the main window exits Zibblu and ends local private sessions.
 
 Use **Start private QR chat** for an open, temporary session. Anyone signed in to the same server with the code and a permitted LAN connection can join during the 15-minute window. Late accounts and devices see live text from their own join point. Use **Scan a QR code** with a camera or saved image. Your contact code is in **Settings**. A normal group's header provides its join code. Creating a new normal group code replaces the prior one. Joining a normal group grants access to messages and attachments published after admission.
 

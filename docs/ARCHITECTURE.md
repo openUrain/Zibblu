@@ -61,7 +61,7 @@ The host device coordinates a temporary room over mutually authenticated QUIC st
 
 A nearby invitation uses the same named room scope and consent exchange. The initiating device connects only to permitted addresses advertised for the selected instance and requires the expected account certificate. The invitation stays on that connection. A new connection from the nearby list requires a new invitation.
 
-Ordinary private transport filters both IPv4 source and destination to a directly connected subnet and applies TTL one. An explicitly configured company site binds to an approved local interface and allows direct UDP among the specified private prefixes. The private runtime owns no M1 storage handle. A desktop worker manages certificate renewal, network changes and invitation windows separately from the currently selected chat.
+Ordinary private transport filters both IPv4 source and destination to a directly connected subnet and applies TTL one. An explicitly configured company site binds to an approved local interface and allows direct UDP among the specified private prefixes. The private runtime owns no M1 storage handle. The desktop rebuilds discovery and closes existing private connections when the eligible adapter set changes, including a switch between adapters with the same address. Invitation windows check the Windows notification state independently of certificate renewal.
 
 ```text
 Existing chat ──[ghost]──> Named invitation

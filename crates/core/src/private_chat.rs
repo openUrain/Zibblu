@@ -405,6 +405,9 @@ impl PrivateLobby {
             return None;
         }
         let records = lan.nearby(None).await;
+        if !self.network_matches() {
+            return None;
+        }
         let own = &self.engine.own;
         let state = self.engine.state();
         let accounts: HashMap<_, _> = state
@@ -716,8 +719,13 @@ impl PrivateLobby {
         self.stop(0);
     }
 
-    pub fn quit(&self) {
+    pub async fn quit(&self) {
         self.stop(APP_EXIT);
+        let lan = &self.engine.lan;
+        let _ = timeout(Duration::from_millis(500), async {
+            tokio::join!(lan.announce_departure(), lan.endpoint.wait_idle());
+        })
+        .await;
     }
 
     fn stop(&self, code: u32) {

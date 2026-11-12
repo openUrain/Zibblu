@@ -23,7 +23,7 @@ pub(crate) struct Desktop {
     pub(crate) ai: StdMutex<crate::ai::AiState>,
     pub(crate) private: Mutex<Option<Arc<PrivateLobby>>>,
     pub(crate) dismissed_rooms: DismissedRooms,
-    private_worker: StdMutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    private_worker: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub drop: StdMutex<Option<(Uuid, PathBuf)>>,
 }
 
@@ -40,7 +40,7 @@ impl Desktop {
             ai: StdMutex::default(),
             private: Mutex::new(None),
             dismissed_rooms: DismissedRooms::default(),
-            private_worker: StdMutex::new(None),
+            private_worker: Mutex::new(None),
             drop: StdMutex::new(None),
         }
     }
@@ -66,18 +66,19 @@ impl Desktop {
     }
 
     pub async fn close_private(&self, app: &AppHandle) {
-        let task = self.private_worker.lock().expect("private worker").take();
-        if let Some(task) = task {
+        let mut worker = self.private_worker.lock().await;
+        if let Some(task) = worker.take() {
             task.abort();
             let _ = task.await;
         }
-        if let Some(lobby) = self.private.lock().await.take() {
-            lobby.quit();
-        }
-        self.dismissed_rooms.clear();
         if let Some(window) = app.get_webview_window(crate::private_runtime::INVITATION) {
             let _ = window.close();
         }
+        let lobby = self.private.lock().await.take();
+        if let Some(lobby) = lobby {
+            lobby.quit().await;
+        }
+        self.dismissed_rooms.clear();
     }
 
     async fn lobby(&self) -> Result<Arc<PrivateLobby>> {
@@ -208,7 +209,7 @@ pub(crate) async fn login(
         server,
     };
     *session = Some(client.clone());
-    *state.private_worker.lock().expect("private worker") = Some(tauri::async_runtime::spawn(
+    *state.private_worker.lock().await = Some(tauri::async_runtime::spawn(
         crate::private_runtime::run(app, client),
     ));
     Ok(result)
@@ -450,7 +451,7 @@ pub(crate) async fn group_join(state: State<'_, Desktop>, code: Uuid) -> Result<
 
 #[tauri::command]
 pub(crate) async fn share(
-    app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, Desktop>,
     conversation: Uuid,
     source: ShareSource,
@@ -465,7 +466,7 @@ pub(crate) async fn share(
             offer.take().map(|(_, path)| path)
         }
         source => tauri::async_runtime::spawn_blocking(move || {
-            let dialog = app.dialog().file();
+            let dialog = window.dialog().file().set_parent(&window);
             match source {
                 ShareSource::File => dialog.set_title("Share a file").blocking_pick_file(),
                 ShareSource::Folder => dialog.set_title("Share a folder").blocking_pick_folder(),
@@ -486,7 +487,7 @@ pub(crate) async fn share(
 
 #[tauri::command]
 pub(crate) async fn save_attachment(
-    app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, Desktop>,
     id: Uuid,
 ) -> Result<Option<Transfer>> {
@@ -497,8 +498,10 @@ pub(crate) async fn save_attachment(
         .filter(|file| file.is_valid())
         .context("Invalid attachment")?;
     let path = tauri::async_runtime::spawn_blocking(move || {
-        app.dialog()
+        window
+            .dialog()
             .file()
+            .set_parent(&window)
             .set_title("Save attachment")
             .set_file_name(&attachment.name)
             .blocking_save_file()
