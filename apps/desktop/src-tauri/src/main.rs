@@ -5,11 +5,15 @@ mod commands;
 mod private_runtime;
 
 use commands::{Desktop, DropOffer};
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use tauri::{DragDropEvent, Emitter, Manager, WebviewWindowBuilder, WindowEvent};
 use uuid::Uuid;
 
 fn main() {
+    let closing = AtomicBool::new(false);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -25,15 +29,20 @@ fn main() {
                 .build()?;
             Ok(())
         })
-        .on_window_event(|window, event| {
+        .on_window_event(move |window, event| {
             if window.label() != "main" {
                 return;
             }
-            if matches!(event, WindowEvent::Destroyed) {
-                let app = window.app_handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    app.state::<Desktop>().close_private(&app).await;
-                });
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                if !closing.swap(true, Ordering::Relaxed) {
+                    let app = window.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        app.state::<Desktop>().close_private(&app).await;
+                        app.exit(0);
+                    });
+                }
+                return;
             }
             let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event else {
                 return;

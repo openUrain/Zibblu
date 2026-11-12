@@ -2,7 +2,7 @@ use crate::commands::Desktop;
 use std::{
     collections::HashMap,
     sync::Arc,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{
     AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl,
@@ -37,64 +37,76 @@ pub(crate) fn prompt_window(app: &AppHandle, desktop: &Desktop) -> Option<&'stat
 }
 
 pub(crate) async fn run(app: AppHandle, client: Arc<Client>) {
+    tokio::join!(maintain_lobby(&app, &client), run_prompts(&app));
+}
+
+async fn maintain_lobby(app: &AppHandle, client: &Client) {
     let Ok(key) = DeviceKey::generate() else {
         return;
     };
     let desktop = app.state::<Desktop>();
     let mut credential: Option<LanCredential> = None;
-    let mut next_network_check = Instant::now();
-    let mut shown = None;
-    let mut tick = tokio::time::interval(Duration::from_millis(500));
+    let mut tick = tokio::time::interval(Duration::from_secs(5));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
-        if Instant::now() >= next_network_check {
-            next_network_check = Instant::now() + Duration::from_secs(5);
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
-            if credential
-                .as_ref()
-                .is_none_or(|cert| cert.expires_at <= now + 120)
-                && let Ok(next) = client.lan_credential(key.public_key()).await
-            {
-                let mut current = desktop.private.lock().await;
-                if let Some(lobby) = current.as_ref()
-                    && lobby.renew(key.clone(), next.clone()).is_err()
-                {
-                    lobby.shutdown();
-                    *current = None;
-                }
-                credential = Some(next);
-            }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        {
             let mut current = desktop.private.lock().await;
-            if current
+            if (current
                 .as_ref()
                 .is_some_and(|lobby| !lobby.network_matches())
                 || credential
                     .as_ref()
-                    .is_some_and(|cert| cert.expires_at <= now)
+                    .is_some_and(|cert| cert.expires_at <= now))
+                && let Some(lobby) = current.take()
             {
-                if let Some(lobby) = current.take() {
-                    lobby.shutdown();
-                }
-            }
-            if current.is_none()
-                && let Some(cert) = credential.as_ref().filter(|cert| cert.expires_at > now)
-                && let Ok(directory) = client.directory().await
-                && let Ok(lobby) = PrivateLobby::new(
-                    client.server().to_owned(),
-                    client.user.clone(),
-                    key.clone(),
-                    cert.clone(),
-                    memberships(&directory),
-                    desktop.dismissed_rooms.clone(),
-                )
-            {
-                *current = Some(Arc::new(lobby));
+                lobby.shutdown();
             }
         }
-        let invitation = if prompt_window(&app, &desktop) == Some(INVITATION) {
+        if credential
+            .as_ref()
+            .is_none_or(|cert| cert.expires_at <= now + 120)
+            && let Ok(next) = client.lan_credential(key.public_key()).await
+        {
+            let mut current = desktop.private.lock().await;
+            if let Some(lobby) = current.as_ref()
+                && lobby.renew(key.clone(), next.clone()).is_err()
+            {
+                lobby.shutdown();
+                *current = None;
+            }
+            credential = Some(next);
+        }
+        let mut current = desktop.private.lock().await;
+        if current.is_none()
+            && let Some(cert) = credential.as_ref().filter(|cert| cert.expires_at > now)
+            && let Ok(directory) = client.directory().await
+            && let Ok(lobby) = PrivateLobby::new(
+                client.server().to_owned(),
+                client.user.clone(),
+                key.clone(),
+                cert.clone(),
+                memberships(&directory),
+                desktop.dismissed_rooms.clone(),
+            )
+        {
+            *current = Some(Arc::new(lobby));
+        }
+    }
+}
+
+async fn run_prompts(app: &AppHandle) {
+    let desktop = app.state::<Desktop>();
+    let mut shown = None;
+    let mut tick = tokio::time::interval(Duration::from_millis(500));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tick.tick().await;
+        let invitation = if prompt_window(app, &desktop) == Some(INVITATION) {
             desktop.private.lock().await.as_ref().and_then(|lobby| {
                 lobby
                     .list()
@@ -115,8 +127,7 @@ pub(crate) async fn run(app: AppHandle, client: Arc<Client>) {
             Some(invitation)
                 if window.is_none()
                     && shown != Some(invitation.id)
-                    && show_desktop_prompt(&app, &desktop, invitation.invited.len() > 1)
-                        .is_ok() =>
+                    && show_desktop_prompt(app, &desktop, invitation.invited.len() > 1).is_ok() =>
             {
                 shown = Some(invitation.id);
             }
@@ -139,7 +150,11 @@ fn show_desktop_prompt(
     let area = monitor.work_area();
     let scale = monitor.scale_factor();
     let height = if show_invitees { 276.0 } else { 208.0 };
-    let size: PhysicalSize<u32> = LogicalSize::new(336.0, height).to_physical(scale);
+    let desired: PhysicalSize<u32> = LogicalSize::new(336.0, height).to_physical(scale);
+    let size = PhysicalSize::new(
+        desired.width.min(area.size.width),
+        desired.height.min(area.size.height),
+    );
     let gap = (16.0 * scale).round() as i32;
     let window = WebviewWindowBuilder::new(app, INVITATION, WebviewUrl::App("index.html".into()))
         .title("Zibblu")

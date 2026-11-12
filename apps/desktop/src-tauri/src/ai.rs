@@ -2,7 +2,7 @@ use crate::commands::{Desktop, Result as CommandResult};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
-use tauri::{AppHandle, State, WebviewWindow};
+use tauri::{State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -260,7 +260,7 @@ pub(crate) struct PickedFile {
 
 #[tauri::command]
 pub(crate) async fn ai_pick_file(
-    app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, Desktop>,
     view: Uuid,
     draft: Uuid,
@@ -273,9 +273,10 @@ pub(crate) async fn ai_pick_file(
     };
     client.ai_messages(conversation, AiScope::Prompt).await?;
     let chosen = tauri::async_runtime::spawn_blocking(move || -> Result<Option<AiFile>> {
-        let Some(path) = app
+        let Some(path) = window
             .dialog()
             .file()
+            .set_parent(&window)
             .set_title("Choose a text file for this AI request")
             .blocking_pick_file()
         else {

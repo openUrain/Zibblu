@@ -156,13 +156,17 @@ export function NearbyDevices({ own, close, invited }: {
       </label>)}
     </fieldset> : <p className="muted" role="status">
       {devices === undefined ? "Loading nearby devices…"
-        : devices === null ? "Discovery is unavailable. Check your sign-in, IPv4 LAN connection and local network permissions."
+        : devices === null ? "Discovery is unavailable. Check your sign-in and approved IPv4 network. The list refreshes after a network change."
         : "No Zibblu devices found. Check that both apps are running on an allowed LAN and that the network permits mDNS or site discovery."}
     </p>}
     {selected && !account && <p className="muted">A shared conversation is required to send an invitation.</p>}
     {account === own && <p className="muted">Private invitations go to a different account.</p>}
     {choice && !selected && devices && <p className="muted" role="status">The selected device is no longer listed for that account.</p>}
     {failure && <p className="inline-error" role="alert">{failure}</p>}
+    {(devices === null || devices?.length === 0 || failure) && <p className="muted">
+      On a trusted Windows network, check that Windows Defender Firewall allows Zibblu on the Private profile.
+      For managed networks, ask IT whether mDNS and direct UDP are permitted.
+    </p>}
     <div className="dialog-actions">
       <button className="button subtle" disabled={busy} onClick={close}>Close</button>
       <button className="button primary" disabled={busy || !account || account === own}

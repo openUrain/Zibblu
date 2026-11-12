@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import {
   ArrowRight, CircleUserRound, FolderOpen, Laptop, LogOut, MessageCircle, MessageSquare, Moon,
-  QrCode, ScanLine, Search, Settings, Sun, UserPlus, UserRoundMinus, UsersRound, X,
+  QrCode, Radar, ScanLine, Search, Settings, Sun, UserPlus, UserRoundMinus, UsersRound, X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
@@ -116,14 +116,15 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
   useEffect(() => {
     const drop = listen<DropOffer>("attachment-drop", event => {
       if (privateOpen) return;
-      if (activeId) setOffer({ ...event.payload, conversation: activeId });
+      const chatVisible = mobileChat || !window.matchMedia("(max-width: 740px)").matches;
+      if (activeId && chatVisible) setOffer({ ...event.payload, conversation: activeId });
       else setFailure("Open a chat before dropping a file or folder.");
     });
     const error = listen<string>("attachment-drop-error", event => {
       if (!privateOpen) setFailure(event.payload);
     });
     return () => { void drop.then(unlisten => unlisten()); void error.then(unlisten => unlisten()); };
-  }, [activeId, privateOpen]);
+  }, [activeId, mobileChat, privateOpen]);
 
   function navigate(page: Navigation) {
     setPrivateId(undefined);
@@ -245,6 +246,8 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
     </nav>
     <div className="shell-main">
       <header className="topbar"><span className="app-name">Zibblu</span><div className="chat-actions">
+        <button className="icon-button" aria-label="Nearby devices" title="Nearby devices"
+          onClick={() => setNearby(true)}><Radar size={20} /></button>
         <button className="icon-button" aria-label="Scan QR code" title="Scan QR code"
           onClick={() => setScanning(true)}><ScanLine size={20} /></button>
         <div className={"connection " + (connected ? "connected" : "disconnected")} role="status">
@@ -258,7 +261,7 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
       {nav === "Chats" && <div className={"chat-layout" + (mobileChat && (active || privateOpen) ? " mobile-chat-open" : "")}>
         <ChatList chats={directory.conversations} own={session.user} selected={privateOpen ? undefined : selected}
           open={selectChat} newChat={() => setNewChat(true)} rooms={privateRooms} activePrivate={privateId}
-          openPrivate={selectPrivate} createQr={() => void createPrivateCode()} showNearby={() => setNearby(true)} />
+          openPrivate={selectPrivate} createQr={() => void createPrivateCode()} />
         {privateId ? <PrivateChatView key={privateId} id={privateId} own={session.user}
             back={() => { setPrivateId(undefined); if (!active) setMobileChat(false); }} showCode={showPrivateCode} />
           : active ? <ChatView key={active.id} chat={active} own={session.user} revision={revision}
