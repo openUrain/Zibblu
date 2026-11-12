@@ -16,7 +16,7 @@ use std::{
 };
 use tokio::{
     sync::{Semaphore, mpsc},
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
     time::{Instant, interval, timeout},
 };
 use uuid::Uuid;
@@ -77,6 +77,12 @@ pub struct PrivateView {
     summary: PrivateSummary,
     connection: Uuid,
     messages: Vec<PrivateMessage>,
+}
+
+#[derive(Serialize)]
+pub struct NearbyDevice {
+    pub id: Uuid,
+    pub matched_account: Option<User>,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -184,6 +190,7 @@ struct Hosted {
     code: Option<(Uuid, Instant, u64)>,
     feed: Feed,
     ever_connected: bool,
+    nearby: bool,
 }
 
 impl Hosted {
@@ -213,7 +220,7 @@ impl Hosted {
             participants: self.participants(own),
             phase: if self.has_peer(own.id) {
                 Phase::Connected
-            } else if !self.room.open && self.links.is_empty() {
+            } else if !self.room.open && !self.nearby && self.links.is_empty() {
                 Phase::Discovering
             } else {
                 Phase::Waiting
@@ -392,6 +399,102 @@ impl PrivateLobby {
         self.engine.state().memberships = memberships;
     }
 
+    pub async fn nearby_devices(&self) -> Option<Vec<NearbyDevice>> {
+        let lan = &self.engine.lan;
+        if !lan.discovery_available() {
+            return None;
+        }
+        let records = lan.nearby(None).await;
+        let own = &self.engine.own;
+        let state = self.engine.state();
+        let accounts: HashMap<_, _> = state
+            .memberships
+            .values()
+            .filter(|members| members.iter().any(|member| member.id == own.id))
+            .flatten()
+            .chain(std::iter::once(own))
+            .map(|user| (lan.tag(user.id), user))
+            .collect();
+        let mut devices: Vec<_> = records
+            .into_iter()
+            .map(|(id, record)| NearbyDevice {
+                id,
+                matched_account: accounts.get(&record.tag).map(|&user| user.clone()),
+            })
+            .collect();
+        devices.sort_by_key(|device| device.id);
+        Some(devices)
+    }
+
+    pub async fn invite_nearby(&self, device: Uuid, account: Uuid) -> Result<Uuid> {
+        let own = self.engine.own.id;
+        ensure!(account != own, "Select a device from another account.");
+        let conversation = self
+            .engine
+            .state()
+            .memberships
+            .iter()
+            .filter(|(_, members)| {
+                members.iter().any(|member| member.id == own)
+                    && members.iter().any(|member| member.id == account)
+            })
+            .min_by_key(|(id, members)| (members.len(), **id))
+            .map(|(&id, _)| id)
+            .context("A shared conversation is required for a private invitation.")?;
+        let lan = &self.engine.lan;
+        ensure!(
+            lan.discovery_available(),
+            "Nearby discovery is unavailable."
+        );
+        let record = lan
+            .nearby(Some(device))
+            .await
+            .remove(&device)
+            .filter(|record| record.tag == lan.tag(account))
+            .context("This device is no longer listed for that account.")?;
+        ensure!(
+            self.network_matches(),
+            "The LAN changed. Wait for the list to refresh."
+        );
+        let mut attempts = JoinSet::new();
+        for address in record.addresses.into_iter().take(MAX_DEVICE_COUNT) {
+            let engine = self.engine.clone();
+            attempts.spawn(async move {
+                let connection = engine
+                    .lan
+                    .connect(&engine.identity(), account, address)
+                    .await?;
+                ensure!(
+                    identity::peer(&connection)?.user.id == account,
+                    "Unexpected device account."
+                );
+                Ok::<_, anyhow::Error>(connection)
+            });
+        }
+        let connection = loop {
+            match attempts.join_next().await {
+                Some(Ok(Ok(connection))) => break connection,
+                None => bail!(
+                    "Could not authenticate the selected device over the LAN. Check that it is running and direct UDP is allowed."
+                ),
+                _ => {}
+            }
+        };
+        drop(attempts);
+        let (send, recv) = timeout(Duration::from_secs(4), connection.open_bi())
+            .await
+            .context("The selected device did not open a private connection.")??;
+        let id = self.create_room(Some(conversation), vec![account], false, true)?;
+        let engine = self.engine.clone();
+        tokio::spawn(async move {
+            let _ = host_link(&engine, connection, send, recv, id, None).await;
+            if let Some(host) = engine.state().hosted.remove(&id) {
+                host.close();
+            }
+        });
+        Ok(id)
+    }
+
     pub fn list(&self) -> Vec<PrivateSummary> {
         let state = self.engine.state();
         let mut rooms: Vec<_> = state
@@ -428,8 +531,18 @@ impl PrivateLobby {
     pub fn create(
         &self,
         conversation: Option<Uuid>,
+        invited: Vec<Uuid>,
+        open: bool,
+    ) -> Result<Uuid> {
+        self.create_room(conversation, invited, open, false)
+    }
+
+    fn create_room(
+        &self,
+        conversation: Option<Uuid>,
         mut invited: Vec<Uuid>,
         open: bool,
+        nearby: bool,
     ) -> Result<Uuid> {
         invited.sort_unstable();
         invited.dedup();
@@ -462,6 +575,7 @@ impl PrivateLobby {
                 code: None,
                 feed: Feed::new(),
                 ever_connected: false,
+                nearby,
             },
         );
         Ok(id)
@@ -738,6 +852,7 @@ async fn discover(engine: Arc<Engine>) {
         state
             .hosted
             .values()
+            .filter(|host| !host.nearby)
             .flat_map(|host| {
                 host.room
                     .invited
@@ -756,7 +871,7 @@ async fn discover(engine: Arc<Engine>) {
     let mut attempts = Vec::new();
     {
         let mut state = engine.state();
-        for host in state.hosted.values_mut() {
+        for host in state.hosted.values_mut().filter(|host| !host.nearby) {
             for &(account, address) in &peers {
                 if host.attempts.len() >= MAX_DEVICE_COUNT {
                     break;
@@ -1262,6 +1377,7 @@ mod tests {
             code: Some(code),
             feed: Feed::new(),
             ever_connected: false,
+            nearby: false,
         };
         assert!(host.valid_qr(secret, deadline - Duration::from_millis(1)));
         assert!(!host.valid_qr(secret, deadline));

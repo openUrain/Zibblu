@@ -29,6 +29,11 @@ const SERVICE: &str = "_zibblu-private._udp.local.";
 const ATTEMPT: Duration = Duration::from_secs(3);
 type Records = Arc<Mutex<HashMap<String, (String, Vec<SocketAddr>)>>>;
 
+pub(super) struct NearbyRecord {
+    pub tag: String,
+    pub addresses: HashSet<SocketAddr>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Scope {
     pub interfaces: Vec<Ifv4Addr>,
@@ -219,10 +224,12 @@ impl Lan {
             while let Ok(event) = events.recv_async().await {
                 match event {
                     ServiceEvent::ServiceResolved(info) => {
+                        let mut discovered = discovered.lock().expect("LAN discovery records");
                         let Some(tag) = info
                             .get_property_val_str("account")
-                            .filter(|tag| tag.len() == 64)
+                            .filter(|tag| valid_tag(tag))
                         else {
+                            discovered.remove(info.get_fullname());
                             continue;
                         };
                         let addresses = info
@@ -230,7 +237,6 @@ impl Lan {
                             .into_iter()
                             .map(|ip| SocketAddr::V4(SocketAddrV4::new(ip, info.get_port())))
                             .collect();
-                        let mut discovered = discovered.lock().expect("LAN discovery records");
                         if discovered.len() < 512 || discovered.contains_key(info.get_fullname()) {
                             discovered.insert(
                                 info.get_fullname().to_owned(),
@@ -270,10 +276,67 @@ impl Lan {
             .set_server_config(Some(server_config(identity)));
     }
 
+    pub fn discovery_available(&self) -> bool {
+        !self.task.is_finished()
+    }
+
+    pub fn tag(&self, account: Uuid) -> String {
+        account_tag(&self.origin, account)
+    }
+
+    pub async fn nearby(&self, selected: Option<Uuid>) -> HashMap<Uuid, NearbyRecord> {
+        let own = service_instance(&self.service_name, SERVICE);
+        let device = |name: &str, service: &str| {
+            service_instance(name, service)
+                .filter(|id| Some(*id) != own && selected.is_none_or(|selected| selected == *id))
+        };
+        let mut site = Vec::new();
+        if let (Some(resolver), Some(domain)) = (&self.resolver, &self.scope.dns_domain) {
+            let service = site_service(domain);
+            let identify =
+                |name: &str, tag: &str| device(name, &service).map(|id| (id, tag.to_owned()));
+            if let Ok(Ok(entries)) =
+                timeout(ATTEMPT, site_records(resolver, &service, identify)).await
+            {
+                site = entries;
+            }
+        }
+        let mut nearby = HashMap::new();
+        let mut add = |id, tag: &str, address| {
+            if self.is_peer(address) {
+                let entry = nearby.entry(id).or_insert_with(|| NearbyRecord {
+                    tag: tag.to_owned(),
+                    addresses: HashSet::new(),
+                });
+                if entry.tag == tag {
+                    entry.addresses.insert(address);
+                }
+            }
+        };
+        {
+            let records = self.records.lock().expect("LAN discovery records");
+            for (name, (tag, addresses)) in records.iter() {
+                if let Some(id) = device(name, SERVICE) {
+                    for &address in addresses {
+                        add(id, tag, address);
+                    }
+                }
+            }
+        }
+        for ((id, tag), address) in site {
+            add(id, &tag, address);
+        }
+        nearby
+    }
+
+    fn is_peer(&self, address: SocketAddr) -> bool {
+        self.scope.allows(address) && !self.bound.contains(&address)
+    }
+
     pub async fn candidates(&self, accounts: &[Uuid]) -> Vec<(Uuid, SocketAddr)> {
         let tags: HashMap<_, _> = accounts
             .iter()
-            .map(|&account| (account_tag(&self.origin, account), account))
+            .map(|&account| (self.tag(account), account))
             .collect();
         let mut peers = HashSet::new();
         {
@@ -285,15 +348,17 @@ impl Lan {
             }
         }
         if let (Some(resolver), Some(domain)) = (&self.resolver, &self.scope.dns_domain) {
+            let service = site_service(domain);
+            let identify = |_: &str, tag: &str| tags.get(tag).copied();
             if let Ok(Ok(entries)) =
-                timeout(ATTEMPT, site_candidates(resolver, domain, &tags)).await
+                timeout(ATTEMPT, site_records(resolver, &service, identify)).await
             {
                 peers.extend(entries);
             }
         }
         peers
             .into_iter()
-            .filter(|(_, addr)| self.scope.allows(*addr) && !self.bound.contains(addr))
+            .filter(|(_, addr)| self.is_peer(*addr))
             .collect()
     }
 
@@ -335,12 +400,23 @@ fn account_tag(origin: &str, account: Uuid) -> String {
     )
 }
 
-async fn site_candidates(
+fn service_instance(name: &str, service: &str) -> Option<Uuid> {
+    Uuid::parse_str(name.strip_suffix(service)?.strip_suffix('.')?).ok()
+}
+
+fn valid_tag(tag: &str) -> bool {
+    tag.len() == 64 && tag.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn site_service(domain: &str) -> String {
+    format!("_zibblu-private._udp.{domain}.").to_ascii_lowercase()
+}
+
+async fn site_records<K: Clone>(
     resolver: &TokioResolver,
-    domain: &str,
-    tags: &HashMap<String, Uuid>,
-) -> Result<Vec<(Uuid, SocketAddr)>> {
-    let service = format!("_zibblu-private._udp.{domain}.");
+    service: &str,
+    identify: impl Fn(&str, &str) -> Option<K>,
+) -> Result<Vec<(K, SocketAddr)>> {
     let records = resolver.lookup(service, RecordType::PTR).await?;
     let mut addresses = Vec::new();
     for record in records.iter().take(128) {
@@ -348,12 +424,14 @@ async fn site_candidates(
         let Ok(txt) = resolver.txt_lookup(ptr.0.clone()).await else {
             continue;
         };
-        let account = txt
+        let name = ptr.0.to_ascii().to_ascii_lowercase();
+        let device = txt
             .iter()
             .flat_map(|txt| txt.txt_data())
             .filter_map(|field| std::str::from_utf8(field).ok()?.strip_prefix("account="))
-            .find_map(|tag| tags.get(tag).copied());
-        let Some(account) = account else { continue };
+            .filter(|tag| valid_tag(tag))
+            .find_map(|tag| identify(&name, tag));
+        let Some(device) = device else { continue };
         let Ok(services) = resolver.srv_lookup(ptr.0.clone()).await else {
             continue;
         };
@@ -363,7 +441,7 @@ async fn site_candidates(
             };
             addresses.extend(
                 ips.iter()
-                    .map(|ip| (account, SocketAddr::from((ip.0, service.port())))),
+                    .map(|ip| (device.clone(), SocketAddr::from((ip.0, service.port())))),
             );
         }
     }
@@ -437,6 +515,31 @@ impl AsyncUdpSocket for LanSocket {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nearby_identifies_service_instances_independently_of_account_tags() {
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let service = site_service("Site.Example");
+        assert_eq!(
+            service_instance(&format!("{}.{SERVICE}", first.simple()), SERVICE),
+            Some(first)
+        );
+        assert_eq!(
+            service_instance(&format!("{}.{service}", first.simple()), &service),
+            Some(first)
+        );
+        assert_eq!(
+            service_instance(&format!("{}.{SERVICE}", second.simple()), SERVICE),
+            Some(second)
+        );
+        assert_eq!(service_instance("printer._ipp._tcp.local.", SERVICE), None);
+        assert!(valid_tag(&account_tag(
+            "https://zibblu.example",
+            Uuid::new_v4()
+        )));
+        assert!(!valid_tag(&"x".repeat(64)));
+    }
 
     #[test]
     fn ordinary_and_company_networks_fail_closed() {

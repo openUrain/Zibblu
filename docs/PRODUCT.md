@@ -32,6 +32,7 @@ Avoid in v1: voice/video, social feeds, bots, automatic cloud-drive sync, comple
 
 Rules:
 - Devices need direct UDP on the same subnet or between explicitly approved subnets inside a managed site. The app verifies account-bound device certificates before showing an invitation.
+- **Nearby devices** in Chats updates automatically after sign-in. Each visible service instance has its own device ID. Account matches are unverified until connection. Choose a device that matches an account in a shared conversation and send a private invitation. The selected device must authenticate and accept before chatting.
 - A direct invitation shows the sender and **Accept** and **Decline**. A group invitation also shows the invitees. Accepted accounts can join as they respond, and a late account or device sees new text only.
 - Invitations cover the app window. Windows shows a compact lower-right prompt while the main window is minimized. Accepting brings the private chat forward. Declining keeps the main window minimized.
 - No server relay, online forwarding or unnoticed switch back to normal mode. Connection failure means private mode is unavailable.

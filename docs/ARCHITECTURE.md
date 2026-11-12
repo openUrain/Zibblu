@@ -55,7 +55,11 @@ Important: ordinary online messaging should target authenticated, encrypted tran
 
 Each signed-in desktop generates an in-memory key and obtains a short-lived client and server certificate over the authenticated account-service connection. It advertises its private UDP endpoint via mDNS and a server-scoped account tag. An optional company discovery domain is queried through DNS-SD for approved routed subnets. Discovery records never grant access to a chat.
 
+The nearby list reads the existing mDNS cache and configured site DNS-SD records. It filters addresses through the LAN policy and groups addresses by service instance. The renderer gets the instance ID and any tentative account match from shared conversation membership. Graceful departures remove entries through mDNS. After a lost connection, cached entries can remain until their discovery records expire.
+
 The host device coordinates a temporary room over mutually authenticated QUIC streams. Named room scope identifies the source conversation and exact invited accounts, and the receiver checks that scope against its cached directory. The first device decision for an account is applied by the host. The accepting device signs the session scope. Other devices verify that approval before they enter automatically. A QR join presents an expiring capability through the authenticated stream. The host sends participant metadata and new text to currently joined devices, with no historical replay.
+
+A nearby invitation uses the same named room scope and consent exchange. The initiating device connects only to permitted addresses advertised for the selected instance and requires the expected account certificate. The invitation stays on that connection. A new connection from the nearby list requires a new invitation.
 
 Ordinary private transport filters both IPv4 source and destination to a directly connected subnet and applies TTL one. An explicitly configured company site binds to an approved local interface and allows direct UDP among the specified private prefixes. The private runtime owns no M1 storage handle. A desktop worker manages certificate renewal, network changes and invitation windows separately from the currently selected chat.
 
