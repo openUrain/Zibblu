@@ -55,17 +55,19 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     if (event.defaultPrevented || !(event.target instanceof Element)) return;
     event.preventDefault();
     const target = event.target instanceof HTMLElement ? event.target : event.target.parentElement ?? event.currentTarget;
-    const privateChat = !!target.closest("[data-private-chat]");
+    const privateChat = !!target.closest(".private-chat");
     const field = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ? target : undefined;
     const editable = field && !field.readOnly && !field.disabled && field.selectionStart !== null;
     const password = field instanceof HTMLInputElement && field.type === "password";
     const start = field?.selectionStart ?? 0;
     const end = field?.selectionEnd ?? 0;
-    const text = field ? field.value.slice(start, end) : window.getSelection()?.toString();
     const items: Item[] = [];
-    if (text && !privateChat && !password) items.push({
-      label: "Copy", action: () => { void navigator.clipboard.writeText(text).catch(() => {}); },
-    });
+    if (!privateChat && !password) {
+      const text = field ? field.value.slice(start, end) : window.getSelection()?.toString();
+      if (text) items.push({
+        label: "Copy", action: () => { void navigator.clipboard.writeText(text).catch(() => {}); },
+      });
+    }
     if (editable) items.push({
       label: "Paste", action: () => {
         field.focus({ preventScroll: true });
