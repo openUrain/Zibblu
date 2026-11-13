@@ -2,7 +2,7 @@ import { ArrowLeft, Ghost, QrCode, Send } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, errorMessage } from "./api";
-import type { NearbyDevice, PrivateList, PrivateMessage, PrivateSummary, User } from "./api";
+import type { Discovery, NearbyDevice, PrivateList, PrivateMessage, PrivateSummary, User } from "./api";
 import { Avatar, Blank, Dialog } from "./common";
 
 export function usePrivateRooms() {
@@ -111,7 +111,8 @@ export function PrivateTargets({ people, close, start }: {
 export function NearbyDevices({ own, close, invited }: {
   own: string; close: () => void; invited: (id: string) => void;
 }) {
-  const [devices, setDevices] = useState<NearbyDevice[] | null>();
+  const [discovery, setDiscovery] = useState<Discovery>({ status: "starting", devices: [] });
+  const { devices, status } = discovery;
   const [choice, setChoice] = useState<NearbyDevice>();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
@@ -121,9 +122,9 @@ export function NearbyDevices({ own, close, invited }: {
     async function refresh() {
       try {
         const next = await api.nearbyDevices();
-        if (!disposed) setDevices(next);
+        if (!disposed) setDiscovery(next);
       } catch {
-        if (!disposed) setDevices(null);
+        if (!disposed) setDiscovery({ status: "discovery_failed", devices: [] });
       } finally {
         if (!disposed) timer = window.setTimeout(refresh, 1000);
       }
@@ -132,7 +133,7 @@ export function NearbyDevices({ own, close, invited }: {
     return () => { disposed = true; window.clearTimeout(timer); };
   }, []);
 
-  const selected = devices?.find(device => device.id === choice?.id
+  const selected = devices.find(device => device.id === choice?.id
     && device.matched_account?.id === choice?.matched_account?.id);
   const account = selected?.matched_account?.id;
   async function invite() {
@@ -144,7 +145,7 @@ export function NearbyDevices({ own, close, invited }: {
   }
 
   return <Dialog title="Nearby devices" close={() => { if (!busy) close(); }}>
-    {devices?.length ? <fieldset className="dialog-contacts" disabled={busy}>
+    {devices.length ? <fieldset className="dialog-contacts" disabled={busy}>
       <legend>Seen on LAN · identity unverified</legend>
       {devices.map(device => <label key={device.id} className="check-contact">
         <input type="radio" name="nearby-device" checked={selected?.id === device.id}
@@ -155,15 +156,16 @@ export function NearbyDevices({ own, close, invited }: {
         </span>
       </label>)}
     </fieldset> : <p className="muted" role="status">
-      {devices === undefined ? "Loading nearby devices…"
-        : devices === null ? "Discovery is unavailable. Check your sign-in and approved IPv4 network. The list refreshes after a network change."
-        : "No Zibblu devices found. Check that both apps are running on an allowed LAN and that the network permits mDNS or site discovery."}
+      {status === "starting" ? "Starting LAN discovery…"
+        : status === "network_unavailable" ? "No approved IPv4 LAN is available. Connect to an allowed Wi-Fi or Ethernet network."
+        : status === "discovery_failed" ? "LAN discovery could not start or the configured discovery service failed."
+        : "No Zibblu devices found. Keep both clients open and signed in on the same allowed network."}
     </p>}
     {selected && !account && <p className="muted">A shared conversation is required to send an invitation.</p>}
     {account === own && <p className="muted">Private invitations go to a different account.</p>}
-    {choice && !selected && devices && <p className="muted" role="status">The selected device is no longer listed for that account.</p>}
+    {choice && !selected && status === "ready" && <p className="muted" role="status">The selected device is no longer listed for that account.</p>}
     {failure && <p className="inline-error" role="alert">{failure}</p>}
-    {(devices === null || devices?.length === 0 || failure) && <p className="muted">
+    {((status === "ready" && devices.length === 0) || status === "discovery_failed" || failure) && <p className="muted">
       On a trusted Windows network, check that Windows Defender Firewall allows Zibblu on the Private profile.
       For managed networks, ask IT whether mDNS and direct UDP are permitted.
     </p>}

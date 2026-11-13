@@ -64,6 +64,34 @@ pub(super) fn stage(source: &Path, spool: &Path, id: Uuid) -> Result<Attachment>
     })
 }
 
+pub(super) fn stage_pasted(bytes: &[u8], spool: &Path, id: Uuid) -> Result<Attachment> {
+    let extension = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "png"
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        "jpg"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "gif"
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        "webp"
+    } else if bytes.starts_with(b"BM") {
+        "bmp"
+    } else {
+        anyhow::bail!("Paste a PNG, JPEG, GIF, WebP or BMP image");
+    };
+    let mut snapshot =
+        NamedTempFile::new_in(spool.parent().context("Missing transfer directory")?)?;
+    snapshot.write_all(bytes)?;
+    snapshot.as_file().sync_all()?;
+    snapshot.persist_noclobber(spool)?;
+    Ok(Attachment {
+        id,
+        name: format!("Pasted image {}.{extension}", &id.simple().to_string()[..8]),
+        kind: AttachmentKind::File,
+        size: bytes.len() as u64,
+        sha256: format!("{:x}", Sha256::digest(bytes)),
+    })
+}
+
 fn archive(root: &Path, output: &mut File) -> Result<()> {
     let mut archive = ZipWriter::new(output);
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);

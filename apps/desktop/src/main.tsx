@@ -6,6 +6,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, errorMessage } from "./api";
 import type { Preferences, Session, Theme } from "./api";
 import { Brand } from "./common";
+import { DesktopMenus } from "./context-menu";
 import { Workspace } from "./workspace";
 import { PrivateInvitationWindow } from "./private-chat";
 import "./style.css";
@@ -90,19 +91,22 @@ function SignIn({ initialServer, notice, signedIn }: {
     <section className="signin-form">
       <div>
         <h2>{register ? "Create an account" : "Sign in to Zibblu"}</h2>
-        <p className="muted">{register ? "Choose a handle friends can use to find you." : "Use your account and your Zibblu server address."}</p>
+        <p className="muted">{register ? "Choose a username friends can use to find you." : "Use your account and your Zibblu server address."}</p>
         <form onSubmit={submit}>
-          <label>Server address
-            <input type="url" value={server} onChange={event => setServer(event.target.value)} required placeholder="https://chat.example.com" />
+          <label className="floating-field">
+            <input type="url" value={server} onChange={event => setServer(event.target.value)} required placeholder=" " />
+            <span>Server address</span>
           </label>
-          <label>Handle
+          <label className="floating-field">
             <input value={handle} onChange={event => setHandle(event.target.value)} required
-              autoComplete="username" maxLength={32} placeholder="your_handle" />
+              autoComplete="username" maxLength={32} placeholder=" " />
+            <span>Username</span>
           </label>
-          <label>Password
+          <label className="floating-field">
             <input type="password" value={password} onChange={event => setPassword(event.target.value)} required
               autoComplete={register ? "new-password" : "current-password"} minLength={register ? 12 : undefined}
-              maxLength={256} placeholder={register ? "At least 12 characters" : "Your password"} />
+              maxLength={256} placeholder=" " />
+            <span>Password</span>
           </label>
           {failure && <div className="inline-error" role="alert">{failure}</div>}
           <button className="button primary signin-submit" disabled={busy} type="submit">
@@ -120,4 +124,6 @@ function SignIn({ initialServer, notice, signedIn }: {
 }
 
 const invitation = getCurrentWindow().label === "private-invitation";
-createRoot(document.getElementById("root")!).render(invitation ? <PrivateInvitationWindow /> : <App />);
+createRoot(document.getElementById("root")!).render(<DesktopMenus>
+  {invitation ? <PrivateInvitationWindow /> : <App />}
+</DesktopMenus>);

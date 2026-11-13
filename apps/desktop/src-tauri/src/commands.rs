@@ -9,11 +9,12 @@ use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use zibblu_core::private_chat::{
-    DismissedRooms, NearbyDevice, Phase, PrivateCode, PrivateLobby, PrivateSummary, PrivateView,
+    DiscoveryStatus, DismissedRooms, NearbyDevices, Phase, PrivateCode, PrivateLobby,
+    PrivateSummary, PrivateView,
 };
 use zibblu_core::{
     Client, ConversationRequest, Credentials, Direction, Directory, FileFilter, GroupInvite,
-    GroupInvitePreview, OnlineError, Page, SendMessage, Transfer, User,
+    GroupInvitePreview, OnlineError, Page, PublishAiReply, SendMessage, SyncUpdate, Transfer, User,
 };
 
 pub(crate) struct Desktop {
@@ -22,6 +23,7 @@ pub(crate) struct Desktop {
     session: Mutex<Option<Arc<Client>>>,
     pub(crate) ai: StdMutex<crate::ai::AiState>,
     pub(crate) private: Mutex<Option<Arc<PrivateLobby>>>,
+    pub(crate) discovery: StdMutex<DiscoveryStatus>,
     pub(crate) dismissed_rooms: DismissedRooms,
     private_worker: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub drop: StdMutex<Option<(Uuid, PathBuf)>>,
@@ -39,6 +41,7 @@ impl Desktop {
             session: Mutex::new(None),
             ai: StdMutex::default(),
             private: Mutex::new(None),
+            discovery: StdMutex::new(DiscoveryStatus::Starting),
             dismissed_rooms: DismissedRooms::default(),
             private_worker: Mutex::new(None),
             drop: StdMutex::new(None),
@@ -79,6 +82,7 @@ impl Desktop {
             lobby.quit().await;
         }
         self.dismissed_rooms.clear();
+        *self.discovery.lock().expect("discovery status") = DiscoveryStatus::Starting;
     }
 
     async fn lobby(&self) -> Result<Arc<PrivateLobby>> {
@@ -228,18 +232,18 @@ pub(crate) async fn logout(app: AppHandle, state: State<'_, Desktop>) -> Result<
 }
 
 #[tauri::command]
-pub(crate) async fn sync(state: State<'_, Desktop>) -> Result<Directory> {
+pub(crate) async fn sync(state: State<'_, Desktop>) -> Result<SyncUpdate> {
     let client = state.client().await?;
-    let directory = client.sync().await?;
+    let update = client.sync_updates().await?;
     let session = state.session.lock().await;
     if session
         .as_ref()
         .is_some_and(|current| Arc::ptr_eq(current, &client))
         && let Some(lobby) = state.private.lock().await.as_ref()
     {
-        lobby.set_memberships(crate::private_runtime::memberships(&directory));
+        lobby.set_memberships(crate::private_runtime::memberships(&update.directory));
     }
-    Ok(directory)
+    Ok(update)
 }
 
 #[tauri::command]
@@ -252,8 +256,13 @@ pub(crate) async fn messages(
     state: State<'_, Desktop>,
     conversation: Uuid,
     before: Option<i64>,
+    search: Option<String>,
 ) -> Result<Page> {
-    Ok(state.client().await?.messages(conversation, before).await?)
+    Ok(state
+        .client()
+        .await?
+        .search_messages(conversation, before, search.as_deref())
+        .await?)
 }
 
 #[tauri::command]
@@ -273,6 +282,19 @@ pub(crate) async fn find_user(state: State<'_, Desktop>, handle: String) -> Resu
 #[tauri::command]
 pub(crate) async fn add_contact(state: State<'_, Desktop>, user_id: Uuid) -> Result<()> {
     Ok(state.client().await?.add_contact(user_id).await?)
+}
+
+#[tauri::command]
+pub(crate) async fn respond_contact(
+    state: State<'_, Desktop>,
+    user_id: Uuid,
+    accept: bool,
+) -> Result<()> {
+    Ok(state
+        .client()
+        .await?
+        .respond_contact(user_id, accept)
+        .await?)
 }
 
 #[tauri::command]
@@ -302,6 +324,32 @@ pub(crate) async fn send_message(
 }
 
 #[tauri::command]
+pub(crate) async fn recall_message(
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+    seq: i64,
+) -> Result<()> {
+    Ok(state
+        .client()
+        .await?
+        .recall_message(conversation, seq)
+        .await?)
+}
+
+#[tauri::command]
+pub(crate) async fn publish_ai_reply(
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+    reply: PublishAiReply,
+) -> Result<()> {
+    Ok(state
+        .client()
+        .await?
+        .publish_ai_reply(conversation, reply)
+        .await?)
+}
+
+#[tauri::command]
 pub(crate) async fn private_start(
     state: State<'_, Desktop>,
     conversation: Option<Uuid>,
@@ -314,11 +362,14 @@ pub(crate) async fn private_start(
 }
 
 #[tauri::command]
-pub(crate) async fn private_nearby(state: State<'_, Desktop>) -> Result<Option<Vec<NearbyDevice>>> {
+pub(crate) async fn private_nearby(state: State<'_, Desktop>) -> Result<NearbyDevices> {
     let lobby = state.private.lock().await.clone();
     Ok(match lobby {
         Some(lobby) => lobby.nearby_devices().await,
-        None => None,
+        None => NearbyDevices {
+            status: *state.discovery.lock().expect("discovery status"),
+            devices: Vec::new(),
+        },
     })
 }
 

@@ -10,16 +10,16 @@ use axum::{
 };
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
-use zibblu_core::{ContactRequest, Credentials, Session, User, valid_handle};
+use zibblu_core::{ContactDecision, ContactRequest, Credentials, Session, User, valid_handle};
 
 pub(crate) async fn register(
     State(app): State<App>,
     Json(input): Json<Credentials>,
 ) -> Result<Json<Session>> {
-    let handle = input.handle.trim().to_ascii_lowercase();
+    let handle = input.handle.trim().to_owned();
     if !valid_handle(&handle) || input.password.chars().count() < 12 || input.password.len() > 256 {
         return Err(Error::bad(
-            "Use a handle of 3–32 letters, numbers or underscores starting with a letter, and a password of at least 12 characters (256 bytes maximum).",
+            "Use a username of 3–32 letters, numbers or underscores starting with a letter, and a password of at least 12 characters (256 bytes maximum).",
         ));
     }
     let hash = password_job(&app, move || {
@@ -35,11 +35,16 @@ pub(crate) async fn register(
         handle,
     };
     let mut tx = app.db.begin().await?;
-    let result = sqlx::query("INSERT INTO accounts (id, handle, password_hash) VALUES ($1,$2,$3) ON CONFLICT (handle) DO NOTHING")
-        .bind(user.id).bind(&user.handle).bind(hash)
-        .execute(&mut *tx).await?;
+    let result = sqlx::query(
+        "INSERT INTO accounts (id, handle, password_hash) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+    )
+    .bind(user.id)
+    .bind(&user.handle)
+    .bind(hash)
+    .execute(&mut *tx)
+    .await?;
     if result.rows_affected() == 0 {
-        return Err(Error::conflict("That handle is already in use."));
+        return Err(Error::conflict("That username is already in use."));
     }
     let session = issue_session(&mut tx, user).await?;
     tx.commit().await?;
@@ -51,16 +56,22 @@ pub(crate) async fn login(
     Json(input): Json<Credentials>,
 ) -> Result<Json<Session>> {
     let handle = input.handle.trim().to_ascii_lowercase();
-    let invalid = || Error(StatusCode::UNAUTHORIZED, "Check your handle and password.");
+    let invalid = || {
+        Error(
+            StatusCode::UNAUTHORIZED,
+            "Check your username and password.",
+        )
+    };
     if !valid_handle(&handle) || input.password.len() > 256 {
         return Err(invalid());
     }
-    let (id, hash): (Uuid, String) =
-        sqlx::query_as("SELECT id, password_hash FROM accounts WHERE handle = $1")
-            .bind(&handle)
-            .fetch_optional(&app.db)
-            .await?
-            .ok_or_else(invalid)?;
+    let (id, handle, hash): (Uuid, String, String) = sqlx::query_as(
+        "SELECT id, handle, password_hash FROM accounts WHERE lower(handle COLLATE \"C\") = $1",
+    )
+    .bind(&handle)
+    .fetch_optional(&app.db)
+    .await?
+    .ok_or_else(invalid)?;
     password_job(&app, move || {
         let hash = PasswordHash::new(&hash).map_err(|_| Error::internal())?;
         Argon2::default()
@@ -123,11 +134,12 @@ pub(crate) async fn find_user(
     if !valid_handle(&handle) {
         return Err(Error::missing());
     }
-    let id = sqlx::query_scalar("SELECT id FROM accounts WHERE handle = $1")
-        .bind(&handle)
-        .fetch_optional(&app.db)
-        .await?
-        .ok_or_else(Error::missing)?;
+    let (id, handle) =
+        sqlx::query_as("SELECT id, handle FROM accounts WHERE lower(handle COLLATE \"C\") = $1")
+            .bind(&handle)
+            .fetch_optional(&app.db)
+            .await?
+            .ok_or_else(Error::missing)?;
     Ok(Json(User { id, handle }))
 }
 
@@ -140,31 +152,35 @@ pub(crate) async fn add_contact(
         return Err(Error::bad("Choose another account."));
     }
     let mut tx = app.db.begin().await?;
-    sqlx::query("SELECT id FROM accounts WHERE id = $1 FOR NO KEY UPDATE")
-        .bind(auth.user_id)
-        .execute(&mut *tx)
-        .await?;
-    let (exists, count): (bool, i64) = sqlx::query_as(
-        "SELECT EXISTS(SELECT 1 FROM accounts WHERE id = $2),
-                (SELECT count(*) FROM contacts WHERE owner_id = $1 AND contact_id <> $2)",
+    lock_pair(&mut tx, auth.user_id, input.user_id).await?;
+    let (approved, request, outgoing): (bool, Option<Uuid>, i64) = sqlx::query_as(
+        "SELECT EXISTS(SELECT 1 FROM contacts WHERE owner_id = $1 AND contact_id = $2),
+                (SELECT requester_id FROM contact_requests WHERE
+                    (requester_id = $1 AND recipient_id = $2) OR (requester_id = $2 AND recipient_id = $1)),
+                (SELECT count(*) FROM contact_requests WHERE requester_id = $1)",
     )
     .bind(auth.user_id)
     .bind(input.user_id)
     .fetch_one(&mut *tx)
     .await?;
-    if !exists {
-        return Err(Error::missing());
+    if approved || request == Some(auth.user_id) {
+        return Ok(StatusCode::NO_CONTENT);
     }
-    if count >= 200 {
-        return Err(Error::conflict("You can save up to 200 contacts."));
+    if request.is_some() {
+        return Err(Error::conflict(
+            "This person already sent you a request. Respond in Contacts.",
+        ));
     }
-    sqlx::query(
-        "INSERT INTO contacts (owner_id, contact_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
-    )
-    .bind(auth.user_id)
-    .bind(input.user_id)
-    .execute(&mut *tx)
-    .await?;
+    if outgoing >= 200 {
+        return Err(Error::conflict(
+            "You can have up to 200 outgoing contact requests.",
+        ));
+    }
+    sqlx::query("INSERT INTO contact_requests (requester_id, recipient_id) VALUES ($1,$2)")
+        .bind(auth.user_id)
+        .bind(input.user_id)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -174,10 +190,87 @@ pub(crate) async fn remove_contact(
     auth: Auth,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode> {
-    sqlx::query("DELETE FROM contacts WHERE owner_id = $1 AND contact_id = $2")
+    let mut tx = app.db.begin().await?;
+    lock_pair(&mut tx, auth.user_id, id).await?;
+    sqlx::query(
+        "DELETE FROM contacts WHERE (owner_id = $1 AND contact_id = $2)
+                                OR (owner_id = $2 AND contact_id = $1)",
+    )
+    .bind(auth.user_id)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM contact_requests WHERE requester_id = $1 AND recipient_id = $2")
         .bind(auth.user_id)
         .bind(id)
-        .execute(&app.db)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn respond_contact(
+    State(app): State<App>,
+    auth: Auth,
+    Path(requester): Path<Uuid>,
+    Json(decision): Json<ContactDecision>,
+) -> Result<StatusCode> {
+    let mut tx = app.db.begin().await?;
+    lock_pair(&mut tx, auth.user_id, requester).await?;
+    let pending =
+        sqlx::query("DELETE FROM contact_requests WHERE requester_id = $1 AND recipient_id = $2")
+            .bind(requester)
+            .bind(auth.user_id)
+            .execute(&mut *tx)
+            .await?;
+    if pending.rows_affected() == 0 {
+        let approved: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM contacts WHERE owner_id = $1 AND contact_id = $2)",
+        )
+        .bind(auth.user_id)
+        .bind(requester)
+        .fetch_one(&mut *tx)
+        .await?;
+        return if decision.accept && approved {
+            Ok(StatusCode::NO_CONTENT)
+        } else {
+            Err(Error::missing())
+        };
+    }
+    if decision.accept {
+        let full: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM contacts WHERE owner_id IN ($1, $2)
+                           GROUP BY owner_id HAVING count(*) >= 200)",
+        )
+        .bind(auth.user_id)
+        .bind(requester)
+        .fetch_one(&mut *tx)
+        .await?;
+        if full {
+            return Err(Error::conflict(
+                "An account has reached the 200-contact limit.",
+            ));
+        }
+        sqlx::query("INSERT INTO contacts (owner_id, contact_id) VALUES ($1,$2), ($2,$1)")
+            .bind(auth.user_id)
+            .bind(requester)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn lock_pair(db: &mut sqlx::PgConnection, a: Uuid, b: Uuid) -> Result<()> {
+    let users: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM accounts WHERE id IN ($1, $2) ORDER BY id FOR NO KEY UPDATE",
+    )
+    .bind(a)
+    .bind(b)
+    .fetch_all(db)
+    .await?;
+    if users.len() != 2 {
+        return Err(Error::missing());
+    }
+    Ok(())
 }

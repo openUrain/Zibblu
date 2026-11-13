@@ -3,8 +3,11 @@ use uuid::Uuid;
 
 pub const CHUNK_SIZE: u64 = 1024 * 1024;
 pub const MAX_ATTACHMENT_SIZE: u64 = 256 * CHUNK_SIZE;
+pub const MAX_PASTED_IMAGE_BYTES: usize = 16 * CHUNK_SIZE as usize;
 pub const SYNC_PAGE_SIZE: usize = 100;
 pub const MAX_MESSAGE_BYTES: usize = 8_192;
+pub const MAX_AI_REPLY_BYTES: usize = 24 * 1024;
+pub const RECALL_WINDOW_MS: i64 = 5 * 60 * 1000;
 pub const MAX_GROUP_MEMBERS: usize = 16;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +47,17 @@ pub fn lan_peer_name(account: Uuid) -> String {
 #[derive(Serialize, Deserialize)]
 pub struct ContactRequest {
     pub user_id: Uuid,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PendingContact {
+    pub user: User,
+    pub incoming: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ContactDecision {
+    pub accept: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -98,6 +112,43 @@ pub struct Message {
     pub created_at: i64,
     pub text: Option<String>,
     pub attachment: Option<Attachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_provider: Option<AiProvider>,
+    #[serde(default)]
+    pub recalled: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiProvider {
+    OpenAi,
+    DeepSeek,
+    Grok,
+}
+
+impl AiProvider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAi => "open_ai",
+            Self::DeepSeek => "deep_seek",
+            Self::Grok => "grok",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PublishAiReply {
+    pub nonce: Uuid,
+    pub provider: AiProvider,
+    pub text: String,
+    pub created_at: i64,
+    pub readers: Vec<Uuid>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct MessageRecall {
+    pub seq: i64,
+    pub message_seq: i64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -141,6 +192,24 @@ impl Attachment {
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
             && safe_filename(&self.name)
     }
+
+    pub fn preview_mime(&self) -> Option<&'static str> {
+        if self.kind != AttachmentKind::File || self.size == 0 {
+            return None;
+        }
+        match self.name.rsplit_once('.')?.1.to_ascii_lowercase().as_str() {
+            "png" => Some("image/png"),
+            "jpg" | "jpeg" => Some("image/jpeg"),
+            "gif" => Some("image/gif"),
+            "webp" => Some("image/webp"),
+            "bmp" => Some("image/bmp"),
+            "avif" => Some("image/avif"),
+            "mp4" | "m4v" => Some("video/mp4"),
+            "webm" => Some("video/webm"),
+            "mov" => Some("video/quicktime"),
+            _ => None,
+        }
+    }
 }
 
 pub fn safe_filename(name: &str) -> bool {
@@ -183,18 +252,24 @@ pub struct UploadProgress {
 pub struct Directory {
     pub contacts: Vec<User>,
     pub conversations: Vec<Conversation>,
+    #[serde(default)]
+    pub pending_contacts: Vec<PendingContact>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct SyncPage {
     pub directory: Directory,
     pub messages: Vec<Message>,
+    #[serde(default)]
+    pub recalls: Vec<MessageRecall>,
+    #[serde(default)]
+    pub server_time: Option<i64>,
 }
 
 pub fn valid_handle(handle: &str) -> bool {
     (3..=32).contains(&handle.len())
-        && handle.as_bytes()[0].is_ascii_lowercase()
+        && handle.as_bytes()[0].is_ascii_alphabetic()
         && handle
             .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }

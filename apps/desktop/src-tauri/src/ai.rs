@@ -8,7 +8,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 use zibblu_core::{
     AiScope, MAX_MESSAGE_BYTES,
-    assistant::{AiFile, AiProvider, AiSnapshot},
+    assistant::{AiFile, AiProvider, AiSnapshot, ModelDiscovery, valid_model_id},
 };
 
 #[cfg(windows)]
@@ -35,6 +35,8 @@ pub(crate) struct Assistant {
     provider: AiProvider,
     name: String,
     model: String,
+    #[serde(default)]
+    base_url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -79,11 +81,16 @@ pub(crate) async fn ai_save_assistant(
     name: String,
     model: String,
     key: Option<String>,
+    base_url: Option<String>,
 ) -> CommandResult<Vec<Assistant>> {
     let key = key.map(Zeroizing::new);
     let client = state.client().await?;
     let name = name.trim().to_lowercase();
     let model = model.trim().to_owned();
+    let base_url = base_url
+        .filter(|url| !url.trim().is_empty())
+        .map(|url| provider.base_url(Some(&url)).map(|base| base.to_string()))
+        .transpose()?;
     let _settings = state.ai.lock().expect("AI state");
     let mut assistants = load_assistants(client.profile_dir())?;
     let result = (|| -> Result<_> {
@@ -94,13 +101,7 @@ pub(crate) async fn ai_save_assistant(
                     .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_')),
             "Use 1–32 letters, numbers, underscores or hyphens for the mention name"
         );
-        ensure!(
-            (1..=128).contains(&model.len())
-                && model
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_' | b':')),
-            "Enter the provider's model ID"
-        );
+        ensure!(valid_model_id(&model), "Enter the provider's model ID");
         ensure!(
             assistants
                 .iter()
@@ -108,17 +109,9 @@ pub(crate) async fn ai_save_assistant(
             "That mention name is already in use"
         );
         let protected_key = if let Some(key) = key.as_ref() {
-            let key = key.trim();
-            ensure!(
-                (1..=512).contains(&key.len()) && key.bytes().all(|byte| byte.is_ascii_graphic()),
-                "Enter a valid API key"
-            );
-            protect_key(provider, key.as_bytes(), true)?
+            protect_key(provider, validated_key(key)?.as_bytes(), true)?
         } else {
-            assistants
-                .iter()
-                .find(|entry| entry.info.provider == provider)
-                .context("Enter an API key")?
+            stored_at(&assistants, provider, base_url.as_deref())?
                 .protected_key
                 .clone()
         };
@@ -128,12 +121,61 @@ pub(crate) async fn ai_save_assistant(
                 provider,
                 name,
                 model,
+                base_url,
             },
             protected_key,
         });
         store_assistants(client.profile_dir(), &assistants)
     })();
     Ok(result?)
+}
+
+fn validated_key(key: &str) -> Result<&str> {
+    let key = key.trim();
+    ensure!(
+        (1..=512).contains(&key.len()) && key.bytes().all(|byte| byte.is_ascii_graphic()),
+        "Enter a valid API key"
+    );
+    Ok(key)
+}
+
+fn stored_at<'a>(
+    assistants: &'a [StoredAssistant],
+    provider: AiProvider,
+    base: Option<&str>,
+) -> Result<&'a StoredAssistant> {
+    let stored = assistants
+        .iter()
+        .find(|entry| entry.info.provider == provider)
+        .context("Enter an API key")?;
+    ensure!(
+        provider.base_url(stored.info.base_url.as_deref())? == provider.base_url(base)?,
+        "Enter the API key for the new base URL"
+    );
+    Ok(stored)
+}
+
+#[tauri::command]
+pub(crate) async fn ai_test_connection(
+    state: State<'_, Desktop>,
+    provider: AiProvider,
+    base_url: Option<String>,
+    key: Option<String>,
+) -> CommandResult<ModelDiscovery> {
+    let key = key.map(Zeroizing::new);
+    let client = state.client().await?;
+    let base = provider.base_url(base_url.as_deref())?;
+    let bytes = match &key {
+        Some(key) => validated_key(key)?.as_bytes().to_vec(),
+        None => {
+            let assistants = load_assistants(client.profile_dir())?;
+            let stored = stored_at(&assistants, provider, base_url.as_deref())?;
+            protect_key(provider, &stored.protected_key, false)?
+        }
+    };
+    let key = Zeroizing::new(bytes);
+    let key = std::str::from_utf8(&key).context("Replace the stored API key in Settings")?;
+    Ok(provider.discover_models(&base, key).await?)
 }
 
 #[tauri::command]
@@ -163,6 +205,7 @@ struct Draft {
     id: Uuid,
     files: Vec<(Uuid, AiFile)>,
     approval: Option<Approval>,
+    preparing: Option<Uuid>,
 }
 
 struct Approval {
@@ -237,6 +280,7 @@ pub(crate) fn ai_begin(state: State<'_, Desktop>, view: Uuid, draft: Uuid) -> Co
         id: draft,
         files: Vec::new(),
         approval: None,
+        preparing: None,
     });
     Ok(())
 }
@@ -300,6 +344,7 @@ pub(crate) async fn ai_pick_file(
         bytes: file.text.len(),
     };
     request.approval = None;
+    request.preparing = None;
     request.files.push((id, file));
     Ok(Some(picked))
 }
@@ -322,6 +367,7 @@ pub(crate) fn ai_remove_file(
     let mut ai = state.ai.lock().expect("AI state");
     let request = ai.draft(view, draft)?;
     request.approval = None;
+    request.preparing = None;
     request.files.retain(|(file, _)| *file != id);
     Ok(())
 }
@@ -352,7 +398,7 @@ pub(crate) struct Selection {
 #[derive(Serialize)]
 pub(crate) struct Prepared {
     id: Uuid,
-    endpoint: &'static str,
+    endpoint: String,
     assistant: Assistant,
     snapshot: AiSnapshot,
 }
@@ -366,15 +412,22 @@ pub(crate) async fn ai_prepare(
 ) -> CommandResult<Prepared> {
     let client = state.client().await?;
     let prompt = selection.prompt.trim().to_owned();
+    let id = Uuid::new_v4();
     let conversation = {
         let mut ai = state.ai.lock().expect("AI state");
-        ai.draft(view, draft)?.approval = None;
+        let request = ai.draft(view, draft)?;
+        request.approval = None;
+        request.preparing = Some(id);
         ai.view(view)?.conversation
     };
     let messages = client.ai_messages(conversation, selection.scope).await?;
     let mut ai = state.ai.lock().expect("AI state");
     let request = ai.draft(view, draft)?;
     let prepared = (|| -> Result<_> {
+        ensure!(
+            request.preparing == Some(id),
+            "The selected context has changed"
+        );
         ensure!(
             !prompt.is_empty() && prompt.len() <= MAX_MESSAGE_BYTES,
             "Enter a prompt of up to 8 KiB"
@@ -390,10 +443,14 @@ pub(crate) async fn ai_prepare(
             files,
         };
         let input = snapshot.encode()?;
-        let id = Uuid::new_v4();
+        let endpoint = selection
+            .provider
+            .base_url(assistant.info.base_url.as_deref())?
+            .join("responses")
+            .context("Invalid AI endpoint")?;
         let prepared = Prepared {
             id,
-            endpoint: selection.provider.endpoint(),
+            endpoint: endpoint.to_string(),
             assistant: assistant.info.clone(),
             snapshot,
         };
@@ -407,14 +464,20 @@ pub(crate) async fn ai_prepare(
     Ok(prepared)
 }
 
+#[derive(Serialize)]
+pub(crate) struct Answer {
+    text: String,
+    created_at: i64,
+}
+
 #[tauri::command]
 pub(crate) async fn ai_send(
     state: State<'_, Desktop>,
     view: Uuid,
     draft: Uuid,
     approval: Uuid,
-) -> CommandResult<String> {
-    state.client().await?;
+) -> CommandResult<Answer> {
+    let client = state.client().await?;
     let Approval {
         assistant, input, ..
     } = state
@@ -423,10 +486,17 @@ pub(crate) async fn ai_send(
         .expect("AI state")
         .consume(view, draft, approval)?;
     let provider = assistant.info.provider;
+    let base = provider.base_url(assistant.info.base_url.as_deref())?;
     let bytes = protect_key(provider, &assistant.protected_key, false)?;
     let key = Zeroizing::new(bytes);
     let key = std::str::from_utf8(&key).context("Replace the stored API key in Settings")?;
-    Ok(provider.answer(&assistant.info.model, key, &input).await?)
+    let text = provider
+        .answer(&base, &assistant.info.model, key, &input)
+        .await?;
+    Ok(Answer {
+        text,
+        created_at: client.server_now(),
+    })
 }
 
 #[cfg(test)]
@@ -441,6 +511,7 @@ mod tests {
         let file = Uuid::new_v4();
         let request = Draft {
             id: draft,
+            preparing: None,
             files: vec![(
                 file,
                 AiFile {
@@ -455,6 +526,7 @@ mod tests {
                         provider: AiProvider::OpenAi,
                         name: "review".into(),
                         model: "fixture".into(),
+                        base_url: None,
                     },
                     protected_key: vec![],
                 },

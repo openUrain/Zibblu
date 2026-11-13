@@ -58,26 +58,32 @@ export function Dialog({ title, close, children, className }: {
   </dialog>;
 }
 
-export function usePage(read: (before?: number) => Promise<Page>, revision: number) {
+export function usePage(read: (before?: number) => Promise<Page>, revision: number,
+  recalled: ReadonlySet<number>, showRecalled = false) {
   const [page, setPage] = useState<Page & { expanded?: boolean }>();
   const [failure, setFailure] = useState("");
   const [loading, setLoading] = useState(false);
   const expanding = useRef(false);
+  const newest = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     let current = true;
     read().then(next => {
       if (!current) return;
       setFailure("");
+      if (newest.current === undefined) newest.current = Math.max(0, ...next.items.map(item => item.seq));
       setPage(previous => {
-        if (!previous?.expanded || next.items.length === 0 || previous.items.length === 0
-          || next.items.at(-1)!.seq > previous.items[0].seq) return next;
+        if (!previous?.expanded || next.items.length === 0) return next;
         const last = next.items.at(-1)!.seq;
-        return { ...previous, items: [...next.items, ...previous.items.filter(item => item.seq < last)] };
+        const lastIndex = previous.items.findIndex(item => item.seq === last);
+        return lastIndex < 0 ? next : {
+          ...previous,
+          items: [...next.items, ...previous.items.slice(lastIndex + 1).filter(item => showRecalled || !recalled.has(item.seq))],
+        };
       });
     }).catch(error => { if (current) setFailure(errorMessage(error)); });
     return () => { current = false; };
-  }, [read, revision]);
+  }, [read, revision, recalled, showRecalled]);
 
   async function older() {
     const cursor = page?.items.at(-1)?.seq;
@@ -91,5 +97,12 @@ export function usePage(read: (before?: number) => Promise<Page>, revision: numb
     } catch (error) { setFailure(errorMessage(error)); }
     finally { expanding.current = false; setLoading(false); }
   }
-  return { page, failure, loading, older };
+  const visible = recalled.size && page ? {
+    ...page,
+    items: showRecalled
+      ? page.items.map(item => !item.recalled && recalled.has(item.seq)
+        ? { ...item, recalled: true, text: null, attachment: null } : item)
+      : page.items.filter(item => !recalled.has(item.seq)),
+  } : page;
+  return { page: visible, failure, loading, older, newestAtOpen: newest.current };
 }

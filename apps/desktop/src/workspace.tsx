@@ -30,8 +30,11 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
   const [nav, setNav] = useState<Navigation>("Chats");
   const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [assistantFailure, setAssistantFailure] = useState("");
-  const [aiReplies, setAiReplies] = useState<Record<string, AiReply>>({});
-  const [directory, setDirectory] = useState<Directory>({ contacts: [], conversations: [] });
+  const [aiReplies, setAiReplies] = useState<AiReply[]>([]);
+  const [directory, setDirectory] = useState<Directory>({ contacts: [], conversations: [], pending_contacts: [] });
+  const [recalled, setRecalled] = useState<ReadonlySet<number>>(new Set());
+  const refreshInFlight = useRef<Promise<void> | null>(null);
+  const [clockOffset, setClockOffset] = useState(0);
   const [selected, setSelected] = useState<string>();
   const [mobileChat, setMobileChat] = useState(false);
   const [privateId, setPrivateId] = useState<string>();
@@ -58,14 +61,25 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
     return () => { current = false; };
   }, []);
 
-  const refresh = useCallback(async () => {
-    try {
-      setDirectory(await api.sync());
-      setConnection("Connected");
-      setRevision(value => value + 1);
-    } catch (error) {
-      setConnection(isExpired(error) ? "Session expired" : "Reconnecting");
-    }
+  const refresh = useCallback(() => {
+    if (refreshInFlight.current) return refreshInFlight.current;
+    const sync = async () => {
+      try {
+        const update = await api.sync();
+        setDirectory(update.directory);
+        setClockOffset(update.server_now - Date.now());
+        setRecalled(previous => previous.size === update.recalled.length
+          ? previous : new Set(update.recalled));
+        setConnection("Connected");
+        setRevision(value => value + 1);
+      } catch (error) {
+        setConnection(isExpired(error) ? "Session expired" : "Reconnecting");
+      } finally {
+        refreshInFlight.current = null;
+      }
+    };
+    refreshInFlight.current = sync();
+    return refreshInFlight.current;
   }, []);
 
   const changed = useCallback(() => {
@@ -264,26 +278,21 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
           openPrivate={selectPrivate} createQr={() => void createPrivateCode()} />
         {privateId ? <PrivateChatView key={privateId} id={privateId} own={session.user}
             back={() => { setPrivateId(undefined); if (!active) setMobileChat(false); }} showCode={showPrivateCode} />
-          : active ? <ChatView key={active.id} chat={active} own={session.user} revision={revision}
+          : active ? <ChatView key={active.id} chat={active} own={session.user} revision={revision} recalled={recalled} clockOffset={clockOffset}
             transfers={transfers} changed={changed} refresh={refresh} back={() => setMobileChat(false)}
             share={source => share(active.id, source)} openPrivate={() => void invitePrivate(active)}
             groupCode={() => void showGroupCode(active)} aiChat={{
-              assistants, settings: () => navigate("Settings"), reply: aiReplies[active.id],
-              answered: reply => setAiReplies(current => ({ ...current, [active.id]: reply })),
-              dismiss: id => setAiReplies(current => {
-                if (current[active.id]?.id !== id) return current;
-                const next = { ...current };
-                delete next[active.id];
-                return next;
-              }),
+              assistants, settings: () => navigate("Settings"), replies: aiReplies.filter(reply => reply.conversation === active.id),
+              answered: reply => setAiReplies(current => [...current, reply]),
+              dismiss: id => setAiReplies(current => current.filter(reply => reply.id !== id)),
             }} />
           : <section className="chat-blank"><Blank icon={<MessageCircle size={31} />} title="Your conversations">
             <p>Open a chat to read messages or start a new one.</p>
             <button className="button primary" onClick={() => setNewChat(true)}>New conversation <ArrowRight size={16} /></button>
           </Blank></section>}
       </div>}
-      {nav === "Contacts" && <Contacts own={session.user} contacts={directory.contacts} refresh={refresh} create={create} />}
-      {nav === "Files" && <FilesView people={people} revision={revision} transfers={transfers} onChanged={changed} />}
+      {nav === "Contacts" && <Contacts own={session.user} directory={directory} refresh={refresh} create={create} />}
+      {nav === "Files" && <FilesView people={people} revision={revision} recalled={recalled} transfers={transfers} onChanged={changed} />}
       {nav === "Settings" && <SettingsView {...{ session, theme, setTheme, leaving, signOut, privateQuiet, setPrivateQuiet }}
         assistantSettings={<AssistantSettings assistants={assistants} failure={assistantFailure} changed={next => {
           setAssistants(next);
@@ -321,9 +330,10 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
   </main>;
 }
 
-function Contacts({ own, contacts, refresh, create }: {
-  own: User; contacts: User[]; refresh: () => Promise<void>; create: (request: ConversationRequest) => Promise<void>;
+function Contacts({ own, directory, refresh, create }: {
+  own: User; directory: Directory; refresh: () => Promise<void>; create: (request: ConversationRequest) => Promise<void>;
 }) {
+  const { contacts, pending_contacts } = directory;
   const [handle, setHandle] = useState("");
   const [found, setFound] = useState<User>();
   const [failure, setFailure] = useState("");
@@ -338,16 +348,17 @@ function Contacts({ own, contacts, refresh, create }: {
     finally { setBusy(false); }
   }
 
+  const pending = pending_contacts.find(request => request.user.id === found?.id);
   return <section className="settings-page">
-    <header className="workspace-heading"><h1>Contacts</h1><p>Find people by their Zibblu handle.</p></header>
+    <header className="workspace-heading"><h1>Contacts</h1><p>Find people by their Zibblu username.</p></header>
     <div className="surface contact-search">
       <form onSubmit={event => {
         event.preventDefault();
         setFound(undefined);
         void perform(async () => { setFound(await api.findUser(handle)); });
       }}>
-        <label className="search"><Search size={17} /><input aria-label="Contact handle" value={handle}
-          onChange={event => { setHandle(event.target.value); setFound(undefined); }} placeholder="Enter a handle" required disabled={busy} /></label>
+        <label className="search"><Search size={17} /><input aria-label="Contact username" value={handle}
+          onChange={event => { setHandle(event.target.value); setFound(undefined); }} placeholder="Enter a username" required disabled={busy} /></label>
         <button className="button primary" disabled={busy || !handle.trim()} type="submit">Find contact</button>
       </form>
       {found && <div className="contact-row search-result">
@@ -355,12 +366,32 @@ function Contacts({ own, contacts, refresh, create }: {
         <div className="contact-name"><strong>@{found.handle}</strong></div>
         {found.id === own.id ? <span className="muted">Your account</span> : contacts.some(user => user.id === found.id)
           ? <span className="muted">In contacts</span>
-          : <button className="button subtle" disabled={busy} onClick={() => void perform(async () => {
-            await api.addContact(found.id); setFound(undefined); setHandle(""); await refresh();
-          })}><UserPlus size={16} /> Add contact</button>}
+          : pending ? <span className="muted">{pending.incoming ? "Incoming request" : "Request sent"}</span>
+            : <button className="button subtle" disabled={busy} onClick={() => void perform(async () => {
+              await api.addContact(found.id); await refresh();
+            })}><UserPlus size={16} /> Send request</button>}
       </div>}
       {failure && <p className="inline-error" role="alert">{failure}</p>}
     </div>
+    {pending_contacts.length > 0 && <>
+      <h2 className="section-title">Contact requests</h2>
+      <div className="surface contacts">
+        {pending_contacts.map(({ user, incoming }) => <div className="contact-row" key={user.id}>
+          <Avatar name={user.handle} />
+          <div className="contact-name"><strong>{user.handle}</strong><small>{incoming ? "Wants to connect" : "Waiting for approval"}</small></div>
+          {incoming ? <>
+            <button className="button subtle" disabled={busy} onClick={() => void perform(async () => {
+              await api.respondContact(user.id, false); await refresh();
+            })}>Decline</button>
+            <button className="button primary" disabled={busy} onClick={() => void perform(async () => {
+              await api.respondContact(user.id, true); await refresh();
+            })}>Approve</button>
+          </> : <button className="button subtle" disabled={busy} onClick={() => void perform(async () => {
+            await api.removeContact(user.id); await refresh();
+          })}>Cancel request</button>}
+        </div>)}
+      </div>
+    </>}
     <h2 className="section-title">Your contacts</h2>
     {contacts.length ? <div className="surface contacts">
       {contacts.map(user => <div className="contact-row" key={user.id}>
@@ -370,7 +401,7 @@ function Contacts({ own, contacts, refresh, create }: {
         <button className="icon-button" disabled={busy} title="Remove contact" aria-label={"Remove " + user.handle}
           onClick={() => void perform(async () => { await api.removeContact(user.id); await refresh(); })}><UserRoundMinus size={18} /></button>
       </div>)}
-    </div> : <Blank icon={<UsersRound size={27} />} title="No contacts yet"><p>Find a handle above and add your first contact.</p></Blank>}
+    </div> : <Blank icon={<UsersRound size={27} />} title="No contacts yet"><p>Find a username above and send a request.</p></Blank>}
   </section>;
 }
 

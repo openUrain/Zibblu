@@ -32,7 +32,12 @@ pub(super) fn protect_key(provider: AiProvider, key: &[u8], encrypt: bool) -> Re
         pbData: bytes.as_ptr().cast_mut(),
     };
     let input = blob(key);
-    let entropy = blob(provider.endpoint().as_bytes());
+    // Keep the original DPAPI entropy so existing credentials still decrypt.
+    let entropy = blob(match provider {
+        AiProvider::OpenAi => b"https://api.openai.com/v1/responses".as_slice(),
+        AiProvider::DeepSeek => b"https://api.deepseek.com/responses".as_slice(),
+        AiProvider::Grok => b"https://api.x.ai/v1/responses".as_slice(),
+    });
     let mut output = CRYPT_INTEGER_BLOB {
         cbData: 0,
         pbData: null_mut(),

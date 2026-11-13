@@ -85,6 +85,21 @@ pub struct NearbyDevice {
     pub matched_account: Option<User>,
 }
 
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryStatus {
+    Starting,
+    NetworkUnavailable,
+    DiscoveryFailed,
+    Ready,
+}
+
+#[derive(Serialize)]
+pub struct NearbyDevices {
+    pub status: DiscoveryStatus,
+    pub devices: Vec<NearbyDevice>,
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct Room {
     id: Uuid,
@@ -231,7 +246,7 @@ impl Hosted {
     }
 
     fn update_participants(&mut self, own: &User) {
-        let participants = self.participants(own);
+        let participants = self.wire_participants(own);
         self.links.retain(|_, link| {
             !link.active
                 || link
@@ -248,6 +263,8 @@ impl Hosted {
 
     fn deliver(&mut self, sender: User, text: String) {
         self.feed.add(sender.clone(), text.clone());
+        let mut sender = sender;
+        sender.handle.make_ascii_lowercase();
         self.links.retain(|_, link| {
             !link.active
                 || link
@@ -258,6 +275,15 @@ impl Hosted {
                     })
                     .is_ok()
         });
+    }
+
+    fn wire_participants(&self, own: &User) -> Vec<User> {
+        let mut participants = self.participants(own);
+        // Peers on the 0.1.0 wire format require lowercase handles.
+        for user in &mut participants {
+            user.handle.make_ascii_lowercase();
+        }
+        participants
     }
 
     fn close(self) {
@@ -399,15 +425,36 @@ impl PrivateLobby {
         self.engine.state().memberships = memberships;
     }
 
-    pub async fn nearby_devices(&self) -> Option<Vec<NearbyDevice>> {
+    pub fn discovery_status() -> DiscoveryStatus {
+        match Scope::current() {
+            Ok(_) => DiscoveryStatus::Ready,
+            Err(error) if error.is::<lan::NoLanInterface>() => DiscoveryStatus::NetworkUnavailable,
+            Err(_) => DiscoveryStatus::DiscoveryFailed,
+        }
+    }
+
+    pub async fn nearby_devices(&self) -> NearbyDevices {
         let lan = &self.engine.lan;
-        if !lan.discovery_available() {
-            return None;
+        let unavailable = |status| NearbyDevices {
+            status,
+            devices: Vec::new(),
+        };
+        let records = if lan.discovery_available() {
+            lan.nearby(None).await
+        } else {
+            return unavailable(DiscoveryStatus::DiscoveryFailed);
+        };
+        match Scope::current() {
+            Ok(scope) if scope == lan.scope => {}
+            Ok(_) => return unavailable(DiscoveryStatus::Starting),
+            Err(error) if error.is::<lan::NoLanInterface>() => {
+                return unavailable(DiscoveryStatus::NetworkUnavailable);
+            }
+            Err(_) => return unavailable(DiscoveryStatus::DiscoveryFailed),
         }
-        let records = lan.nearby(None).await;
-        if !self.network_matches() {
-            return None;
-        }
+        let Ok(records) = records else {
+            return unavailable(DiscoveryStatus::DiscoveryFailed);
+        };
         let own = &self.engine.own;
         let state = self.engine.state();
         let accounts: HashMap<_, _> = state
@@ -426,7 +473,10 @@ impl PrivateLobby {
             })
             .collect();
         devices.sort_by_key(|device| device.id);
-        Some(devices)
+        NearbyDevices {
+            status: DiscoveryStatus::Ready,
+            devices,
+        }
     }
 
     pub async fn invite_nearby(&self, device: Uuid, account: Uuid) -> Result<Uuid> {
@@ -451,7 +501,7 @@ impl PrivateLobby {
         );
         let record = lan
             .nearby(Some(device))
-            .await
+            .await?
             .remove(&device)
             .filter(|record| record.tag == lan.tag(account))
             .context("This device is no longer listed for that account.")?;
@@ -506,29 +556,42 @@ impl PrivateLobby {
             .map(|room| room.summary(&self.engine.own))
             .chain(state.guests.values().map(|guest| guest.summary.clone()))
             .collect();
+        for room in &mut rooms {
+            restore_room_names(room, &state.memberships, &self.engine.own);
+        }
         rooms.sort_by_key(|room| room.id);
         rooms
     }
 
     pub fn view(&self, id: Uuid, after: u64) -> Result<PrivateView> {
         let state = self.engine.state();
-        if let Some(room) = state.hosted.get(&id) {
-            Ok(PrivateView {
+        let mut view = if let Some(room) = state.hosted.get(&id) {
+            PrivateView {
                 summary: room.summary(&self.engine.own),
                 connection: id,
                 messages: room.feed.since(after),
-            })
+            }
         } else {
             let guest = state
                 .guests
                 .get(&id)
                 .context("The private session has ended.")?;
-            Ok(PrivateView {
+            PrivateView {
                 summary: guest.summary.clone(),
                 connection: guest.link,
                 messages: guest.feed.since(after),
-            })
+            }
+        };
+        restore_room_names(&mut view.summary, &state.memberships, &self.engine.own);
+        let members = view
+            .summary
+            .conversation
+            .and_then(|id| state.memberships.get(&id))
+            .map(Vec::as_slice);
+        for message in &mut view.messages {
+            restore_name(&mut message.sender, members, &self.engine.own);
         }
+        Ok(view)
     }
 
     pub fn create(
@@ -734,6 +797,34 @@ impl PrivateLobby {
         let mut state = self.engine.state();
         state.hosted.clear();
         state.guests.clear();
+    }
+}
+
+fn restore_room_names(
+    room: &mut PrivateSummary,
+    memberships: &HashMap<Uuid, Vec<User>>,
+    own: &User,
+) {
+    let members = room
+        .conversation
+        .and_then(|id| memberships.get(&id))
+        .map(Vec::as_slice);
+    for user in std::iter::once(&mut room.host)
+        .chain(&mut room.invited)
+        .chain(&mut room.participants)
+    {
+        restore_name(user, members, own);
+    }
+}
+
+fn restore_name(user: &mut User, members: Option<&[User]>, own: &User) {
+    let matching = if user.id == own.id {
+        Some(own)
+    } else {
+        members.and_then(|members| members.iter().find(|member| member.id == user.id))
+    };
+    if let Some(matching) = matching {
+        user.handle.clone_from(&matching.handle);
     }
 }
 
@@ -1092,7 +1183,7 @@ fn admit(host: &mut Hosted, own: &User, account: Uuid, approval: Consent) {
         host.ever_connected = true;
         host.feed.last_text = Instant::now();
     }
-    let participants = host.participants(own);
+    let participants = host.wire_participants(own);
     host.links.retain(|_, link| {
         link.user.id != account
             || link

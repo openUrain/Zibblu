@@ -72,7 +72,8 @@ pub(crate) async fn issue(
         OffsetDateTime::from_unix_timestamp(auth.expires_at).map_err(|_| Error::internal())?;
     let mut params =
         CertificateParams::new(vec![lan_peer_name(auth.user_id)]).map_err(|_| Error::internal())?;
-    params.distinguished_name = name(&handle);
+    // Older LAN clients validate the certificate CN as a lowercase handle.
+    params.distinguished_name = name(&handle.to_ascii_lowercase());
     params.not_before = now - Duration::minutes(1);
     params.not_after = (now + Duration::hours(1)).min(expiry);
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
