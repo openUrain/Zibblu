@@ -37,17 +37,18 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     const outside = (event: PointerEvent) => {
       if (!(event.target instanceof Node) || !panel.current?.contains(event.target)) setMenu(undefined);
     };
-    const dismissOnScroll = (event: Event) => {
-      if (event.target instanceof HTMLElement && event.target.contains(menu.anchor)) setMenu(undefined);
+    const reposition = () => {
+      const anchor = menu.anchor.getBoundingClientRect();
+      if (!menu.anchor.isConnected || anchor.bottom < 0 || anchor.top > window.innerHeight) setMenu(undefined);
     };
     const dismiss = () => setMenu(undefined);
     window.addEventListener("pointerdown", outside);
     window.addEventListener("resize", dismiss);
-    window.addEventListener("scroll", dismissOnScroll, true);
+    window.addEventListener("scroll", reposition, true);
     return () => {
       window.removeEventListener("pointerdown", outside);
       window.removeEventListener("resize", dismiss);
-      window.removeEventListener("scroll", dismissOnScroll, true);
+      window.removeEventListener("scroll", reposition, true);
     };
   }, [menu]);
 
@@ -57,13 +58,14 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     const target = event.target instanceof HTMLElement ? event.target : event.target.parentElement ?? event.currentTarget;
     const privateChat = !!target.closest(".private-chat");
     const field = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ? target : undefined;
-    const editable = field && !field.readOnly && !field.disabled && field.selectionStart !== null;
+    const editable = field && !field.readOnly && !field.disabled
+      && (field instanceof HTMLTextAreaElement || /^(text|search|url|tel|email|password)$/.test(field.type));
     const password = field instanceof HTMLInputElement && field.type === "password";
-    const start = field?.selectionStart ?? 0;
-    const end = field?.selectionEnd ?? 0;
+    const start = field?.selectionStart ?? null;
+    const end = field?.selectionEnd ?? null;
     const items: Item[] = [];
     if (!privateChat && !password) {
-      const text = field ? field.value.slice(start, end) : window.getSelection()?.toString();
+      const text = field ? start !== null && end !== null ? field.value.slice(start, end) : "" : window.getSelection()?.toString();
       if (text) items.push({
         label: "Copy", action: () => { void navigator.clipboard.writeText(text).catch(() => {}); },
       });
@@ -71,13 +73,13 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     if (editable) items.push({
       label: "Paste", action: () => {
         field.focus({ preventScroll: true });
-        field.setSelectionRange(start, end);
+        if (start !== null && end !== null) field.setSelectionRange(start, end);
         void navigator.clipboard.readText().then(value => {
           if (field.isConnected && document.activeElement === field) document.execCommand("insertText", false, value);
         }).catch(() => {});
       },
     });
-    if (field && field.selectionStart !== null && (!privateChat || editable)) {
+    if (editable || (field && start !== null && !privateChat)) {
       items.push({ label: "Select all", action: () => field.select() });
     }
     open(target, items.length ? items : [{ label: "No actions available", disabled: true, action: () => {} }],
