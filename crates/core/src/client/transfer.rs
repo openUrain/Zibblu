@@ -99,7 +99,8 @@ impl Client {
         let rows: Vec<(String, Option<String>)> = sqlx::query_as(
             "SELECT t.payload, json_extract(i.payload, '$.sender') FROM transfers t
              LEFT JOIN inbox i ON t.id = i.attachment_id
-             WHERE NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h.attachment_id = t.id)
+             WHERE json_extract(t.payload, '$.status') <> 'complete'
+                OR NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h.attachment_id = t.id)
              ORDER BY t.rowid DESC",
         )
         .fetch_all(&self.db)

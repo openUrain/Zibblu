@@ -165,6 +165,70 @@ async fn normal_chat_and_files() -> Result<()> {
         bob.queue_download(id, destination).await.is_err(),
         "Protect an existing destination"
     );
+    let transfer_profile = tempfile::tempdir()?;
+    let reader = sign_in(
+        transfer_profile.path(),
+        &server,
+        &bob_handle,
+        &password,
+        false,
+    )
+    .await?;
+    reader.sync().await?;
+    let shared = reader.attachment(id).await?;
+    let saved = transfer_profile.path().join("resume-hidden.bin");
+    reader.queue_download(id, saved.clone()).await?;
+    reader.pause(id, Direction::Download).await?;
+    wait_transfer(&reader, id, Direction::Download, |transfer| {
+        transfer.status == TransferStatus::Paused
+    })
+    .await?;
+    reader.hide_message(chat, shared.seq).await?;
+    assert!(reader.attachment(id).await.is_err());
+    assert!(
+        reader
+            .files(FileFilter::default(), None)
+            .await?
+            .items
+            .is_empty()
+    );
+    assert!(bob.attachment(id).await.is_ok());
+    reader.logout().await?;
+    drop(reader);
+    let reader = sign_in(
+        transfer_profile.path(),
+        &server,
+        &bob_handle,
+        &password,
+        false,
+    )
+    .await?;
+    assert!(
+        reader
+            .transfers()
+            .await?
+            .iter()
+            .any(|transfer| transfer.attachment.id == id
+                && transfer.status == TransferStatus::Paused)
+    );
+    reader.resume(id, Direction::Download).await?;
+    tokio::time::timeout(Duration::from_secs(40), async {
+        while !saved.exists() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await?;
+    assert_eq!(
+        format!("{:x}", Sha256::digest(std::fs::read(saved)?)),
+        expected
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !reader.transfers().await?.is_empty() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
     println!(
         "Upload resumed from byte {} of {}, appeared in both Files views, and matched SHA-256 after download",
         paused.received, upload.attachment.size

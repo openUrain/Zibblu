@@ -54,7 +54,7 @@ Signed-in users can view account handles and avatars. A profile's cover and bio 
 
 The server checks membership, history cutoffs and AI reply audiences when advancing the private per-account unread cursor. Read receipts start disabled. The service records a receipt only if both reader and sender enabled it at the time of reading, and returns it only to the sender while both settings are enabled. Group messages show a receipt when at least one eligible recipient has read them.
 
-Delete for me hides the message in the current SQLite profile, including search, quotes, file history and AI selection. Other devices and other accounts retain their own views. Quotes reference a message in the same conversation and resolve against each viewer's authorized history. Normal drafts live in the signed-in renderer's memory. Private drafts also clear on session termination or disconnect.
+Delete for me hides the message in the current SQLite profile, including search, quotes, file history and AI selection. An incomplete transfer remains manageable in Transfers. Other devices and other accounts retain their own views. Quotes reference a message in the same conversation and resolve against each viewer's authorized history. Normal drafts live in the signed-in renderer's memory. Private drafts also clear on session termination or disconnect.
 
 Normal group join codes are renewable bearer invitations available to group members. The server stores a hash and expires each code after seven days. QR admission records a message sequence cutoff, enforced on synchronized messages, previews and file downloads. Existing group members retain the history they could already access.
 
