@@ -6398,6 +6398,7 @@ dependencies = [
  "argon2",
  "axum",
  "futures-util",
+ "png",
  "rcgen",
  "reqwest 0.12.28",
  "serde",

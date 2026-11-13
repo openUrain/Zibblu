@@ -54,7 +54,8 @@ async fn scoped_messages(
     scope: AiScope,
 ) -> Result<Vec<AiMessage>> {
     let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-        "SELECT payload FROM inbox WHERE json_type(payload, '$.text') = 'text' AND attachment_id IS NULL AND conversation_id = ",
+        "SELECT payload FROM inbox WHERE json_type(payload, '$.text') = 'text' AND attachment_id IS NULL
+         AND seq NOT IN (SELECT seq FROM hidden_messages) AND conversation_id = ",
     );
     query.push_bind(conversation.to_string());
     let expected = match scope {
@@ -117,6 +118,7 @@ mod tests {
         let mut db = SqliteConnection::connect("sqlite::memory:").await?;
         sqlx::raw_sql(
             "CREATE TABLE inbox (seq INTEGER PRIMARY KEY, conversation_id TEXT, payload TEXT, attachment_id TEXT);
+             CREATE TABLE hidden_messages (seq INTEGER PRIMARY KEY);
              CREATE TABLE directory (id INTEGER PRIMARY KEY, payload TEXT NOT NULL);",
         )
         .execute(&mut db)
@@ -157,6 +159,7 @@ mod tests {
                 attachment: None,
                 ai_provider: None,
                 recalled: false,
+                reply_to: None,
             })?;
             sqlx::query("INSERT INTO inbox VALUES (?, ?, ?, ?)")
                 .bind(seq)

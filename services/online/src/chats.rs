@@ -9,8 +9,9 @@ use sqlx::{FromRow, PgConnection, types::Json as DbJson};
 use uuid::Uuid;
 use zibblu_core::{
     AiProvider, Attachment, Conversation, ConversationCreated, ConversationRequest, Directory,
-    MAX_AI_REPLY_BYTES, MAX_GROUP_MEMBERS, MAX_MESSAGE_BYTES, Message, MessageRecall,
-    PendingContact, PublishAiReply, RECALL_WINDOW_MS, SYNC_PAGE_SIZE, SendMessage, SyncPage, User,
+    MAX_AI_REPLY_BYTES, MAX_GROUP_MEMBERS, MAX_MESSAGE_BYTES, MAX_RECEIPT_QUERY, Message,
+    MessageRecall, PendingContact, PublishAiReply, RECALL_WINDOW_MS, ReadPreference, ReadUpdate,
+    SYNC_PAGE_SIZE, SendMessage, SyncPage, User,
 };
 
 #[derive(Deserialize)]
@@ -26,6 +27,10 @@ struct ChatRow {
     members: DbJson<Vec<User>>,
     activity_at: i64,
     preview: Option<String>,
+    preview_seq: Option<i64>,
+    latest_seq: i64,
+    unread: i64,
+    read_through: i64,
 }
 
 #[derive(FromRow)]
@@ -39,6 +44,7 @@ struct MessageRow {
     attachment: Option<DbJson<Attachment>>,
     ai_provider: Option<DbJson<AiProvider>>,
     recalled: bool,
+    reply_to: Option<i64>,
 }
 
 pub(crate) async fn sync(
@@ -53,15 +59,15 @@ pub(crate) async fn sync(
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         .execute(&mut *tx)
         .await?;
-    let contacts = sqlx::query_as::<_, (Uuid, String)>(
-        "SELECT a.id, a.handle FROM contacts c JOIN accounts a ON a.id = c.contact_id
+    let contacts = sqlx::query_as::<_, (Uuid, String, String)>(
+        "SELECT a.id, a.handle, c.remark FROM contacts c JOIN accounts a ON a.id = c.contact_id
          WHERE c.owner_id = $1 ORDER BY a.handle",
     )
     .bind(auth.user_id)
     .fetch_all(&mut *tx)
     .await?;
-    let pending = sqlx::query_as::<_, (Uuid, String, bool)>(
-        "SELECT a.id, a.handle, r.recipient_id = $1 AS incoming
+    let pending = sqlx::query_as::<_, (Uuid, String, bool, Uuid, String)>(
+        "SELECT a.id, a.handle, r.recipient_id = $1 AS incoming, r.request_id, r.greeting
          FROM contact_requests r
          JOIN accounts a ON a.id = CASE WHEN r.recipient_id = $1 THEN r.requester_id ELSE r.recipient_id END
          WHERE r.requester_id = $1 OR r.recipient_id = $1 ORDER BY a.handle",
@@ -71,14 +77,15 @@ pub(crate) async fn sync(
     .await?;
     let conversations = sqlx::query_as::<_, ChatRow>(
         "SELECT c.id, c.title, roster.members, coalesce(latest.created_at, c.created_at) AS activity_at,
-                latest.preview
+                latest.preview, latest.seq AS preview_seq, coalesce(newest.seq, 0) AS latest_seq,
+                stats.unread, own.read_through
          FROM members own JOIN conversations c ON c.id = own.conversation_id
          JOIN LATERAL (
              SELECT jsonb_agg(jsonb_build_object('id', a.id, 'handle', a.handle) ORDER BY a.handle) AS members
              FROM members m JOIN accounts a ON a.id = m.account_id WHERE m.conversation_id = c.id
          ) roster ON true
          LEFT JOIN LATERAL (
-             SELECT m.created_at, CASE WHEN m.recall_seq IS NOT NULL THEN 'Message recalled'
+             SELECT m.seq, m.created_at, CASE WHEN m.recall_seq IS NOT NULL THEN 'Message recalled'
                     ELSE coalesce(left(m.text, 100), f.name) END AS preview
              FROM messages m LEFT JOIN attachments f ON f.id = m.attachment_id
              WHERE m.conversation_id = c.id AND m.seq > own.joined_after
@@ -87,18 +94,55 @@ pub(crate) async fn sync(
                ))
              ORDER BY m.created_at DESC, m.seq DESC LIMIT 1
          ) latest ON true
+         JOIN LATERAL (
+             SELECT count(*) FILTER (WHERE m.sender_id <> $1 AND m.recall_seq IS NULL) AS unread
+             FROM messages m
+             WHERE m.conversation_id = c.id AND m.seq > greatest(own.joined_after, own.read_through)
+               AND (m.ai_provider IS NULL OR EXISTS (
+                   SELECT 1 FROM ai_reply_readers r WHERE r.message_seq = m.seq AND r.account_id = $1
+               ))
+         ) stats ON true
+         LEFT JOIN LATERAL (
+             SELECT m.seq FROM messages m WHERE m.conversation_id = c.id AND m.seq > own.joined_after
+               AND (m.ai_provider IS NULL OR EXISTS (
+                   SELECT 1 FROM ai_reply_readers r WHERE r.message_seq = m.seq AND r.account_id = $1
+               )) ORDER BY m.seq DESC LIMIT 1
+         ) newest ON true
          WHERE own.account_id = $1 ORDER BY activity_at DESC, c.id",
     ).bind(auth.user_id).fetch_all(&mut *tx).await?;
+    let read_receipts = sqlx::query_scalar("SELECT read_receipts FROM accounts WHERE id = $1")
+        .bind(auth.user_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let mut people = vec![auth.user_id];
+    people.extend(contacts.iter().map(|(id, ..)| *id));
+    people.extend(pending.iter().map(|(id, ..)| *id));
+    people.extend(
+        conversations
+            .iter()
+            .flat_map(|row| row.members.0.iter().map(|user| user.id)),
+    );
+    people.sort_unstable();
+    people.dedup();
+    let avatars = sqlx::query_as::<_, (Uuid, Uuid)>(
+        "SELECT account_id, version FROM profile_images WHERE kind = 'avatar' AND account_id = ANY($1)",
+    ).bind(&people).fetch_all(&mut *tx).await?;
     let messages = sqlx::query_as::<_, MessageRow>(
         "SELECT m.seq, m.conversation_id, m.sender_id, a.handle, m.created_at,
                 CASE WHEN m.recall_seq IS NULL THEN m.text END AS text,
                 to_jsonb(m.ai_provider) AS ai_provider, m.recall_seq IS NOT NULL AS recalled,
+                CASE WHEN m.recall_seq IS NULL THEN quote.seq END AS reply_to,
                 CASE WHEN f.id IS NOT NULL AND m.recall_seq IS NULL THEN jsonb_build_object(
                     'id', f.id, 'name', f.name, 'size', f.size, 'sha256', f.sha256, 'kind', f.kind
                 ) END AS attachment
          FROM messages m JOIN accounts a ON a.id = m.sender_id
          JOIN members own ON own.conversation_id = m.conversation_id AND own.account_id = $1
          LEFT JOIN attachments f ON f.id = m.attachment_id
+         LEFT JOIN messages quote ON quote.seq = m.reply_to AND quote.conversation_id = m.conversation_id
+           AND quote.seq > own.joined_after
+           AND (quote.ai_provider IS NULL OR EXISTS (
+               SELECT 1 FROM ai_reply_readers r WHERE r.message_seq = quote.seq AND r.account_id = $1
+           ))
          WHERE m.seq > $2 AND m.seq > own.joined_after
            AND (m.ai_provider IS NULL OR EXISTS (
                SELECT 1 FROM ai_reply_readers r WHERE r.message_seq = m.seq AND r.account_id = $1
@@ -136,15 +180,28 @@ pub(crate) async fn sync(
     Ok(Json(SyncPage {
         directory: Directory {
             contacts: contacts
-                .into_iter()
-                .map(|(id, handle)| User { id, handle })
+                .iter()
+                .map(|(id, handle, _)| User {
+                    id: *id,
+                    handle: handle.clone(),
+                })
                 .collect(),
+            remarks: contacts
+                .into_iter()
+                .filter_map(|(id, _, remark)| (!remark.is_empty()).then_some((id, remark)))
+                .collect(),
+            avatars: avatars.into_iter().collect(),
+            read_receipts,
             pending_contacts: pending
                 .into_iter()
-                .map(|(id, handle, incoming)| PendingContact {
-                    user: User { id, handle },
-                    incoming,
-                })
+                .map(
+                    |(id, handle, incoming, request_id, greeting)| PendingContact {
+                        user: User { id, handle },
+                        incoming,
+                        request_id: Some(request_id),
+                        greeting,
+                    },
+                )
                 .collect(),
             conversations: conversations
                 .into_iter()
@@ -154,6 +211,10 @@ pub(crate) async fn sync(
                     members: row.members.0,
                     activity_at: row.activity_at,
                     preview: row.preview,
+                    preview_seq: row.preview_seq,
+                    latest_seq: row.latest_seq,
+                    unread: row.unread,
+                    read_through: row.read_through,
                 })
                 .collect(),
         },
@@ -171,6 +232,7 @@ pub(crate) async fn sync(
                 attachment: row.attachment.map(|value| value.0),
                 ai_provider: row.ai_provider.map(|value| value.0),
                 recalled: row.recalled,
+                reply_to: row.reply_to,
             })
             .collect(),
         recalls,
@@ -183,16 +245,8 @@ pub(crate) async fn create(
     auth: Auth,
     Json(input): Json<ConversationRequest>,
 ) -> Result<Json<ConversationCreated>> {
-    let (title, direct_key, peers) = match input {
-        ConversationRequest::Direct { contact_id } => {
-            let mut pair = [auth.user_id, contact_id];
-            pair.sort_unstable();
-            (
-                None,
-                Some(format!("{}:{}", pair[0], pair[1])),
-                vec![contact_id],
-            )
-        }
+    let (title, peers) = match input {
+        ConversationRequest::Direct { contact_id } => (None, vec![contact_id]),
         ConversationRequest::Group {
             title,
             mut contact_ids,
@@ -212,7 +266,7 @@ pub(crate) async fn create(
             if contact_ids.len() < 2 {
                 return Err(Error::bad("Choose at least two contacts."));
             }
-            (Some(title), None, contact_ids)
+            (Some(title), contact_ids)
         }
     };
     let mut tx = app.db.begin().await?;
@@ -229,6 +283,22 @@ pub(crate) async fn create(
             "Participants must approve your contact request first.",
         ));
     }
+    let id = insert_conversation(&mut tx, auth.user_id, title, peers).await?;
+    tx.commit().await?;
+    Ok(Json(ConversationCreated { id }))
+}
+
+pub(crate) async fn insert_conversation(
+    db: &mut PgConnection,
+    account: Uuid,
+    title: Option<String>,
+    mut peers: Vec<Uuid>,
+) -> Result<Uuid> {
+    let direct_key = title.is_none().then(|| {
+        let mut pair = [account, peers[0]];
+        pair.sort_unstable();
+        format!("{}:{}", pair[0], pair[1])
+    });
     let id: Uuid = sqlx::query_scalar(
         "INSERT INTO conversations (id, title, direct_key) VALUES ($1,$2,$3)
          ON CONFLICT (direct_key) DO UPDATE SET direct_key = excluded.direct_key RETURNING id",
@@ -236,20 +306,18 @@ pub(crate) async fn create(
     .bind(Uuid::new_v4())
     .bind(title)
     .bind(direct_key)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *db)
     .await?;
-    let mut members = peers;
-    members.push(auth.user_id);
+    peers.push(account);
     sqlx::query(
         "INSERT INTO members (conversation_id, account_id)
          SELECT $1, unnest($2::uuid[]) ON CONFLICT DO NOTHING",
     )
     .bind(id)
-    .bind(&members)
-    .execute(&mut *tx)
+    .bind(&peers)
+    .execute(db)
     .await?;
-    tx.commit().await?;
-    Ok(Json(ConversationCreated { id }))
+    Ok(id)
 }
 
 pub(crate) async fn require_send_access(
@@ -298,29 +366,141 @@ pub(crate) async fn send(
     let mut tx = app.db.begin().await?;
     lock_message_feed(&mut tx).await?;
     require_send_access(&mut tx, id, auth.user_id).await?;
-    let result = sqlx::query(
-        "INSERT INTO messages (nonce, conversation_id, sender_id, text) VALUES ($1,$2,$3,$4)
-         ON CONFLICT (sender_id, nonce) DO NOTHING",
+    let existing: Option<bool> = sqlx::query_scalar(
+        "SELECT conversation_id = $3 AND ai_provider IS NULL AND (text = $4 OR recall_seq IS NOT NULL)
+                AND reply_to IS NOT DISTINCT FROM $5
+         FROM messages WHERE sender_id = $1 AND nonce = $2",
+    ).bind(auth.user_id).bind(input.nonce).bind(id).bind(text).bind(input.reply_to)
+    .fetch_optional(&mut *tx).await?;
+    if let Some(same) = existing {
+        return if same {
+            Ok(StatusCode::NO_CONTENT)
+        } else {
+            Err(Error::conflict(
+                "This message ID was used for a different message.",
+            ))
+        };
+    }
+    if let Some(source) = input.reply_to {
+        let visible: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM messages m JOIN members own ON own.conversation_id = m.conversation_id
+              AND own.account_id = $3 WHERE m.seq = $1 AND m.conversation_id = $2 AND m.seq > own.joined_after
+              AND m.recall_seq IS NULL AND (m.ai_provider IS NULL OR EXISTS (
+                 SELECT 1 FROM ai_reply_readers WHERE message_seq = m.seq AND account_id = $3)))",
+        ).bind(source).bind(id).bind(auth.user_id).fetch_one(&mut *tx).await?;
+        if !visible {
+            return Err(Error::missing());
+        }
+    }
+    sqlx::query(
+        "INSERT INTO messages (nonce, conversation_id, sender_id, text, reply_to) VALUES ($1,$2,$3,$4,$5)",
     )
     .bind(input.nonce)
     .bind(id)
     .bind(auth.user_id)
     .bind(text)
+    .bind(input.reply_to)
     .execute(&mut *tx)
     .await?;
-    if result.rows_affected() == 0 {
-        let same: bool = sqlx::query_scalar(
-            "SELECT conversation_id = $3 AND ai_provider IS NULL AND (text = $4 OR recall_seq IS NOT NULL)
-             FROM messages WHERE sender_id = $1 AND nonce = $2",
-        ).bind(auth.user_id).bind(input.nonce).bind(id).bind(text).fetch_one(&mut *tx).await?;
-        if !same {
-            return Err(Error::conflict(
-                "This message ID was used for a different message.",
-            ));
-        }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn set_read_receipts(
+    State(app): State<App>,
+    auth: Auth,
+    Json(input): Json<ReadPreference>,
+) -> Result<StatusCode> {
+    let mut tx = app.db.begin().await?;
+    sqlx::query("UPDATE accounts SET read_receipts = $2 WHERE id = $1")
+        .bind(auth.user_id)
+        .bind(input.enabled)
+        .execute(&mut *tx)
+        .await?;
+    if !input.enabled {
+        sqlx::query("DELETE FROM message_receipts WHERE account_id = $1")
+            .bind(auth.user_id)
+            .execute(&mut *tx)
+            .await?;
     }
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn read(
+    State(app): State<App>,
+    auth: Auth,
+    Path(id): Path<Uuid>,
+    Json(input): Json<ReadUpdate>,
+) -> Result<Json<Vec<i64>>> {
+    if input.sent.len() > MAX_RECEIPT_QUERY || input.through.is_some_and(|seq| seq <= 0) {
+        return Err(Error::bad("Invalid read position or receipt query."));
+    }
+    let mut tx = app.db.begin().await?;
+    let enabled: bool =
+        sqlx::query_scalar("SELECT read_receipts FROM accounts WHERE id = $1 FOR SHARE")
+            .bind(auth.user_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if input.through.is_none() {
+        let member: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM members WHERE conversation_id = $1 AND account_id = $2)",
+        )
+        .bind(id)
+        .bind(auth.user_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !member {
+            return Err(Error::missing());
+        }
+    }
+    if let Some(through) = input.through {
+        let (joined_after, read_through): (i64, i64) = sqlx::query_as(
+        "SELECT joined_after, read_through FROM members WHERE conversation_id = $1 AND account_id = $2 FOR UPDATE",
+        ).bind(id).bind(auth.user_id).fetch_optional(&mut *tx).await?.ok_or_else(Error::missing)?;
+        if through > read_through {
+            let visible: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM messages m WHERE m.seq = $1 AND m.conversation_id = $2 AND m.seq > $4
+                  AND (m.ai_provider IS NULL OR EXISTS (
+                      SELECT 1 FROM ai_reply_readers WHERE message_seq = m.seq AND account_id = $3)))",
+        ).bind(through).bind(id).bind(auth.user_id).bind(joined_after).fetch_one(&mut *tx).await?;
+            if !visible {
+                return Err(Error::missing());
+            }
+            sqlx::query("UPDATE members SET read_through = $3 WHERE conversation_id = $1 AND account_id = $2")
+            .bind(id).bind(auth.user_id).bind(through).execute(&mut *tx).await?;
+            if enabled {
+                sqlx::query(
+                "INSERT INTO message_receipts (message_seq, account_id)
+                 SELECT m.seq, $2 FROM messages m JOIN accounts sender ON sender.id = m.sender_id
+                 WHERE m.conversation_id = $1 AND m.seq > $3 AND m.seq <= $4 AND m.sender_id <> $2
+                   AND m.recall_seq IS NULL AND sender.read_receipts
+                   AND (m.ai_provider IS NULL OR EXISTS (
+                       SELECT 1 FROM ai_reply_readers WHERE message_seq = m.seq AND account_id = $2))
+                 ON CONFLICT DO NOTHING",
+            ).bind(id).bind(auth.user_id).bind(joined_after.max(read_through)).bind(through)
+            .execute(&mut *tx).await?;
+            }
+        }
+    }
+    let seen = if enabled && !input.sent.is_empty() {
+        sqlx::query_scalar(
+            "SELECT m.seq FROM messages m WHERE m.conversation_id = $1 AND m.sender_id = $2
+               AND m.recall_seq IS NULL AND m.seq = ANY($3) AND EXISTS (
+                   SELECT 1 FROM message_receipts r JOIN accounts reader ON reader.id = r.account_id
+                   WHERE r.message_seq = m.seq AND reader.read_receipts
+               ) ORDER BY m.seq",
+        )
+        .bind(id)
+        .bind(auth.user_id)
+        .bind(&input.sent)
+        .fetch_all(&mut *tx)
+        .await?
+    } else {
+        Vec::new()
+    };
+    tx.commit().await?;
+    Ok(Json(seen))
 }
 
 pub(crate) async fn recall(

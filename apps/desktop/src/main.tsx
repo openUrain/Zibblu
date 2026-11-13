@@ -4,14 +4,14 @@ import type { FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, errorMessage } from "./api";
-import type { Preferences, Session, Theme } from "./api";
+import type { Preferences, Session } from "./api";
 import { Brand } from "./common";
 import { DesktopMenus } from "./context-menu";
 import { Workspace } from "./workspace";
 import { PrivateInvitationWindow } from "./private-chat";
 import "./style.css";
 
-const defaults: Preferences = { server: "http://127.0.0.1:7841", theme: "system", private_quiet: false };
+const defaults: Preferences = { server: "http://127.0.0.1:7841", private_quiet: false };
 
 function App() {
   const [preferences, setPreferences] = useState<Preferences>();
@@ -21,26 +21,10 @@ function App() {
   useEffect(() => {
     api.preferences().then(setPreferences).catch(() => setPreferences(defaults));
   }, []);
-  useEffect(() => {
-    const system = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => {
-      const choice = preferences?.theme ?? "system";
-      document.documentElement.dataset.theme = choice === "system" ? (system.matches ? "dark" : "light") : choice;
-    };
-    apply();
-    system.addEventListener("change", apply);
-    return () => system.removeEventListener("change", apply);
-  }, [preferences?.theme]);
-
   if (!preferences) return <main className="boot"><Brand /><span role="status">Opening Zibblu…</span></main>;
 
-  async function setTheme(theme: Theme) {
-    await api.setTheme(theme);
-    setPreferences(current => ({ ...(current ?? defaults), theme }));
-  }
-
   if (session) {
-    return <Workspace session={session} theme={preferences.theme} setTheme={setTheme}
+    return <Workspace session={session}
       privateQuiet={preferences.private_quiet} setPrivateQuiet={async quiet => {
         await api.setPrivateQuiet(quiet);
         setPreferences(current => ({ ...(current ?? defaults), private_quiet: quiet }));
@@ -93,21 +77,18 @@ function SignIn({ initialServer, notice, signedIn }: {
         <h2>{register ? "Create an account" : "Sign in to Zibblu"}</h2>
         <p className="muted">{register ? "Choose a username friends can use to find you." : "Use your account and your Zibblu server address."}</p>
         <form onSubmit={submit}>
-          <label className="floating-field">
-            <input type="url" value={server} onChange={event => setServer(event.target.value)} required placeholder=" " />
-            <span>Server address</span>
-          </label>
-          <label className="floating-field">
-            <input value={handle} onChange={event => setHandle(event.target.value)} required
-              autoComplete="username" maxLength={32} placeholder=" " />
-            <span>Username</span>
-          </label>
-          <label className="floating-field">
-            <input type="password" value={password} onChange={event => setPassword(event.target.value)} required
+          <fieldset className="floating-field"><legend><label htmlFor="server">Server address</label></legend>
+            <input id="server" type="url" value={server} onChange={event => setServer(event.target.value)} required />
+          </fieldset>
+          <fieldset className="floating-field"><legend><label htmlFor="username">Username</label></legend>
+            <input id="username" value={handle} onChange={event => setHandle(event.target.value)} required
+              autoComplete="username" maxLength={32} />
+          </fieldset>
+          <fieldset className="floating-field"><legend><label htmlFor="password">Password</label></legend>
+            <input id="password" type="password" value={password} onChange={event => setPassword(event.target.value)} required
               autoComplete={register ? "new-password" : "current-password"} minLength={register ? 12 : undefined}
-              maxLength={256} placeholder=" " />
-            <span>Password</span>
-          </label>
+              maxLength={256} />
+          </fieldset>
           {failure && <div className="inline-error" role="alert">{failure}</div>}
           <button className="button primary signin-submit" disabled={busy} type="submit">
             {busy ? "Connecting…" : register ? "Create account" : "Sign in"} <ArrowRight size={17} />

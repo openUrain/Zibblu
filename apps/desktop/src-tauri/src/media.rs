@@ -6,7 +6,36 @@ use tauri::{
     ipc::InvokeBody,
 };
 use uuid::Uuid;
-use zibblu_core::{CHUNK_SIZE, MAX_PASTED_IMAGE_BYTES, Transfer};
+use zibblu_core::{
+    CHUNK_SIZE, MAX_PASTED_IMAGE_BYTES, MAX_PROFILE_IMAGE_BYTES, ProfileImage, Transfer,
+};
+
+#[tauri::command]
+pub(crate) async fn set_profile_image(
+    state: State<'_, Desktop>,
+    request: tauri::ipc::Request<'_>,
+) -> CommandResult<()> {
+    let kind = match request
+        .headers()
+        .get("zibblu-profile-image")
+        .and_then(|value| value.to_str().ok())
+    {
+        Some("avatar") => ProfileImage::Avatar,
+        Some("cover") => ProfileImage::Cover,
+        _ => return Err(anyhow::anyhow!("Choose an avatar or cover image").into()),
+    };
+    let InvokeBody::Raw(bytes) = request.body() else {
+        return Err(anyhow::anyhow!("Choose a PNG image").into());
+    };
+    if bytes.len() > MAX_PROFILE_IMAGE_BYTES {
+        return Err(anyhow::anyhow!("Profile images can be up to 2 MiB").into());
+    }
+    Ok(state
+        .client()
+        .await?
+        .set_profile_image(kind, bytes.clone())
+        .await?)
+}
 
 #[tauri::command]
 pub(crate) async fn paste_image(
@@ -75,12 +104,35 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Re
             .is_none_or(|value| value == "image" || value == "video"),
         "Open the preview in a normal message"
     );
-    let id = Uuid::parse_str(request.uri().path().trim_start_matches('/'))?;
+    let path = request.uri().path().trim_start_matches('/');
     let client = app
         .state::<Desktop>()
         .client()
         .await
         .map_err(|_| anyhow::anyhow!("Sign in to preview media"))?;
+    if let Some((id, version)) = path
+        .strip_prefix("profile_")
+        .and_then(|path| path.split_once('_'))
+    {
+        let bytes = client
+            .profile_image(Uuid::parse_str(id)?, Uuid::parse_str(version)?)
+            .await?;
+        return Ok(Response::builder()
+            .header(header::CONTENT_TYPE, "image/png")
+            .header(header::CACHE_CONTROL, "no-store")
+            .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+            .header(
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; sandbox",
+            )
+            .header(header::CONTENT_LENGTH, bytes.len())
+            .body(if *request.method() == Method::HEAD {
+                Vec::new()
+            } else {
+                bytes
+            })?);
+    }
+    let id = Uuid::parse_str(path)?;
     let file = client
         .attachment(id)
         .await?

@@ -4,8 +4,9 @@ use sqlx::postgres::PgPoolOptions;
 use std::{path::Path, sync::Arc, time::Duration};
 use uuid::Uuid;
 use zibblu_core::{
-    AiProvider, AiScope, CHUNK_SIZE, Client, ConversationRequest, Credentials, Direction,
-    FileFilter, PublishAiReply, SendMessage, Session, Transfer, TransferStatus,
+    AiProvider, AiScope, CHUNK_SIZE, Client, ContactNotes, ConversationRequest, Credentials,
+    Direction, FileFilter, MAX_PROFILE_IMAGE_BYTES, ProfileImage, ProfileRelation, PublishAiReply,
+    ReadUpdate, SendMessage, Session, Transfer, TransferStatus,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -404,6 +405,37 @@ async fn normal_chat_and_files() -> Result<()> {
         .items;
     assert_eq!(scoped.len(), 1);
     assert_eq!(scoped[0].attachment.as_ref().unwrap().id, image_id);
+    let shared_by_bob = bob
+        .files(
+            FileFilter {
+                sender_id: Some(bob.user.id),
+                ..FileFilter::default()
+            },
+            None,
+        )
+        .await?;
+    assert!(
+        shared_by_bob
+            .items
+            .iter()
+            .all(|item| item.sender.id == bob.user.id)
+    );
+    let newest = bob.files(FileFilter::default(), None).await?.items;
+    let oldest = bob
+        .files(
+            FileFilter {
+                oldest_first: true,
+                ..FileFilter::default()
+            },
+            None,
+        )
+        .await?
+        .items;
+    assert!(newest.len() >= 2);
+    assert_eq!(
+        newest.iter().map(|item| item.seq).collect::<Vec<_>>(),
+        oldest.iter().rev().map(|item| item.seq).collect::<Vec<_>>()
+    );
     assert_eq!(
         bob.files(
             FileFilter {
@@ -540,6 +572,245 @@ async fn normal_chat_and_files() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn desktop_experience_permissions_and_sync() -> Result<()> {
+    let url = std::env::var("ZIBBLU_TEST_DATABASE_URL")?;
+    let db = PgPoolOptions::new()
+        .max_connections(6)
+        .connect(&url)
+        .await?;
+    let app = zibblu_online::router(db).await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let server = format!("http://{}", listener.local_addr()?);
+    let task = tokio::spawn(async move { axum::serve(listener, app).await });
+    let data = tempfile::tempdir()?;
+    let suffix = &Uuid::new_v4().simple().to_string()[..10];
+    let password = format!("acceptance-{suffix}");
+    let alice_handle = format!("alice_{suffix}");
+    let bob_handle = format!("bob_{suffix}");
+    let alice = sign_in(data.path(), &server, &alice_handle, &password, true).await?;
+    let bob = sign_in(data.path(), &server, &bob_handle, &password, true).await?;
+    let outsider = sign_in(
+        data.path(),
+        &server,
+        &format!("other_{suffix}"),
+        &password,
+        true,
+    )
+    .await?;
+
+    let mut image = Vec::new();
+    png::Encoder::new(&mut image, 1, 1)
+        .write_header()?
+        .write_image_data(&[0])?;
+    alice.set_bio("A private test bio".into()).await?;
+    assert!(
+        alice
+            .set_profile_image(ProfileImage::Avatar, b"not PNG".to_vec())
+            .await
+            .is_err()
+    );
+    assert!(
+        alice
+            .set_profile_image(ProfileImage::Avatar, vec![0; MAX_PROFILE_IMAGE_BYTES + 1])
+            .await
+            .is_err()
+    );
+    alice
+        .set_profile_image(ProfileImage::Avatar, image.clone())
+        .await?;
+    alice
+        .set_profile_image(ProfileImage::Cover, image.clone())
+        .await?;
+    let own = alice.profile(alice.user.id).await?;
+    let cover = own.cover.context("own cover version")?;
+    let basic = bob.profile(alice.user.id).await?;
+    assert!(matches!(basic.relation, ProfileRelation::Stranger));
+    assert_eq!(
+        bob.profile_image(alice.user.id, basic.avatar.unwrap())
+            .await?,
+        image
+    );
+    assert!(basic.cover.is_none() && basic.bio.is_none() && basic.notes.is_none());
+    assert!(bob.profile_image(alice.user.id, cover).await.is_err());
+    assert!(
+        bob.set_contact_notes(
+            alice.user.id,
+            ContactNotes {
+                remark: "Denied".into(),
+                contact_info: "Denied".into()
+            }
+        )
+        .await
+        .is_err()
+    );
+
+    alice
+        .request_contact(bob.user.id, "Decline this greeting".into())
+        .await?;
+    let pending = bob.sync().await?.pending_contacts.remove(0);
+    assert_eq!(pending.greeting, "Decline this greeting");
+    assert!(outsider.sync().await?.pending_contacts.is_empty());
+    assert!(bob.directory().await?.conversations.is_empty());
+    bob.decide_contact(alice.user.id, false, pending.request_id)
+        .await?;
+    assert!(alice.sync().await?.conversations.is_empty());
+    alice
+        .request_contact(bob.user.id, "Hello after approval".into())
+        .await?;
+    let incoming = bob.sync().await?.pending_contacts.remove(0);
+    assert!(
+        bob.decide_contact(alice.user.id, true, pending.request_id)
+            .await
+            .is_err()
+    );
+    assert!(
+        outsider
+            .decide_contact(alice.user.id, true, incoming.request_id)
+            .await
+            .is_err()
+    );
+    let (first, retry) = tokio::join!(
+        bob.decide_contact(alice.user.id, true, incoming.request_id),
+        bob.decide_contact(alice.user.id, true, incoming.request_id)
+    );
+    first?;
+    retry?;
+    let synced = bob.sync().await?;
+    let chat = synced.conversations[0].id;
+    assert_eq!(synced.conversations[0].unread, 1);
+    let greetings = bob.messages(chat, None).await?.items;
+    assert_eq!(greetings.len(), 1);
+    assert_eq!(greetings[0].text.as_deref(), Some("Hello after approval"));
+    let greeting = greetings[0].seq;
+    let profile = bob.profile(alice.user.id).await?;
+    assert!(matches!(profile.relation, ProfileRelation::Contact));
+    assert_eq!(profile.bio.as_deref(), Some("A private test bio"));
+    assert_eq!(bob.profile_image(alice.user.id, cover).await?, image);
+    bob.set_contact_notes(
+        alice.user.id,
+        ContactNotes {
+            remark: "Local nickname".into(),
+            contact_info: "Private number".into(),
+        },
+    )
+    .await?;
+    assert_eq!(
+        bob.sync()
+            .await?
+            .remarks
+            .get(&alice.user.id)
+            .map(String::as_str),
+        Some("Local nickname")
+    );
+    assert_eq!(
+        bob.profile(alice.user.id)
+            .await?
+            .notes
+            .unwrap()
+            .contact_info,
+        "Private number"
+    );
+    assert!(
+        alice
+            .profile(bob.user.id)
+            .await?
+            .notes
+            .unwrap()
+            .contact_info
+            .is_empty()
+    );
+    assert!(outsider.profile(alice.user.id).await?.notes.is_none());
+
+    let send_receipt = |through| ReadUpdate {
+        through: Some(through),
+        sent: vec![],
+    };
+    let query = |seq| ReadUpdate {
+        through: None,
+        sent: vec![seq],
+    };
+    bob.read_update(chat, send_receipt(greeting)).await?;
+    assert_eq!(bob.sync().await?.conversations[0].unread, 0);
+    alice.set_read_receipts(true).await?;
+    bob.set_read_receipts(true).await?;
+    assert!(alice.read_update(chat, query(greeting)).await?.is_empty());
+    send(&alice, chat, "Read by both accounts").await?;
+    bob.sync().await?;
+    let sent = bob.messages(chat, None).await?.items[0].seq;
+    assert!(outsider.read_update(chat, query(sent)).await.is_err());
+    assert!(bob.read_update(chat, send_receipt(sent + 1)).await.is_err());
+    bob.read_update(chat, send_receipt(sent)).await?;
+    assert!(bob.read_update(chat, query(sent)).await?.is_empty());
+    assert_eq!(alice.read_update(chat, query(sent)).await?, [sent]);
+    let other_device = tempfile::tempdir()?;
+    let bob_on_second_client =
+        sign_in(other_device.path(), &server, &bob_handle, &password, false).await?;
+    let second_sync = bob_on_second_client.sync().await?;
+    assert_eq!(second_sync.conversations[0].unread, 0);
+    assert!(second_sync.read_receipts);
+    bob.set_read_receipts(false).await?;
+    assert!(alice.read_update(chat, query(sent)).await?.is_empty());
+    bob.set_read_receipts(true).await?;
+    assert!(alice.read_update(chat, query(sent)).await?.is_empty());
+
+    bob.send_message(
+        chat,
+        SendMessage {
+            nonce: Uuid::new_v4(),
+            text: "Reply to Alice".into(),
+            reply_to: Some(sent),
+        },
+    )
+    .await?;
+    alice.sync().await?;
+    assert_eq!(
+        alice.messages(chat, None).await?.items[0].reply_to,
+        Some(sent)
+    );
+    bob.hide_message(chat, sent).await?;
+    assert!(bob.hide_message(Uuid::new_v4(), sent).await.is_err());
+    assert!(bob.quoted_message(chat, sent).await?.is_none());
+    assert!(
+        bob.ai_messages(
+            chat,
+            AiScope::Selected {
+                sequences: vec![sent]
+            }
+        )
+        .await
+        .is_err()
+    );
+    assert!(alice.quoted_message(chat, sent).await?.is_some());
+    assert!(
+        bob_on_second_client
+            .quoted_message(chat, sent)
+            .await?
+            .is_some()
+    );
+    assert!(
+        bob.sync()
+            .await?
+            .conversations
+            .iter()
+            .any(|item| item.id == chat)
+    );
+    assert!(
+        bob.messages(chat, None)
+            .await?
+            .items
+            .iter()
+            .all(|item| item.seq != sent)
+    );
+
+    alice.remove_contact(bob.user.id).await?;
+    assert!(bob.profile_image(alice.user.id, cover).await.is_err());
+    assert!(bob.profile(alice.user.id).await?.notes.is_none());
+    assert!(bob.sync().await?.remarks.is_empty());
+    task.abort();
+    Ok(())
+}
+
 async fn sign_in(
     root: &Path,
     server: &str,
@@ -566,6 +837,7 @@ async fn send(client: &Client, chat: Uuid, text: &str) -> Result<()> {
             SendMessage {
                 nonce: Uuid::new_v4(),
                 text: text.into(),
+                reply_to: None,
             },
         )
         .await

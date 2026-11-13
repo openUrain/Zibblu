@@ -77,7 +77,6 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::preferences,
-            commands::set_theme,
             commands::login,
             commands::logout,
             commands::sync,
@@ -88,6 +87,14 @@ fn main() {
             commands::add_contact,
             commands::respond_contact,
             commands::remove_contact,
+            commands::profile,
+            commands::set_bio,
+            commands::set_contact_notes,
+            media::set_profile_image,
+            commands::set_read_receipts,
+            commands::read_update,
+            commands::hide_message,
+            commands::quoted_message,
             commands::create_conversation,
             commands::group_invite,
             commands::group_preview,

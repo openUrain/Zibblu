@@ -1,8 +1,8 @@
 import { Archive, Check, Download, File, FolderOpen, Pause, Play, RotateCcw, Search, Trash2 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useContext, useState } from "react";
 import { api, errorMessage } from "./api";
 import type { Attachment, FileFilter, Message, Transfer, User } from "./api";
-import { Blank, bytes, dateLabel, usePage } from "./common";
+import { Blank, People, PersonAvatar, bytes, dateTimeLabel, displayName, usePage } from "./common";
 
 export function FileIcon({ file }: { file: Attachment }) {
   const Icon = file.kind === "folder" ? FolderOpen : file.name.toLowerCase().endsWith(".zip") ? Archive : File;
@@ -13,6 +13,7 @@ export function SharedFile({ message, transfer, onChanged, compact = false }: {
   message: Message; transfer?: Transfer; onChanged: () => void; compact?: boolean;
 }) {
   const file = message.attachment!;
+  const { remarks, open } = useContext(People);
   const [saving, setSaving] = useState(false);
   const [failure, setFailure] = useState("");
   const [previewFailed, setPreviewFailed] = useState(false);
@@ -30,17 +31,16 @@ export function SharedFile({ message, transfer, onChanged, compact = false }: {
   }
 
   return <div className={"shared-file" + (compact ? " compact-file" : "")}>
-    {preview && image && <img className="attachment-preview" src={api.mediaUrl(file.id)} loading="lazy"
-      alt={file.name} onError={() => setPreviewFailed(true)} />}
-    {preview && video && <video className="attachment-preview" src={api.mediaUrl(file.id)} preload="auto"
-      controls playsInline aria-label={file.name} onError={() => setPreviewFailed(true)} />}
     <div className="file-main">
+      <button className="person-link file-sharer" onClick={() => open?.(message.sender)} title={`View ${displayName(message.sender, remarks)}'s profile`}>
+        <PersonAvatar user={message.sender} /><span>{displayName(message.sender, remarks)}</span>
+      </button>
       <FileIcon file={file} />
       <div className="file-info">
         <strong title={file.name}>{file.name}</strong>
         <small>
           {file.kind === "folder" ? "Folder ZIP · " : ""}{bytes(file.size)}
-          {!compact && <> · @{message.sender.handle} · {dateLabel(message.created_at)}</>}
+          {!compact && ` · ${dateTimeLabel(message.created_at)}`}
         </small>
       </div>
       {(!transfer || transfer.status === "complete") &&
@@ -48,6 +48,10 @@ export function SharedFile({ message, transfer, onChanged, compact = false }: {
           <Download size={15} /> {saving ? "Choosing…" : transfer ? "Save again" : "Save"}
         </button>}
     </div>
+    {preview && image && <img className="attachment-preview" src={api.mediaUrl(file.id)} loading="lazy"
+      alt={file.name} onError={() => setPreviewFailed(true)} />}
+    {preview && video && <video className="attachment-preview" src={api.mediaUrl(file.id)} preload="auto"
+      controls playsInline aria-label={file.name} onError={() => setPreviewFailed(true)} />}
     {previewFailed && <small>Preview unavailable. Save the attachment to open it locally.</small>}
     {transfer?.status === "complete" && <div className="verified"><Check size={14} /> Download verified</div>}
     {transfer && transfer.status !== "complete" &&
@@ -103,9 +107,11 @@ function TransferProgress({ transfer, onChanged, chooseNew, choosing }: {
 }
 
 export function TransferList({ transfers, onChanged }: { transfers: Transfer[]; onChanged: () => void }) {
+  const { remarks } = useContext(People);
   return <div className="transfer-list">{transfers.map(transfer =>
     <div className="shared-file" key={transfer.direction + transfer.attachment.id}>
-      <div className="file-main"><FileIcon file={transfer.attachment} />
+      <div className="file-main">{transfer.sharer && <span className="file-sharer">
+        <PersonAvatar user={transfer.sharer} /><span>{displayName(transfer.sharer, remarks)}</span></span>}<FileIcon file={transfer.attachment} />
         <div className="file-info"><strong title={transfer.attachment.name}>{transfer.attachment.name}</strong>
           <small>{transfer.direction === "upload" ? "Upload" : "Download"} · {bytes(transfer.attachment.size)}</small>
         </div>
@@ -114,14 +120,15 @@ export function TransferList({ transfers, onChanged }: { transfers: Transfer[]; 
     </div>)}</div>;
 }
 
-export function FilesView({ conversation, people, transfers, revision, recalled, onChanged }: {
-  conversation?: string; people: User[]; transfers: Transfer[]; revision: number; recalled: ReadonlySet<number>; onChanged: () => void;
+export function FilesView({ conversation, people, transfers, revision, recalled, hidden, onChanged }: {
+  conversation?: string; people: User[]; transfers: Transfer[]; revision: number; recalled: ReadonlySet<number>;
+  hidden: ReadonlySet<number>; onChanged: () => void;
 }) {
+  const { remarks } = useContext(People);
   const [tab, setTab] = useState<"shared" | "transfers">("shared");
   const [person, setPerson] = useState("");
   const [kind, setKind] = useState<Attachment["kind"] | "">("");
-  const [start, setStart] = useState("");
-  const [end, setEnd] = useState("");
+  const [oldestFirst, setOldestFirst] = useState(false);
   const [name, setName] = useState("");
   const jobs = transfers.filter(transfer => !conversation || transfer.conversation_id === conversation);
   const pending = jobs.filter(transfer => transfer.status !== "complete").length;
@@ -138,18 +145,19 @@ export function FilesView({ conversation, people, transfers, revision, recalled,
         <label className="file-search">File name<span className="search"><Search size={16} />
           <input type="search" value={name} onChange={event => setName(event.target.value)} placeholder="Search file names" />
         </span></label>
-        <label>Shared by<select value={person} onChange={event => setPerson(event.target.value)}>
+        {!conversation && <label>Shared by<select value={person} onChange={event => setPerson(event.target.value)}>
           <option value="">Everyone</option>
-          {people.map(user => <option key={user.id} value={user.id}>@{user.handle}</option>)}
-        </select></label>
+          {people.map(user => <option key={user.id} value={user.id}>{displayName(user, remarks)}</option>)}
+        </select></label>}
         <label>Type<select value={kind} onChange={event => setKind(event.target.value as typeof kind)}>
           <option value="">All types</option><option value="file">Files</option><option value="folder">Folders</option>
         </select></label>
-        <label>From<input type="date" value={start} max={end || undefined} onChange={event => setStart(event.target.value)} /></label>
-        <label>Through<input type="date" value={end} min={start || undefined} onChange={event => setEnd(event.target.value)} /></label>
+        <label>Sort by<select value={oldestFirst ? "oldest" : "newest"} onChange={event => setOldestFirst(event.target.value === "oldest")}>
+          <option value="newest">Newest first</option><option value="oldest">Oldest first</option>
+        </select></label>
       </div>
-      <SharedHistory key={JSON.stringify([conversation, person, kind, start, end, name])} {...{
-        conversation, person, kind, start, end, name, revision, recalled, jobs, onChanged,
+      <SharedHistory key={JSON.stringify([conversation, person, kind, oldestFirst, name])} {...{
+        conversation, person, kind, oldestFirst, name, revision, recalled, hidden, jobs, onChanged,
       }} />
     </> : jobs.length
       ? <TransferList transfers={jobs} onChanged={onChanged} />
@@ -157,30 +165,25 @@ export function FilesView({ conversation, people, transfers, revision, recalled,
   </div>;
 }
 
-function SharedHistory({ conversation, person, kind, start, end, name, revision, recalled, jobs, onChanged }: {
-  conversation?: string; person: string; kind: Attachment["kind"] | ""; start: string; end: string; name: string;
-  revision: number; recalled: ReadonlySet<number>; jobs: Transfer[]; onChanged: () => void;
+function SharedHistory({ conversation, person, kind, oldestFirst, name, revision, recalled, hidden, jobs, onChanged }: {
+  conversation?: string; person: string; kind: Attachment["kind"] | ""; oldestFirst: boolean; name: string;
+  revision: number; recalled: ReadonlySet<number>; hidden: ReadonlySet<number>; jobs: Transfer[]; onChanged: () => void;
 }) {
   const read = useCallback((before?: number) => {
-    const filter: FileFilter = { conversation_id: conversation, sender_id: person || undefined, kind: kind || undefined, name: name.trim() || undefined };
-    if (start) filter.start_at = new Date(start + "T00:00:00").getTime();
-    if (end) {
-      const next = new Date(end + "T00:00:00");
-      next.setDate(next.getDate() + 1);
-      filter.end_before = next.getTime();
-    }
+    const filter: FileFilter = { conversation_id: conversation, sender_id: person || undefined, kind: kind || undefined,
+      name: name.trim() || undefined, oldest_first: oldestFirst };
     return api.files(filter, before);
-  }, [conversation, person, kind, start, end, name]);
-  const { page, failure, loading, older } = usePage(read, revision, recalled);
+  }, [conversation, person, kind, oldestFirst, name]);
+  const { page, failure, loading, older } = usePage(read, revision, recalled, false, undefined, hidden, oldestFirst);
   const downloads = new Map(jobs.filter(job => job.direction === "download").map(job => [job.attachment.id, job]));
   if (failure) return <p className="inline-error" role="alert">{failure}</p>;
   if (!page) return <p className="muted loading" role="status">Loading shared files…</p>;
   if (page.items.length === 0) return <Blank icon={<FolderOpen size={27} />} title="No shared files found">
-    <p>{person || kind || start || end || name ? "Try changing the filters." : "Files and folders shared in chats will appear here."}</p>
+    <p>{person || kind || name ? "Try changing the filters." : "Files and folders shared in chats will appear here."}</p>
   </Blank>;
   return <div className="shared-list">
     {page.items.map(message => <SharedFile key={message.seq} message={message}
       transfer={downloads.get(message.attachment!.id)} onChanged={onChanged} />)}
-    {page.has_more && <button className="button subtle more" disabled={loading} onClick={() => void older()}>Load older files</button>}
+    {page.has_more && <button className="button subtle more" disabled={loading} onClick={() => void older()}>Load more files</button>}
   </div>;
 }

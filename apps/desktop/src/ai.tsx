@@ -1,14 +1,14 @@
 import {
-  AtSign, Bot, Check, ChevronRight, Clock3, FileText, Globe2, ListChecks,
+  AtSign, Bot, Check, ChevronRight, Clock3, FileText, ListChecks,
   LockKeyhole, MessageSquare, Paperclip, Send, X,
 } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ai, aiProviders } from "./ai-api";
 import type { AiFile, AiPreview, AiProvider, AiReply, AiScope, Assistant } from "./ai-api";
 import { api, errorMessage } from "./api";
 import type { Message, User } from "./api";
-import { bytes, Dialog } from "./common";
+import { bytes, Dialog, People, displayName } from "./common";
 import "./ai.css";
 
 const MAX_MESSAGES = 60;
@@ -158,6 +158,7 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
   const [previewFailure, setPreviewFailure] = useState("");
   const [preparing, setPreparing] = useState(true);
   const [spent, setSpent] = useState(false);
+  const { remarks } = useContext(People);
   const chosenAssistant = preview?.assistant ?? assistant;
   const provider = aiProviders[chosenAssistant.provider].label;
   const selection = useMemo(() => {
@@ -228,7 +229,6 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
     <div className="ai-request-model">
       <ProviderLogo provider={chosenAssistant.provider} />
       <div><strong>{provider}</strong><span>{chosenAssistant.model}</span></div>
-      <span className="ai-read-only"><LockKeyhole size={14} /> Read-only</span>
     </div>
       <fieldset className="ai-section">
         <legend>Message context</legend>
@@ -249,7 +249,7 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
               return <label key={message.seq} className="ai-message-option">
                 <input type="checkbox" checked={checked} disabled={disabled || (!checked && sequences.length >= MAX_MESSAGES)}
                   onChange={() => updateSelection(() => setSequences(current => checked ? current.filter(seq => seq !== message.seq) : [...current, message.seq]))} />
-                <span><strong>@{message.sender.handle}</strong><span>{message.text}</span></span>
+                <span><strong>{displayName(message.sender, remarks)}</strong><span>{message.text}</span></span>
               </label>;
             })}
             {!messages.some(message => message.text !== null) && <p className="muted">No text messages to select.</p>}
@@ -260,7 +260,7 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
       </fieldset>
       <div className="ai-section">
         <div className="ai-section-line">
-          <h3>Files <span className="muted">Optional</span></h3>
+          <small className="muted">Up to 3 UTF-8 files · 32 KiB each</small>
           <button type="button" className="button subtle" onClick={() => void pick()} disabled={disabled || files.length >= MAX_FILES}>
             <Paperclip size={15} /> Add text file
           </button>
@@ -271,16 +271,10 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
             <button className="icon-button" type="button" disabled={disabled} aria-label={"Remove " + file.name}
               onClick={() => void remove(file)}><X size={14} /></button>
           </li>)}
-        </ul> : <p className="muted">Up to three UTF-8 text files, 32 KiB each.</p>}
+        </ul> : null}
       </div>
-      <div className="ai-disclosure">
-        <Globe2 size={18} />
-        <p>The preview below is sent to <strong>{provider}</strong> when you click Send.
-          {preview && <span>{preview.endpoint}</span>}
-        </p>
-      </div>
-      {preparing && <p className="muted" role="status">Preparing disclosure…</p>}
       {preview && <div className="ai-snapshot">
+        <header className="ai-disclosure"><strong>Content sent to {provider}</strong><small>{preview.endpoint}</small></header>
         <details open>
           <summary><MessageSquare size={15} /> Prompt</summary>
           <p>{preview.snapshot.prompt}</p>
@@ -296,7 +290,8 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
           <p>{file.text}</p>
         </details>)}
       </div>}
-      <p className="ai-visibility-note"><LockKeyhole size={15} /> Only you can see the reply until you share it.</p>
+      {!preview && preparing && <p className="muted" role="status">Preparing content preview…</p>}
+      <p className="ai-visibility-note"><LockKeyhole size={15} /> One-time, read-only request. Reply visible only to you.</p>
       {(failure || previewFailure) && <p className="inline-error" role="alert">{failure || previewFailure}</p>}
       <div className="dialog-actions">
         <button className="button subtle" onClick={close} disabled={!!busy}>{spent ? "Close" : "Cancel"}</button>
@@ -309,6 +304,7 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
 export function ShareAiReply({ reply, members, close, published }: {
   reply: AiReply; members: User[]; close: () => void; published: () => Promise<void>;
 }) {
+  const { remarks } = useContext(People);
   const [readers, setReaders] = useState<string[]>([]);
   const [posting, setPosting] = useState(false);
   const [failure, setFailure] = useState("");
@@ -336,7 +332,7 @@ export function ShareAiReply({ reply, members, close, published }: {
         <input type="checkbox" checked={readers.includes(user.id)} onChange={event => {
           setReaders(event.target.checked ? [...readers, user.id] : readers.filter(id => id !== user.id));
         }} />
-        <span>{user.handle}</span>
+        <span>{displayName(user, remarks)}</span>
       </label>)}
     </fieldset>
     {tooLong && <p className="inline-error">Replies up to 24 KiB can be shared.</p>}

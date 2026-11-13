@@ -6,7 +6,7 @@ use rcgen::{
 };
 use sqlx::PgPool;
 use time::{Duration, OffsetDateTime};
-use zibblu_core::{LanCredential, LanCredentialRequest, lan_peer_name};
+use zibblu_core::{LAN_NEARBY_NAME, LanCredential, LanCredentialRequest, lan_peer_name};
 
 pub(crate) struct Authority {
     issuer: Issuer<'static, KeyPair>,
@@ -71,7 +71,8 @@ pub(crate) async fn issue(
     let expiry =
         OffsetDateTime::from_unix_timestamp(auth.expires_at).map_err(|_| Error::internal())?;
     let mut params =
-        CertificateParams::new(vec![lan_peer_name(auth.user_id)]).map_err(|_| Error::internal())?;
+        CertificateParams::new(vec![lan_peer_name(auth.user_id), LAN_NEARBY_NAME.into()])
+            .map_err(|_| Error::internal())?;
     // Older LAN clients validate the certificate CN as a lowercase handle.
     params.distinguished_name = name(&handle.to_ascii_lowercase());
     params.not_before = now - Duration::minutes(1);

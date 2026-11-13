@@ -105,7 +105,8 @@ pub(crate) async fn ai_save_assistant(
         ensure!(
             assistants
                 .iter()
-                .all(|entry| entry.info.provider == provider || entry.info.name != name),
+                .all(|entry| entry.info.provider == provider
+                    || entry.info.name.trim().to_lowercase() != name),
             "That mention name is already in use"
         );
         let protected_key = if let Some(key) = key.as_ref() {

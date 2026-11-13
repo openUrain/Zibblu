@@ -3,13 +3,14 @@ mod chats;
 mod files;
 mod group_invites;
 mod lan_credentials;
+mod profiles;
 
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, FromRequestParts},
     http::{StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -17,7 +18,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
-use zibblu_core::CHUNK_SIZE;
+use zibblu_core::{CHUNK_SIZE, MAX_PROFILE_IMAGE_BYTES};
 
 #[derive(Clone)]
 struct App {
@@ -36,7 +37,13 @@ pub async fn router(db: PgPool) -> anyhow::Result<Router> {
         .route("/v1/lan/credential", post(lan_credentials::issue))
         .route("/v1/users/{handle}", get(accounts::find_user))
         .route("/v1/contacts", post(accounts::add_contact))
-        .route("/v1/contacts/{id}", delete(accounts::remove_contact))
+        .route(
+            "/v1/contacts/{id}",
+            delete(accounts::remove_contact).put(profiles::set_notes),
+        )
+        .route("/v1/profiles/{id}", get(profiles::profile))
+        .route("/v1/profiles/me/bio", put(profiles::set_bio))
+        .route("/v1/profiles/{id}/images/{version}", get(profiles::image))
         .route(
             "/v1/contacts/{id}/decision",
             post(accounts::respond_contact),
@@ -47,6 +54,8 @@ pub async fn router(db: PgPool) -> anyhow::Result<Router> {
         .route("/v1/group-invites/preview", post(group_invites::preview))
         .route("/v1/group-invites/join", post(group_invites::join))
         .route("/v1/conversations/{id}/messages", post(chats::send))
+        .route("/v1/conversations/{id}/read", post(chats::read))
+        .route("/v1/read-receipts", put(chats::set_read_receipts))
         .route(
             "/v1/conversations/{id}/messages/{seq}",
             delete(chats::recall),
@@ -65,11 +74,17 @@ pub async fn router(db: PgPool) -> anyhow::Result<Router> {
             get(files::read_chunk).put(files::write_chunk),
         )
         .layer(DefaultBodyLimit::max(CHUNK_SIZE as usize));
-    Ok(json_routes.merge(chunks).with_state(App {
-        db,
-        password_work: Arc::new(Semaphore::new(4)),
-        lan_authority,
-    }))
+    let profile_upload = Router::new()
+        .route("/v1/profiles/me/images/{kind}", put(profiles::set_image))
+        .layer(DefaultBodyLimit::max(MAX_PROFILE_IMAGE_BYTES));
+    Ok(json_routes
+        .merge(chunks)
+        .merge(profile_upload)
+        .with_state(App {
+            db,
+            password_work: Arc::new(Semaphore::new(4)),
+            lan_authority,
+        }))
 }
 
 struct Auth {

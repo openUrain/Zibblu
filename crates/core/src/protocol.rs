@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 pub const CHUNK_SIZE: u64 = 1024 * 1024;
@@ -9,6 +10,9 @@ pub const MAX_MESSAGE_BYTES: usize = 8_192;
 pub const MAX_AI_REPLY_BYTES: usize = 24 * 1024;
 pub const RECALL_WINDOW_MS: i64 = 5 * 60 * 1000;
 pub const MAX_GROUP_MEMBERS: usize = 16;
+pub const MAX_PROFILE_IMAGE_BYTES: usize = 2 * CHUNK_SIZE as usize;
+pub const MAX_RECEIPT_QUERY: usize = 200;
+pub const LAN_NEARBY_NAME: &str = "nearby.zibblu.invalid";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {
@@ -47,17 +51,83 @@ pub fn lan_peer_name(account: Uuid) -> String {
 #[derive(Serialize, Deserialize)]
 pub struct ContactRequest {
     pub user_id: Uuid,
+    #[serde(default)]
+    pub greeting: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PendingContact {
     pub user: User,
     pub incoming: bool,
+    #[serde(default)]
+    pub request_id: Option<Uuid>,
+    #[serde(default)]
+    pub greeting: String,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct ContactDecision {
     pub accept: bool,
+    #[serde(default)]
+    pub request_id: Option<Uuid>,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileRelation {
+    Own,
+    Contact,
+    Incoming,
+    Outgoing,
+    Stranger,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Profile {
+    pub user: User,
+    pub relation: ProfileRelation,
+    pub avatar: Option<Uuid>,
+    pub cover: Option<Uuid>,
+    pub bio: Option<String>,
+    pub notes: Option<ContactNotes>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ContactNotes {
+    pub remark: String,
+    pub contact_info: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ProfileBio {
+    pub bio: String,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileImage {
+    Avatar,
+    Cover,
+}
+
+impl ProfileImage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Avatar => "avatar",
+            Self::Cover => "cover",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ReadPreference {
+    pub enabled: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ReadUpdate {
+    pub through: Option<i64>,
+    pub sent: Vec<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -67,6 +137,14 @@ pub struct Conversation {
     pub members: Vec<User>,
     pub activity_at: i64,
     pub preview: Option<String>,
+    #[serde(default)]
+    pub preview_seq: Option<i64>,
+    #[serde(default)]
+    pub latest_seq: i64,
+    #[serde(default)]
+    pub unread: i64,
+    #[serde(default)]
+    pub read_through: i64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -116,6 +194,8 @@ pub struct Message {
     pub ai_provider: Option<AiProvider>,
     #[serde(default)]
     pub recalled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<i64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, Serialize)]
@@ -155,6 +235,8 @@ pub struct MessageRecall {
 pub struct SendMessage {
     pub nonce: Uuid,
     pub text: String,
+    #[serde(default)]
+    pub reply_to: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,6 +336,12 @@ pub struct Directory {
     pub conversations: Vec<Conversation>,
     #[serde(default)]
     pub pending_contacts: Vec<PendingContact>,
+    #[serde(default)]
+    pub remarks: HashMap<Uuid, String>,
+    #[serde(default)]
+    pub avatars: HashMap<Uuid, Uuid>,
+    #[serde(default)]
+    pub read_receipts: bool,
 }
 
 #[derive(Serialize, Deserialize)]

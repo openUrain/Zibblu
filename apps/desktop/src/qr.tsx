@@ -1,10 +1,10 @@
 import { Camera, ImageUp } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
 import QRCode from "qrcode";
 import { api, errorMessage } from "./api";
 import type { GroupPreview, PrivateCode, Session, User } from "./api";
-import { Avatar, Dialog } from "./common";
+import { Avatar, Dialog, People, PersonAvatar, dateTimeLabel, displayName, messageTimeLabel } from "./common";
 
 export type SharedCode = {
   kind: "contact" | "group" | "private";
@@ -25,22 +25,20 @@ export function ShareQr({ code, server, close }: { code: SharedCode; server: str
     QRCode.toDataURL(url.toString(), { width: 320, margin: 2, errorCorrectionLevel: "M" })
       .then(value => { if (current) setImage(value); })
       .catch(() => { if (current) setError("Could not generate this QR code."); });
-    const tick = code.expiresAt ? window.setInterval(() => setNow(Date.now()), 1000) : undefined;
+    const tick = code.expiresAt ? window.setTimeout(() => setNow(Date.now()), Math.max(0, code.expiresAt - Date.now())) : undefined;
     return () => { current = false; window.clearInterval(tick); };
   }, [code, server]);
-  const remaining = code.expiresAt ? Math.max(0, Math.ceil((code.expiresAt - now) / 1000)) : undefined;
+  const expired = code.expiresAt !== undefined && now >= code.expiresAt;
   return <Dialog title={code.name} close={close}>
     <div className="qr-content">
       {error && <p className="inline-error" role="alert">{error}</p>}
-      {remaining === 0
+      {expired
         ? <p role="status">This QR code expired.</p>
         : image && <img className="qr-image" src={image} alt="Zibblu QR code" />}
-      {code.kind === "private" && remaining !== 0 &&
+      {code.kind === "private" && !expired &&
         <p>Anyone with this code on the allowed LAN can join. They receive messages sent after they join.</p>}
-      {remaining !== undefined && remaining > 0 && <p className="muted">
-        {code.kind === "private"
-          ? "Expires in " + Math.floor(remaining / 60) + ":" + String(remaining % 60).padStart(2, "0")
-          : "Expires " + new Date(code.expiresAt!).toLocaleString()}
+      {code.expiresAt && !expired && <p className="muted">
+        Expires {code.kind === "private" ? messageTimeLabel(code.expiresAt) : dateTimeLabel(code.expiresAt)}
       </p>}
     </div>
   </Dialog>;
@@ -51,10 +49,11 @@ type ScanResult =
   | { kind: "group"; group: GroupPreview; code: string }
   | { kind: "private"; code: PrivateCode };
 
-export function ScanQr({ session, close, contactAdded, groupJoined, privateJoined }: {
-  session: Session; close: () => void; contactAdded: () => void;
+export function ScanQr({ session, close, contactFound, groupJoined, privateJoined }: {
+  session: Session; close: () => void; contactFound: (user: User) => void;
   groupJoined: (id: string) => void; privateJoined: (id: string) => void;
 }) {
+  const { remarks } = useContext(People);
   const [camera, setCamera] = useState(false);
   const [failure, setFailure] = useState("");
   const [busy, setBusy] = useState(false);
@@ -154,8 +153,7 @@ export function ScanQr({ session, close, contactAdded, groupJoined, privateJoine
     setFailure("");
     try {
       if (result.kind === "contact") {
-        await api.addContact(result.user.id);
-        if (mounted.current) contactAdded();
+        if (mounted.current) contactFound(result.user);
       } else if (result.kind === "group") {
         const id = await api.groupJoin(result.code);
         if (mounted.current) groupJoined(id);
@@ -172,12 +170,12 @@ export function ScanQr({ session, close, contactAdded, groupJoined, privateJoine
     <div className="qr-content">
       {camera && <video className="qr-camera" ref={video} muted playsInline />}
       {result ? <>
-        {result.kind === "contact" && <><Avatar name={result.user.handle} large /><strong>@{result.user.handle}</strong></>}
+        {result.kind === "contact" && <><PersonAvatar user={result.user} large /><strong>{displayName(result.user, remarks)}</strong></>}
         {result.kind === "group" && <><Avatar name={result.group.title} group large />
           <strong>{result.group.title}</strong><p>{result.group.member_count} members · New messages only</p></>}
         {result.kind === "private" && <p>Join this temporary private chat over the local network.</p>}
         <button className="button primary" disabled={busy} onClick={() => void confirm()}>
-          {result.kind === "contact" ? "Send contact request" : "Join chat"}
+          {result.kind === "contact" ? "View profile" : "Join chat"}
         </button>
       </> : <div className="qr-actions">
         <button className="button subtle" disabled={busy} onClick={() => setCamera(!camera)}>

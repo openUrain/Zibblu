@@ -35,6 +35,11 @@ impl DeviceKey {
     pub fn public_key(&self) -> Vec<u8> {
         self.0.subject_public_key_info()
     }
+
+    #[cfg(test)]
+    pub(super) fn key_pair(&self) -> &KeyPair {
+        &self.0
+    }
 }
 
 pub(super) struct Peer {

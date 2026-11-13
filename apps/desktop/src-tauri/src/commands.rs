@@ -13,8 +13,9 @@ use zibblu_core::private_chat::{
     PrivateSummary, PrivateView,
 };
 use zibblu_core::{
-    Client, ConversationRequest, Credentials, Direction, Directory, FileFilter, GroupInvite,
-    GroupInvitePreview, OnlineError, Page, PublishAiReply, SendMessage, SyncUpdate, Transfer, User,
+    Client, ContactNotes, ConversationRequest, Credentials, Direction, Directory, FileFilter,
+    GroupInvite, GroupInvitePreview, Message, OnlineError, Page, Profile, PublishAiReply,
+    ReadUpdate, SendMessage, SyncUpdate, Transfer, User,
 };
 
 pub(crate) struct Desktop {
@@ -103,19 +104,9 @@ impl Desktop {
     }
 }
 
-#[derive(Clone, Copy, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Theme {
-    #[default]
-    System,
-    Light,
-    Dark,
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Preferences {
     server: String,
-    theme: Theme,
     #[serde(default)]
     private_quiet: bool,
 }
@@ -124,7 +115,6 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             server: "http://127.0.0.1:7841".into(),
-            theme: Theme::System,
             private_quiet: false,
         }
     }
@@ -172,13 +162,6 @@ pub(crate) enum ShareSource {
 #[tauri::command]
 pub(crate) fn preferences(state: State<'_, Desktop>) -> Preferences {
     state.preferences.lock().expect("preferences").clone()
-}
-
-#[tauri::command]
-pub(crate) fn set_theme(state: State<'_, Desktop>, theme: Theme) -> Result<()> {
-    Ok(state
-        .update_preferences(|value| value.theme = theme)
-        .context("Could not save appearance settings")?)
 }
 
 #[tauri::command]
@@ -280,8 +263,16 @@ pub(crate) async fn find_user(state: State<'_, Desktop>, handle: String) -> Resu
 }
 
 #[tauri::command]
-pub(crate) async fn add_contact(state: State<'_, Desktop>, user_id: Uuid) -> Result<()> {
-    Ok(state.client().await?.add_contact(user_id).await?)
+pub(crate) async fn add_contact(
+    state: State<'_, Desktop>,
+    user_id: Uuid,
+    greeting: String,
+) -> Result<()> {
+    Ok(state
+        .client()
+        .await?
+        .request_contact(user_id, greeting)
+        .await?)
 }
 
 #[tauri::command]
@@ -289,11 +280,75 @@ pub(crate) async fn respond_contact(
     state: State<'_, Desktop>,
     user_id: Uuid,
     accept: bool,
+    request_id: Option<Uuid>,
 ) -> Result<()> {
     Ok(state
         .client()
         .await?
-        .respond_contact(user_id, accept)
+        .decide_contact(user_id, accept, request_id)
+        .await?)
+}
+
+#[tauri::command]
+pub(crate) async fn profile(state: State<'_, Desktop>, id: Uuid) -> Result<Profile> {
+    Ok(state.client().await?.profile(id).await?)
+}
+
+#[tauri::command]
+pub(crate) async fn set_bio(state: State<'_, Desktop>, bio: String) -> Result<()> {
+    Ok(state.client().await?.set_bio(bio).await?)
+}
+
+#[tauri::command]
+pub(crate) async fn set_contact_notes(
+    state: State<'_, Desktop>,
+    id: Uuid,
+    notes: ContactNotes,
+) -> Result<()> {
+    Ok(state.client().await?.set_contact_notes(id, notes).await?)
+}
+
+#[tauri::command]
+pub(crate) async fn set_read_receipts(state: State<'_, Desktop>, enabled: bool) -> Result<()> {
+    Ok(state.client().await?.set_read_receipts(enabled).await?)
+}
+
+#[tauri::command]
+pub(crate) async fn read_update(
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+    update: ReadUpdate,
+) -> Result<Vec<i64>> {
+    Ok(state
+        .client()
+        .await?
+        .read_update(conversation, update)
+        .await?)
+}
+
+#[tauri::command]
+pub(crate) async fn hide_message(
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+    seq: i64,
+) -> Result<()> {
+    Ok(state
+        .client()
+        .await?
+        .hide_message(conversation, seq)
+        .await?)
+}
+
+#[tauri::command]
+pub(crate) async fn quoted_message(
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+    seq: i64,
+) -> Result<Option<Message>> {
+    Ok(state
+        .client()
+        .await?
+        .quoted_message(conversation, seq)
         .await?)
 }
 
@@ -377,7 +432,7 @@ pub(crate) async fn private_nearby(state: State<'_, Desktop>) -> Result<NearbyDe
 pub(crate) async fn private_invite_nearby(
     state: State<'_, Desktop>,
     device: Uuid,
-    account: Uuid,
+    account: Option<Uuid>,
 ) -> Result<Uuid> {
     let id = state.lobby().await?.invite_nearby(device, account).await?;
     state.ai.lock().expect("AI state").clear();

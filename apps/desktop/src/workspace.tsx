@@ -1,21 +1,22 @@
 import { listen } from "@tauri-apps/api/event";
 import {
-  ArrowRight, CircleUserRound, FolderOpen, Laptop, LogOut, MessageCircle, MessageSquare, Moon,
-  QrCode, Radar, ScanLine, Search, Settings, Sun, UserPlus, UserRoundMinus, UsersRound, X,
+  ArrowRight, CircleUserRound, FolderOpen, LogOut, MessageCircle, MessageSquare,
+  Radar, ScanLine, Search, Settings, UserRoundMinus, UsersRound, X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { ai } from "./ai-api";
 import type { AiReply, Assistant } from "./ai-api";
 import { AssistantSettings } from "./ai";
 import { api, errorMessage, isExpired } from "./api";
-import type { Conversation, ConversationRequest, Directory, DropOffer, Session, ShareSource, Theme, Transfer, User } from "./api";
-import { Avatar, Blank, Brand, Dialog, chatName } from "./common";
+import type { Conversation, ConversationRequest, Directory, Draft, DropOffer, Session, ShareSource, Transfer, User } from "./api";
+import { Blank, Brand, Dialog, People, PersonAvatar, chatName, displayName } from "./common";
 import { ChatList, ChatView } from "./chat";
 import { FilesView } from "./files";
 import { NearbyDevices, PrivateChatView, PrivateInvitationOverlay, PrivateTargets, usePrivateRooms } from "./private-chat";
 import { ScanQr, ShareQr } from "./qr";
 import type { SharedCode } from "./qr";
+import { ProfileView } from "./profile";
 
 const pages = [
   { name: "Chats", Icon: MessageSquare }, { name: "Contacts", Icon: UsersRound },
@@ -23,16 +24,19 @@ const pages = [
 ] as const;
 type Navigation = typeof pages[number]["name"];
 
-export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQuiet, signedOut }: {
-  session: Session; theme: Theme; setTheme: (theme: Theme) => Promise<void>; signedOut: (notice?: string) => void;
+export function Workspace({ session, privateQuiet, setPrivateQuiet, signedOut }: {
+  session: Session; signedOut: (notice?: string) => void;
   privateQuiet: boolean; setPrivateQuiet: (quiet: boolean) => Promise<void>;
 }) {
   const [nav, setNav] = useState<Navigation>("Chats");
   const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [assistantFailure, setAssistantFailure] = useState("");
   const [aiReplies, setAiReplies] = useState<AiReply[]>([]);
-  const [directory, setDirectory] = useState<Directory>({ contacts: [], conversations: [], pending_contacts: [] });
+  const [directory, setDirectory] = useState<Directory>({ contacts: [], conversations: [], pending_contacts: [], remarks: {}, avatars: {}, read_receipts: false });
   const [recalled, setRecalled] = useState<ReadonlySet<number>>(new Set());
+  const [hidden, setHidden] = useState<ReadonlySet<number>>(new Set());
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+  const [profile, setProfile] = useState<User>();
   const refreshInFlight = useRef<Promise<void> | null>(null);
   const [clockOffset, setClockOffset] = useState(0);
   const [selected, setSelected] = useState<string>();
@@ -54,6 +58,28 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
   const [offer, setOffer] = useState<DropOffer & { conversation: string }>();
   const [sharing, setSharing] = useState(false);
   const [leaving, setLeaving] = useState(false);
+
+  function setDraft(key: string, change: (draft: Draft) => Draft) {
+    setDrafts(previous => {
+      const next = change(previous[key] ?? { text: "" });
+      if (next.text || next.quote || next.image) return { ...previous, [key]: next };
+      if (!previous[key]) return previous;
+      const remaining = { ...previous };
+      delete remaining[key];
+      return remaining;
+    });
+  }
+
+  useEffect(() => {
+    const connected = new Set(privateRooms.filter(room => room.phase === "connected").map(room => "private/" + room.id));
+    setDrafts(previous => {
+      const expired = Object.keys(previous).filter(key => key.startsWith("private/") && !connected.has(key));
+      if (!expired.length) return previous;
+      const next = { ...previous };
+      expired.forEach(key => delete next[key]);
+      return next;
+    });
+  }, [privateRooms]);
 
   useEffect(() => {
     let current = true;
@@ -170,6 +196,7 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
       setShareCode(undefined);
       setScanning(false);
       setNewChat(false);
+      setProfile(undefined);
       showPrivate(payload.id, payload.conversation);
     });
     return () => { void accepted.then(unlisten => unlisten()); };
@@ -229,6 +256,14 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
     await refresh();
   }
 
+  async function hide(conversation: string, seq: number) {
+    await api.hideMessage(conversation, seq);
+    setHidden(previous => new Set(previous).add(seq));
+    setDraft(conversation, previous => previous.quote?.seq === seq ? { ...previous, quote: undefined, nonce: undefined } : previous);
+    changed();
+    setDirectory(await api.directory());
+  }
+
   async function share(conversation: string, source: ShareSource) {
     setFailure("");
     try { await api.share(conversation, source); changed(); }
@@ -243,12 +278,12 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
   }
 
   const people = [...new Map([session.user, ...directory.conversations.flatMap(chat => chat.members)]
-    .map(user => [user.id, user])).values()].sort((a, b) => a.handle.localeCompare(b.handle));
+    .map(user => [user.id, user])).values()].sort((a, b) => displayName(a, directory.remarks).localeCompare(displayName(b, directory.remarks)));
   const offeredChat = directory.conversations.find(chat => chat.id === offer?.conversation);
   const connected = connection === "Connected";
   const invitation = privateRooms.find(room => room.id === prompt);
 
-  return <main className="shell">
+  return <People.Provider value={{ remarks: directory.remarks, avatars: directory.avatars, open: setProfile }}><main className="shell">
     <nav className="rail" aria-label="Main navigation">
       <div className="rail-brand"><Brand /></div>
       <div className="rail-links">{pages.map(({ name, Icon }) =>
@@ -256,8 +291,8 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
           aria-current={nav === name ? "page" : undefined} onClick={() => navigate(name)}>
           <Icon size={22} strokeWidth={1.9} /><span>{name}</span>
         </button>)}</div>
-      <button className="rail-account" title={"@" + session.user.handle} aria-label="Account settings" onClick={() => navigate("Settings")}>
-        <Avatar name={session.user.handle} />
+      <button className="rail-account" title={"@" + session.user.handle} aria-label="Your profile" onClick={() => setProfile(session.user)}>
+        <PersonAvatar user={session.user} />
       </button>
     </nav>
     <div className="shell-main">
@@ -279,9 +314,14 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
           open={selectChat} newChat={() => setNewChat(true)} rooms={privateRooms} activePrivate={privateId}
           openPrivate={selectPrivate} createQr={() => void createPrivateCode()} />
         {privateId ? <PrivateChatView key={privateId} id={privateId} own={session.user}
+            isContact={id => directory.contacts.some(person => person.id === id)}
+            draft={drafts["private/" + privateId]?.text ?? ""}
+            setDraft={change => setDraft("private/" + privateId, previous => ({ text: change(previous.text) }))}
             back={() => { setPrivateId(undefined); if (!active) setMobileChat(false); }} showCode={showPrivateCode} />
           : active ? <ChatView key={active.id} chat={active} own={session.user} revision={revision}
             latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset}
+            hidden={hidden} hide={seq => hide(active.id, seq)} readReceipts={directory.read_receipts}
+            draft={drafts[active.id] ?? { text: "" }} setDraft={change => setDraft(active.id, change)}
             transfers={transfers} changed={changed} refresh={refresh} back={() => setMobileChat(false)}
             share={source => share(active.id, source)} openPrivate={() => void invitePrivate(active)}
             groupCode={() => void showGroupCode(active)} aiChat={{
@@ -295,13 +335,13 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
           </Blank></section>}
       </div>}
       {nav === "Contacts" && <Contacts own={session.user} directory={directory} refresh={refresh} create={create} />}
-      {nav === "Files" && <FilesView people={people} revision={revision} recalled={recalled} transfers={transfers} onChanged={changed} />}
-      {nav === "Settings" && <SettingsView {...{ session, theme, setTheme, leaving, signOut, privateQuiet, setPrivateQuiet }}
+      {nav === "Files" && <FilesView people={people} revision={revision} recalled={recalled} hidden={hidden} transfers={transfers} onChanged={changed} />}
+      {nav === "Settings" && <SettingsView {...{ session, leaving, signOut, privateQuiet, setPrivateQuiet }}
+        readReceipts={directory.read_receipts} setReadReceipts={async enabled => { await api.setReadReceipts(enabled); await refresh(); }}
         assistantSettings={<AssistantSettings assistants={assistants} failure={assistantFailure} changed={next => {
           setAssistants(next);
           setAssistantFailure("");
-        }} />}
-        contactCode={() => setShareCode({ kind: "contact", name: "Your contact QR code", value: session.user.handle })} />}
+        }} />} />}
     </div>
     {privateTargets && <PrivateTargets people={privateTargets.members.filter(user => user.id !== session.user.id)}
       close={() => setPrivateTargets(undefined)} start={invited => startPrivate(privateTargets, invited)} />}
@@ -311,14 +351,14 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
     }} />}
     {shareCode && <ShareQr code={shareCode} server={session.server} close={() => setShareCode(undefined)} />}
     {scanning && <ScanQr session={session} close={() => setScanning(false)}
-      contactAdded={() => { setScanning(false); navigate("Contacts"); void refresh(); }}
+      contactFound={user => { setScanning(false); setProfile(user); }}
       groupJoined={id => { setScanning(false); selectChat(id); void refresh(); }}
       privateJoined={id => { setScanning(false); selectPrivate(id); }} />}
     {newChat && <NewChat contacts={directory.contacts} create={create} close={() => setNewChat(false)} findPeople={() => {
       setNewChat(false); navigate("Contacts");
     }} />}
     {!privateOpen && offer && offeredChat && <Dialog title="Share this attachment?" close={() => { if (!sharing) setOffer(undefined); }}>
-      <p className="drop-confirm"><strong>{offer.name}</strong> will be shared in <strong>{chatName(offeredChat, session.user.id)}</strong>.</p>
+      <p className="drop-confirm"><strong>{offer.name}</strong> will be shared in <strong>{chatName(offeredChat, session.user.id, directory.remarks)}</strong>.</p>
       <div className="dialog-actions">
         <button className="button subtle" onClick={() => setOffer(undefined)} disabled={sharing}>Cancel</button>
         <button className="button primary" disabled={sharing} onClick={async () => {
@@ -329,14 +369,21 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
         }}>{sharing ? "Preparing…" : "Share"}</button>
       </div>
     </Dialog>}
+    {profile && <ProfileView key={profile.id} user={profile}
+      relationVersion={directory.contacts.some(person => person.id === profile.id) ? "contact"
+        : directory.pending_contacts.find(request => request.user.id === profile.id)?.request_id ?? "other"}
+      refresh={refresh} close={() => setProfile(undefined)}
+      message={async () => { await create({ kind: "direct", contact_id: profile.id }); setProfile(undefined); }}
+      code={() => { setProfile(undefined); setShareCode({ kind: "contact", name: "Your contact QR code", value: session.user.handle }); }} />}
     {invitation && <PrivateInvitationOverlay key={invitation.id} room={invitation} />}
-  </main>;
+  </main></People.Provider>;
 }
 
 function Contacts({ own, directory, refresh, create }: {
   own: User; directory: Directory; refresh: () => Promise<void>; create: (request: ConversationRequest) => Promise<void>;
 }) {
   const { contacts, pending_contacts } = directory;
+  const { remarks, open } = useContext(People);
   const [handle, setHandle] = useState("");
   const [found, setFound] = useState<User>();
   const [failure, setFailure] = useState("");
@@ -365,29 +412,30 @@ function Contacts({ own, directory, refresh, create }: {
         <button className="button primary" disabled={busy || !handle.trim()} type="submit">Find contact</button>
       </form>
       {found && <div className="contact-row search-result">
-        <Avatar name={found.handle} />
-        <div className="contact-name"><strong>@{found.handle}</strong></div>
-        {found.id === own.id ? <span className="muted">Your account</span> : contacts.some(user => user.id === found.id)
-          ? <span className="muted">In contacts</span>
-          : pending ? <span className="muted">{pending.incoming ? "Incoming request" : "Request sent"}</span>
-            : <button className="button subtle" disabled={busy} onClick={() => void perform(async () => {
-              await api.addContact(found.id); await refresh();
-            })}><UserPlus size={16} /> Send request</button>}
+        <button className="person-link contact-name" onClick={() => open?.(found)}>
+          <PersonAvatar user={found} /><strong>{displayName(found, remarks)}</strong>
+        </button>
+        <span className="muted">{found.id === own.id ? "Your account" : contacts.some(user => user.id === found.id)
+          ? "In contacts" : pending ? pending.incoming ? "Incoming request" : "Request sent" : "View profile"}</span>
       </div>}
       {failure && <p className="inline-error" role="alert">{failure}</p>}
     </div>
     {pending_contacts.length > 0 && <>
       <h2 className="section-title">Contact requests</h2>
       <div className="surface contacts">
-        {pending_contacts.map(({ user, incoming }) => <div className="contact-row" key={user.id}>
-          <Avatar name={user.handle} />
-          <div className="contact-name"><strong>{user.handle}</strong><small>{incoming ? "Wants to connect" : "Waiting for approval"}</small></div>
+        {pending_contacts.map(({ user, incoming, greeting, request_id }) => <div className="contact-row" key={user.id}>
+          <button className="person-link contact-name" onClick={() => open?.(user)}>
+            <PersonAvatar user={user} /><span><strong>{displayName(user, remarks)}</strong>
+              <small>{incoming ? "Wants to connect" : "Waiting for approval"}</small>
+              {greeting && <span className="contact-greeting">{greeting}</span>}
+            </span>
+          </button>
           {incoming ? <>
             <button className="button subtle" disabled={busy} onClick={() => void perform(async () => {
-              await api.respondContact(user.id, false); await refresh();
+              await api.respondContact(user.id, false, request_id); await refresh();
             })}>Decline</button>
             <button className="button primary" disabled={busy} onClick={() => void perform(async () => {
-              await api.respondContact(user.id, true); await refresh();
+              await api.respondContact(user.id, true, request_id); await refresh();
             })}>Approve</button>
           </> : <button className="button subtle" disabled={busy} onClick={() => void perform(async () => {
             await api.removeContact(user.id); await refresh();
@@ -398,10 +446,12 @@ function Contacts({ own, directory, refresh, create }: {
     <h2 className="section-title">Your contacts</h2>
     {contacts.length ? <div className="surface contacts">
       {contacts.map(user => <div className="contact-row" key={user.id}>
-        <Avatar name={user.handle} /><div className="contact-name"><strong>{user.handle}</strong><small>@{user.handle}</small></div>
+        <button className="person-link contact-name" onClick={() => open?.(user)}>
+          <PersonAvatar user={user} /><strong>{displayName(user, remarks)}</strong>
+        </button>
         <button className="button subtle" disabled={busy}
           onClick={() => void perform(() => create({ kind: "direct", contact_id: user.id }))}><MessageSquare size={16} /> Message</button>
-        <button className="icon-button" disabled={busy} title="Remove contact" aria-label={"Remove " + user.handle}
+        <button className="icon-button" disabled={busy} title="Remove contact" aria-label={"Remove " + displayName(user, remarks)}
           onClick={() => void perform(async () => { await api.removeContact(user.id); await refresh(); })}><UserRoundMinus size={18} /></button>
       </div>)}
     </div> : <Blank icon={<UsersRound size={27} />} title="No contacts yet"><p>Find a username above and send a request.</p></Blank>}
@@ -411,6 +461,7 @@ function Contacts({ own, directory, refresh, create }: {
 function NewChat({ contacts, create, close, findPeople }: {
   contacts: User[]; create: (request: ConversationRequest) => Promise<void>; close: () => void; findPeople: () => void;
 }) {
+  const { remarks } = useContext(People);
   const [group, setGroup] = useState(false);
   const [title, setTitle] = useState("");
   const [members, setMembers] = useState<string[]>([]);
@@ -447,57 +498,56 @@ function NewChat({ contacts, create, close, findPeople }: {
           return <label key={user.id} className="check-contact">
             <input type="checkbox" checked={checked} disabled={busy || (!checked && members.length >= 15)}
               onChange={() => setMembers(current => checked ? current.filter(id => id !== user.id) : [...current, user.id])} />
-            <Avatar name={user.handle} /> @{user.handle}
+            <PersonAvatar user={user} /> {displayName(user, remarks)}
           </label>;
         })}</div></fieldset>
         {failure && <p className="inline-error" role="alert">{failure}</p>}
         <button className="button primary" type="submit" disabled={busy || members.length < 2 || !title.trim()}>Create group</button>
       </form> : <>
         <div className="dialog-contacts">{contacts.map(user => <button className="pick-contact" key={user.id} disabled={busy}
-          onClick={() => void start({ kind: "direct", contact_id: user.id })}><Avatar name={user.handle} /> @{user.handle}<ArrowRight size={16} /></button>)}</div>
+          onClick={() => void start({ kind: "direct", contact_id: user.id })}><PersonAvatar user={user} /> {displayName(user, remarks)}<ArrowRight size={16} /></button>)}</div>
         {failure && <p className="inline-error" role="alert">{failure}</p>}
       </>}
     </>}
   </Dialog>;
 }
 
-function SettingsView({ session, theme, setTheme, leaving, signOut, contactCode, privateQuiet, setPrivateQuiet, assistantSettings }: {
-  session: Session; theme: Theme; setTheme: (theme: Theme) => Promise<void>; leaving: boolean; signOut: () => Promise<void>;
-  contactCode: () => void; privateQuiet: boolean; setPrivateQuiet: (quiet: boolean) => Promise<void>;
+function SettingsView({ session, leaving, signOut, privateQuiet, setPrivateQuiet, readReceipts, setReadReceipts, assistantSettings }: {
+  session: Session; leaving: boolean; signOut: () => Promise<void>;
+  privateQuiet: boolean; setPrivateQuiet: (quiet: boolean) => Promise<void>;
+  readReceipts: boolean; setReadReceipts: (enabled: boolean) => Promise<void>;
   assistantSettings: ReactNode;
 }) {
   const [failure, setFailure] = useState("");
-  const appearances = [{ value: "system", label: "System", Icon: Laptop }, { value: "light", label: "Light", Icon: Sun },
-    { value: "dark", label: "Dark", Icon: Moon }] as const;
+  const [saving, setSaving] = useState(false);
+  async function save(change: () => Promise<void>) {
+    setSaving(true);
+    setFailure("");
+    try { await change(); } catch (error) { setFailure(errorMessage(error)); }
+    finally { setSaving(false); }
+  }
   return <section className="settings-page">
-    <header className="workspace-heading"><h1>Settings</h1><p>Manage your account, appearance and assistants.</p></header>
+    <header className="workspace-heading"><h1>Settings</h1></header>
     <div className="surface settings-card">
       <h2><CircleUserRound size={20} /> Account</h2>
-      <div className="account-row"><Avatar name={session.user.handle} large /><div><strong>@{session.user.handle}</strong>
-        <p className="muted server-address">{session.server}</p></div></div>
-      <p className="muted">Normal chats use your server to deliver and store messages and attachments.</p>
+      <p className="muted server-address">{session.server}</p>
       <div className="chat-actions">
-        <button className="button subtle" onClick={contactCode}><QrCode size={17} /> Your QR code</button>
         <button className="button subtle" disabled={leaving} onClick={() => void signOut()}><LogOut size={16} />{leaving ? "Signing out…" : "Sign out"}</button>
       </div>
     </div>
-    {assistantSettings}
-    <div className="surface settings-card"><h2><Sun size={20} /> Appearance</h2>
-      <div className="appearance">{appearances.map(({ value, label, Icon }) => <button className={"button subtle" + (theme === value ? " toggled" : "")}
-        aria-pressed={theme === value} key={value} onClick={async () => {
-          setFailure("");
-          try { await setTheme(value); } catch (error) { setFailure(errorMessage(error)); }
-        }}><Icon size={17} />{label}</button>)}</div>
-      {failure && <p className="inline-error" role="alert">{failure}</p>}
-    </div>
     <div className="surface settings-card">
       <label className="check-contact">
-        <input type="checkbox" checked={privateQuiet} onChange={async event => {
-          setFailure("");
-          try { await setPrivateQuiet(event.target.checked); } catch (error) { setFailure(errorMessage(error)); }
-        }} /> Pause private invitation pop-ups
+        <input type="checkbox" role="switch" checked={readReceipts} disabled={saving}
+          onChange={event => { const enabled = event.target.checked; void save(() => setReadReceipts(enabled)); }} />
+        <span>Read receipts<small>Both people must enable receipts to share read status.</small></span>
       </label>
-      <p className="muted">Use this while sharing your screen. Pending invitations stay in Private chats.</p>
+      <label className="check-contact">
+        <input type="checkbox" role="switch" checked={privateQuiet} disabled={saving}
+          onChange={event => { const quiet = event.target.checked; void save(() => setPrivateQuiet(quiet)); }} />
+        <span>Pause private invitation pop-ups<small>Pending invitations stay in Private chats.</small></span>
+      </label>
+      {failure && <p className="inline-error" role="alert">{failure}</p>}
     </div>
+    {assistantSettings}
   </section>;
 }
