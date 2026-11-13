@@ -11,7 +11,7 @@ use tauri::{
 use uuid::Uuid;
 use zibblu_core::{
     Client, Directory, LanCredential, User,
-    private_chat::{DeviceKey, Phase, PrivateLobby},
+    private_chat::{DeviceKey, DiscoveryStatus, Phase, PrivateLobby},
 };
 
 pub(crate) const INVITATION: &str = "private-invitation";
@@ -41,10 +41,11 @@ pub(crate) async fn run(app: AppHandle, client: Arc<Client>) {
 }
 
 async fn maintain_lobby(app: &AppHandle, client: &Client) {
+    let desktop = app.state::<Desktop>();
     let Ok(key) = DeviceKey::generate() else {
+        *desktop.discovery.lock().expect("discovery status") = DiscoveryStatus::DiscoveryFailed;
         return;
     };
-    let desktop = app.state::<Desktop>();
     let mut credential: Option<LanCredential> = None;
     let mut tick = tokio::time::interval(Duration::from_secs(5));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -67,6 +68,11 @@ async fn maintain_lobby(app: &AppHandle, client: &Client) {
                 lobby.shutdown();
             }
         }
+        let status = PrivateLobby::discovery_status();
+        if !matches!(status, DiscoveryStatus::Ready) {
+            *desktop.discovery.lock().expect("discovery status") = status;
+            continue;
+        }
         if credential
             .as_ref()
             .is_none_or(|cert| cert.expires_at <= now + 120)
@@ -81,20 +87,34 @@ async fn maintain_lobby(app: &AppHandle, client: &Client) {
             }
             credential = Some(next);
         }
+        let directory = if desktop.private.lock().await.is_none() {
+            client.directory().await.ok()
+        } else {
+            None
+        };
         let mut current = desktop.private.lock().await;
-        if current.is_none()
-            && let Some(cert) = credential.as_ref().filter(|cert| cert.expires_at > now)
-            && let Ok(directory) = client.directory().await
-            && let Ok(lobby) = PrivateLobby::new(
-                client.server().to_owned(),
-                client.user.clone(),
-                key.clone(),
-                cert.clone(),
-                memberships(&directory),
-                desktop.dismissed_rooms.clone(),
-            )
-        {
-            *current = Some(Arc::new(lobby));
+        if current.is_none() {
+            let lobby = match (
+                credential.as_ref().filter(|cert| cert.expires_at > now),
+                directory,
+            ) {
+                (Some(cert), Some(directory)) => PrivateLobby::new(
+                    client.server().to_owned(),
+                    client.user.clone(),
+                    key.clone(),
+                    cert.clone(),
+                    memberships(&directory),
+                    desktop.dismissed_rooms.clone(),
+                )
+                .ok(),
+                _ => None,
+            };
+            *desktop.discovery.lock().expect("discovery status") = if lobby.is_some() {
+                DiscoveryStatus::Ready
+            } else {
+                DiscoveryStatus::DiscoveryFailed
+            };
+            *current = lobby.map(Arc::new);
         }
     }
 }

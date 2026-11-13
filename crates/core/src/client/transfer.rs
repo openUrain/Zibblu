@@ -1,5 +1,5 @@
 use super::{Client, OnlineError, ensure_new_destination, read_limited, staging};
-use crate::{Attachment, CHUNK_SIZE, UploadProgress};
+use crate::{Attachment, CHUNK_SIZE, MAX_PASTED_IMAGE_BYTES, UploadProgress};
 use anyhow::{Context, Result, bail, ensure};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -108,6 +108,34 @@ impl Client {
         source: PathBuf,
     ) -> Result<Transfer> {
         let _prepare = self.prepare_gate.lock().await;
+        self.check_upload(conversation).await?;
+        let id = Uuid::new_v4();
+        let target = self.spool((id, Direction::Upload));
+        let attachment =
+            tokio::task::spawn_blocking(move || staging::stage(&source, &target, id)).await??;
+        self.start_upload(conversation, attachment).await
+    }
+
+    pub async fn queue_pasted_image(
+        self: &Arc<Self>,
+        conversation: Uuid,
+        bytes: Vec<u8>,
+    ) -> Result<Transfer> {
+        ensure!(
+            bytes.len() <= MAX_PASTED_IMAGE_BYTES,
+            "Pasted images can be up to 16 MiB"
+        );
+        let _prepare = self.prepare_gate.lock().await;
+        self.check_upload(conversation).await?;
+        let id = Uuid::new_v4();
+        let spool = self.spool((id, Direction::Upload));
+        let attachment =
+            tokio::task::spawn_blocking(move || staging::stage_pasted(&bytes, &spool, id))
+                .await??;
+        self.start_upload(conversation, attachment).await
+    }
+
+    async fn check_upload(&self, conversation: Uuid) -> Result<()> {
         self.ensure_open()?;
         ensure!(
             self.directory()
@@ -117,15 +145,17 @@ impl Client {
                 .any(|chat| chat.id == conversation),
             "Select an available conversation before sharing"
         );
-        self.check_capacity().await?;
-        let id = Uuid::new_v4();
-        let spool = self.spool((id, Direction::Upload));
-        let target = spool.clone();
-        let attachment =
-            tokio::task::spawn_blocking(move || staging::stage(&source, &target, id)).await??;
+        self.check_capacity().await
+    }
+
+    async fn start_upload(
+        self: &Arc<Self>,
+        conversation: Uuid,
+        attachment: Attachment,
+    ) -> Result<Transfer> {
         let job = Job::new(attachment, conversation, Direction::Upload);
         if let Err(error) = self.store_job(&job).await {
-            let _ = fs::remove_file(&spool).await;
+            let _ = fs::remove_file(self.spool(job.key())).await;
             return Err(error);
         }
         let mut workers = self.workers.lock().await;
@@ -432,15 +462,7 @@ impl Client {
             }
             let offset = job.transfer.received;
             let expected = (attachment.size - offset).min(CHUNK_SIZE) as usize;
-            let response = self
-                .api
-                .send(
-                    self.api
-                        .request(Method::GET, &format!("/v1/files/{id}/chunks/{offset}")),
-                )
-                .await?;
-            let bytes = read_limited(response, expected).await?;
-            ensure!(bytes.len() == expected, OnlineError::InvalidResponse);
+            let bytes = self.read_attachment_chunk(id, offset, expected).await?;
             output
                 .write_all(&bytes)
                 .await
@@ -475,5 +497,28 @@ impl Client {
             bail!("File verification failed. Retry the download.");
         }
         Ok(TransferStatus::Complete)
+    }
+
+    pub async fn read_attachment_chunk(
+        &self,
+        id: Uuid,
+        offset: u64,
+        expected: usize,
+    ) -> Result<Vec<u8>> {
+        self.ensure_open()?;
+        ensure!(
+            expected <= CHUNK_SIZE as usize,
+            OnlineError::InvalidResponse
+        );
+        let response = self
+            .api
+            .send(
+                self.api
+                    .request(Method::GET, &format!("/v1/files/{id}/chunks/{offset}")),
+            )
+            .await?;
+        let bytes = read_limited(response, expected).await?;
+        ensure!(bytes.len() == expected, OnlineError::InvalidResponse);
+        Ok(bytes)
     }
 }

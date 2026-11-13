@@ -1,6 +1,6 @@
 use crate::{
     App, Auth, Error, Result,
-    chats::{lock_message_feed, require_member},
+    chats::{lock_message_feed, require_send_access},
 };
 use axum::{
     Json,
@@ -51,7 +51,7 @@ pub(crate) async fn begin(
         ));
     }
     let mut tx = app.db.begin().await?;
-    require_member(&mut tx, conversation, auth.user_id).await?;
+    require_send_access(&mut tx, conversation, auth.user_id).await?;
     // Reserve bytes once per transfer, even when multiple uploads begin concurrently.
     sqlx::query("SELECT pg_advisory_xact_lock(1002)")
         .execute(&mut *tx)
@@ -220,6 +220,7 @@ pub(crate) async fn complete(
         ));
     }
     lock_message_feed(&mut tx).await?;
+    require_send_access(&mut tx, file.conversation_id, auth.user_id).await?;
     sqlx::query("UPDATE attachments SET complete = true WHERE id = $1")
         .bind(file.id)
         .execute(&mut *tx)
@@ -247,7 +248,7 @@ pub(crate) async fn read_chunk(
          JOIN members m ON m.conversation_id = f.conversation_id AND m.account_id = $3
          JOIN messages published ON published.attachment_id = f.id
          WHERE c.attachment_id = $1 AND c.byte_offset = $2 AND f.complete
-               AND published.seq > m.joined_after",
+               AND published.seq > m.joined_after AND published.recall_seq IS NULL",
     )
     .bind(id)
     .bind(offset)

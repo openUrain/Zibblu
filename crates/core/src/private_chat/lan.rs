@@ -2,7 +2,7 @@ use super::identity::Identity;
 use crate::lan_peer_name;
 use anyhow::{Context, Result, ensure};
 use hickory_resolver::{
-    TokioResolver,
+    ResolveError, TokioResolver,
     proto::rr::{RData, RecordType},
 };
 use if_addrs::{IfAddr, Interface};
@@ -41,6 +41,17 @@ pub(super) struct Scope {
     dns_domain: Option<String>,
     port: u16,
 }
+
+#[derive(Debug)]
+pub(super) struct NoLanInterface;
+
+impl std::fmt::Display for NoLanInterface {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("No approved IPv4 LAN interface is available.")
+    }
+}
+
+impl std::error::Error for NoLanInterface {}
 
 impl Scope {
     pub fn current() -> Result<Self> {
@@ -108,10 +119,7 @@ impl Scope {
             })
             .collect();
         interfaces.sort_by_key(|interface| (interface.ip(), interface.index));
-        ensure!(
-            !interfaces.is_empty(),
-            "No approved IPv4 LAN interface is available."
-        );
+        ensure!(!interfaces.is_empty(), NoLanInterface);
         Ok(Self {
             interfaces,
             enterprise,
@@ -295,22 +303,28 @@ impl Lan {
         account_tag(&self.origin, account)
     }
 
-    pub async fn nearby(&self, selected: Option<Uuid>) -> HashMap<Uuid, NearbyRecord> {
+    pub async fn nearby(&self, selected: Option<Uuid>) -> Result<HashMap<Uuid, NearbyRecord>> {
         let own = service_instance(&self.service_name, SERVICE);
         let device = |name: &str, service: &str| {
             service_instance(name, service)
                 .filter(|id| Some(*id) != own && selected.is_none_or(|selected| selected == *id))
         };
-        let mut site = Vec::new();
+        let mut site = Ok(Vec::new());
         if let (Some(resolver), Some(domain)) = (&self.resolver, &self.scope.dns_domain) {
             let service = site_service(domain);
             let identify =
                 |name: &str, tag: &str| device(name, &service).map(|id| (id, tag.to_owned()));
-            if let Ok(Ok(entries)) =
-                timeout(ATTEMPT, site_records(resolver, &service, identify)).await
-            {
-                site = entries;
-            }
+            site = match timeout(ATTEMPT, site_records(resolver, &service, identify)).await {
+                Ok(Ok(entries)) => Ok(entries),
+                Ok(Err(error))
+                    if error
+                        .downcast_ref::<ResolveError>()
+                        .is_some_and(ResolveError::is_no_records_found) =>
+                {
+                    Ok(Vec::new())
+                }
+                _ => Err(anyhow::anyhow!("Site discovery failed.")),
+            };
         }
         let mut nearby = HashMap::new();
         let mut add = |id, tag: &str, address| {
@@ -334,10 +348,16 @@ impl Lan {
                 }
             }
         }
-        for ((id, tag), address) in site {
-            add(id, &tag, address);
+        match site {
+            Ok(entries) => {
+                for ((id, tag), address) in entries {
+                    add(id, &tag, address);
+                }
+            }
+            Err(error) if nearby.is_empty() => return Err(error),
+            Err(_) => {}
         }
-        nearby
+        Ok(nearby)
     }
 
     fn is_peer(&self, address: SocketAddr) -> bool {

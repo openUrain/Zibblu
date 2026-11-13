@@ -2,7 +2,7 @@ import { MessageCircleMore, UsersRound, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { errorMessage } from "./api";
-import type { Conversation, Page } from "./api";
+import type { Conversation, Message, Page } from "./api";
 
 export function Brand() {
   return <span className="brand" aria-label="Zibblu"><MessageCircleMore size={26} strokeWidth={2.3} /></span>;
@@ -58,38 +58,76 @@ export function Dialog({ title, close, children, className }: {
   </dialog>;
 }
 
-export function usePage(read: (before?: number) => Promise<Page>, revision: number) {
-  const [page, setPage] = useState<Page & { expanded?: boolean }>();
+export function usePage(read: (before?: number) => Promise<Page>, revision: number,
+  recalled: ReadonlySet<number>, showRecalled = false, latestAiSeq?: number) {
+  const [page, setPage] = useState<Page>();
   const [failure, setFailure] = useState("");
   const [loading, setLoading] = useState(false);
   const expanding = useRef(false);
+  const newest = useRef<number | undefined>(undefined);
+  const [oldestExpanded, setOldestExpanded] = useState<Message>();
+  const reviewedAiSeq = useRef(latestAiSeq);
 
   useEffect(() => {
     let current = true;
-    read().then(next => {
+    const aiChanged = reviewedAiSeq.current !== latestAiSeq;
+    const oldest = oldestExpanded;
+    async function refresh() {
+      const next = await read();
+      if (!aiChanged || !oldest) return next;
+      // A shared AI reply can appear anywhere in the already expanded history.
+      let cursor = next.items.at(-1);
+      while (current && next.has_more && cursor
+        && (cursor.created_at > oldest.created_at || (cursor.created_at === oldest.created_at && cursor.seq > oldest.seq))) {
+        const older = await read(cursor.seq);
+        next.items.push(...older.items);
+        next.has_more = older.has_more;
+        cursor = older.items.at(-1);
+      }
+      return next;
+    }
+    refresh().then(next => {
       if (!current) return;
       setFailure("");
+      reviewedAiSeq.current = latestAiSeq;
+      if (newest.current === undefined) newest.current = Math.max(0, ...next.items.map(item => item.seq));
+      if (!oldest || aiChanged) {
+        setPage(next);
+        return;
+      }
       setPage(previous => {
-        if (!previous?.expanded || next.items.length === 0 || previous.items.length === 0
-          || next.items.at(-1)!.seq > previous.items[0].seq) return next;
+        if (!previous || next.items.length === 0) return next;
         const last = next.items.at(-1)!.seq;
-        return { ...previous, items: [...next.items, ...previous.items.filter(item => item.seq < last)] };
+        const lastIndex = previous.items.findIndex(item => item.seq === last);
+        return lastIndex < 0 ? next : {
+          ...previous,
+          items: [...next.items, ...previous.items.slice(lastIndex + 1).filter(item => showRecalled || !recalled.has(item.seq))],
+        };
       });
     }).catch(error => { if (current) setFailure(errorMessage(error)); });
     return () => { current = false; };
-  }, [read, revision]);
+  }, [read, revision, recalled, showRecalled, latestAiSeq, oldestExpanded]);
 
   async function older() {
-    const cursor = page?.items.at(-1)?.seq;
-    if (cursor === undefined || expanding.current) return;
+    const last = page?.items.at(-1);
+    if (!last || expanding.current) return;
+    const cursor = last.seq;
     expanding.current = true;
     setLoading(true);
     try {
       const next = await read(cursor);
+      setOldestExpanded(next.items.at(-1) ?? last);
       setPage(previous => previous?.items.at(-1)?.seq === cursor
-        ? { items: [...previous.items, ...next.items], has_more: next.has_more, expanded: true } : previous);
+        ? { items: [...previous.items, ...next.items], has_more: next.has_more } : previous);
     } catch (error) { setFailure(errorMessage(error)); }
     finally { expanding.current = false; setLoading(false); }
   }
-  return { page, failure, loading, older };
+  const visible = recalled.size && page ? {
+    ...page,
+    items: showRecalled
+      ? page.items.map(item => !item.recalled && recalled.has(item.seq)
+        ? { ...item, recalled: true, text: null, attachment: null } : item)
+      : page.items.filter(item => !recalled.has(item.seq)),
+  } : page;
+  return { page: visible, failure, loading, older, newestAtOpen: newest.current };
 }

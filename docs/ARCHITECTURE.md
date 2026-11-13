@@ -36,9 +36,11 @@ Use fewer packages if implementation proves simpler.
 ## M1 delivery and storage
 
 - A single Axum service serves normal-chat HTTP requests. It binds to loopback and expects an HTTPS reverse proxy for remote clients. Tauri commands use the Rust client for HTTP, SQLite, and local file access.
-- Accounts belong to one service. Contacts are saved by exact handle or contact QR code. Group QR admission stores a message sequence cutoff under the same transaction lock used to publish messages and attachments. Removing a contact removes the address-book entry and preserves existing chats.
+- Accounts belong to one service. The original username is stored with case-insensitive lookup and uniqueness. Contact requests can start from a username or contact QR. Approval adds both address-book entries in one transaction. Removing a contact removes both entries and preserves chat history. New direct messages and attachment publication require an approved relationship.
 - PostgreSQL stores the normal-chat feed and retains messages while recipients are offline. Clients poll for changes and commit batches into per-server, per-account SQLite profiles. The same feed supplies chat history and attachment metadata. A client must be signed in to use its profile. Sending a new message requires reaching the service.
 - An upload holds a stable ID, expected size and SHA-256. PostgreSQL commits each chunk with its offset and publishes the attachment message only after verification. Downloads resume from a local partial file and verify SHA-256 before publishing to the selected destination.
+- Recall uses the same ordered server sequence as publication and a separate cursor for message updates. The client replaces affected SQLite payloads with recall notices and removes those attachments from file history. This preserves the existing message cursor and history.
+- The desktop previews ordinary attachments through a native WebView resource handler that requests authenticated file chunks. Video uses ranges. Clipboard images enter the same staged upload path as other files.
 
 ## Data ownership and flow
 
@@ -55,7 +57,7 @@ Important: ordinary online messaging should target authenticated, encrypted tran
 
 Each signed-in desktop generates an in-memory key and obtains a short-lived client and server certificate over the authenticated account-service connection. It advertises its private UDP endpoint via mDNS and a server-scoped account tag. An optional company discovery domain is queried through DNS-SD for approved routed subnets. Discovery records never grant access to a chat.
 
-The nearby list reads the existing mDNS cache and configured site DNS-SD records. It filters addresses through the LAN policy and groups addresses by service instance. The renderer gets the instance ID and any tentative account match from shared conversation membership. Graceful departures remove entries through mDNS. After a lost connection, cached entries can remain until their discovery records expire.
+The nearby list reads the existing mDNS cache and configured site DNS-SD records. It filters addresses through the LAN policy and groups addresses by service instance. The renderer gets eligible instances even with an empty conversation directory. Shared conversation membership supplies tentative account matches. Graceful departures remove entries through mDNS. After a lost connection, cached entries can remain until their discovery records expire.
 
 The host device coordinates a temporary room over mutually authenticated QUIC streams. Named room scope identifies the source conversation and exact invited accounts, and the receiver checks that scope against its cached directory. The first device decision for an account is applied by the host. The accepting device signs the session scope. Other devices verify that approval before they enter automatically. A QR join presents an expiring capability through the authenticated stream. The host sends participant metadata and new text to currently joined devices, with no historical replay.
 
@@ -77,7 +79,7 @@ Private data does **not** travel on the normal channel during discovery, failure
 
 The Windows composer opens an AI draft in the active normal conversation. The native command checks the signed-in account's normal conversation directory, queries bounded SQLite text, and reads only the individual files selected via the native picker. It freezes the resulting prompt, messages and file text into an in-memory snapshot for review. A one-use confirmation ID releases that snapshot to the selected provider adapter over HTTPS. Closing the normal composer, accepting a private invitation or signing out clears pending authorization.
 
-The same Responses adapter handles OpenAI, DeepSeek and Grok with fixed endpoints. It receives serialized context and a provider-specific key, and returns text. Provider keys are protected with Windows DPAPI inside the per-account local profile. Local replies live in the signed-in desktop workspace. Posting a reviewed reply requires a separate user action through the ordinary message path.
+The Responses adapter handles OpenAI, DeepSeek and Grok at their default HTTPS endpoints or an explicitly configured HTTPS base URL. Model discovery uses a separate authenticated list request without chat context. Windows DPAPI protects keys in the per-account profile. Unshared replies live in the signed-in desktop workspace. An explicit share publishes a provider-tagged message and its recipient list in one PostgreSQL transaction. The timeline uses the reply's generation time, bounded by the conversation and the server's clock. The sync feed uses publication sequence. The sync feed and conversation previews both filter the reply by its audience before returning data to clients.
 
 ## Boundaries worth keeping strict
 

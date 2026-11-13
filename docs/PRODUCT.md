@@ -16,12 +16,15 @@ Main navigation: **Chats · Contacts · Files · Settings**.
 
 ## 01 — Chat & Files (normal mode)
 
-**User flow:** sign in → find/add a contact → send text → optionally start a group → drag/drop a file → inspect progress → resume an interrupted transfer → find it in Files.
+**User flow:** sign in → find a username → send a contact request → wait for approval → send messages or start a group → share files and find them in Files.
 
 Initial functional scope:
 - Direct and basic group chat, local message history and offline delivery through the online service.
+- Usernames keep their registered capitalization. Sign-in and contact lookup are case-insensitive.
+- The sender can recall an ordinary message or shared attachment within five minutes. Participants receive a recall notice in the timeline.
 - Sending files/folders; clear transfer state, file metadata, pause/resume and integrity verification. Folders are shared as ZIP downloads.
-- Dedicated Files page and per-chat file history. Failure/retry is visible, not silently hidden.
+- Paste a clipboard image into the composer and send it as an attachment. Supported images and video frames appear inline when the Windows WebView can decode them.
+- The conversation menu provides text search and files already shared in that chat. The sidebar Files view covers all chats, newest first, with filename search and transfer controls.
 - Standard online routing is **separate** from private mode; ordinary messages can involve the server.
 
 Avoid in v1: voice/video, social feeds, bots, automatic cloud-drive sync, complex admin dashboards, mobile before desktop stabilization.
@@ -32,7 +35,7 @@ Avoid in v1: voice/video, social feeds, bots, automatic cloud-drive sync, comple
 
 Rules:
 - Devices need direct UDP on the same subnet or between explicitly approved subnets inside a managed site. The app verifies account-bound device certificates before showing an invitation.
-- **Nearby devices** in the top bar updates automatically after sign-in. Each visible service instance has its own device ID. Account matches are unverified until connection. Choose a device that matches an account in a shared conversation and send a private invitation. The selected device must authenticate and accept before chatting.
+- **Nearby devices** in the top bar lists discoverable Zibblu instances after sign-in, including devices outside the contact list. The list distinguishes an unavailable network, a discovery failure and an empty result. Choose a device that matches an account in a shared conversation to send an invitation. The selected device must authenticate and accept before chatting.
 - A direct invitation shows the sender and **Accept** and **Decline**. A group invitation also shows the invitees. Accepted accounts can join as they respond, and a late account or device sees new text only.
 - Invitations cover the app window. Windows shows a compact lower-right prompt while the main window is minimized. Accepting brings the private chat forward. Declining keeps the main window minimized.
 - No server relay, online forwarding or unnoticed switch back to normal mode. Connection failure means private mode is unavailable.
@@ -51,7 +54,9 @@ Rules:
 - Assistant responses cannot overwrite message history or modify/delete local files. No execution, plugin actions, continuous agents or write tools.
 - Remote-provider use must disclose that selected content is sent outside Zibblu. Keep credentials in secure local storage rather than source control.
 - Private mode excludes cloud AI. A future on-device AI option needs a separate privacy review.
-- Replies default to the invoking user. **Review to share** lets the user read the reply and explicitly post it as their normal message, visible to everyone in the conversation. Context selection covers only text the invoking user can access in that conversation.
+- Context is capped at 60 text messages and 256 KiB per request. The scope selector displays the exact outbound snapshot and destination before sending.
+- Replies appear chronologically in the conversation with a provider logo. The invoking user can use **Visible to** to share a reviewed reply with selected conversation members. Unshared replies stay in the current sign-in.
+- Settings supports testing the API key and listing model IDs through the provider's HTTPS API. Enter a model ID manually when model discovery is unavailable. An advanced base URL can point to a compatible HTTPS Responses API.
 
 ## Brand
 

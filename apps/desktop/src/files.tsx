@@ -1,4 +1,4 @@
-import { Archive, Check, Download, File, FolderOpen, Pause, Play, RotateCcw, Trash2 } from "lucide-react";
+import { Archive, Check, Download, File, FolderOpen, Pause, Play, RotateCcw, Search, Trash2 } from "lucide-react";
 import { useCallback, useState } from "react";
 import { api, errorMessage } from "./api";
 import type { Attachment, FileFilter, Message, Transfer, User } from "./api";
@@ -15,6 +15,11 @@ export function SharedFile({ message, transfer, onChanged, compact = false }: {
   const file = message.attachment!;
   const [saving, setSaving] = useState(false);
   const [failure, setFailure] = useState("");
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const extension = file.name.split(".").at(-1)?.toLowerCase() ?? "";
+  const image = /^(png|jpe?g|gif|webp|bmp|avif)$/.test(extension) && file.size <= 16 * 1024 * 1024;
+  const video = /^(mp4|m4v|webm|mov)$/.test(extension);
+  const preview = compact && file.kind === "file" && file.size > 0 && !previewFailed;
 
   async function save() {
     setSaving(true);
@@ -25,6 +30,10 @@ export function SharedFile({ message, transfer, onChanged, compact = false }: {
   }
 
   return <div className={"shared-file" + (compact ? " compact-file" : "")}>
+    {preview && image && <img className="attachment-preview" src={api.mediaUrl(file.id)} loading="lazy"
+      alt={file.name} onError={() => setPreviewFailed(true)} />}
+    {preview && video && <video className="attachment-preview" src={api.mediaUrl(file.id)} preload="auto"
+      controls playsInline aria-label={file.name} onError={() => setPreviewFailed(true)} />}
     <div className="file-main">
       <FileIcon file={file} />
       <div className="file-info">
@@ -39,6 +48,7 @@ export function SharedFile({ message, transfer, onChanged, compact = false }: {
           <Download size={15} /> {saving ? "Choosing…" : transfer ? "Save again" : "Save"}
         </button>}
     </div>
+    {previewFailed && <small>Preview unavailable. Save the attachment to open it locally.</small>}
     {transfer?.status === "complete" && <div className="verified"><Check size={14} /> Download verified</div>}
     {transfer && transfer.status !== "complete" &&
       <TransferProgress transfer={transfer} onChanged={onChanged} chooseNew={save} choosing={saving} />}
@@ -104,26 +114,30 @@ export function TransferList({ transfers, onChanged }: { transfers: Transfer[]; 
     </div>)}</div>;
 }
 
-export function FilesView({ conversation, people, transfers, revision, onChanged }: {
-  conversation?: string; people: User[]; transfers: Transfer[]; revision: number; onChanged: () => void;
+export function FilesView({ conversation, people, transfers, revision, recalled, onChanged }: {
+  conversation?: string; people: User[]; transfers: Transfer[]; revision: number; recalled: ReadonlySet<number>; onChanged: () => void;
 }) {
   const [tab, setTab] = useState<"shared" | "transfers">("shared");
   const [person, setPerson] = useState("");
   const [kind, setKind] = useState<Attachment["kind"] | "">("");
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
+  const [name, setName] = useState("");
   const jobs = transfers.filter(transfer => !conversation || transfer.conversation_id === conversation);
   const pending = jobs.filter(transfer => transfer.status !== "complete").length;
   return <div className={"files-view" + (conversation ? " chat-files" : "")}>
     {!conversation && <header className="workspace-heading"><h1>Files</h1><p>Find attachments shared across your chats.</p></header>}
-    <div className="tabs" aria-label="Files view">
+    {!conversation && <div className="tabs" aria-label="Files view">
       <button className={tab === "shared" ? "active-tab" : ""} aria-pressed={tab === "shared"} onClick={() => setTab("shared")}>Shared files</button>
       <button className={tab === "transfers" ? "active-tab" : ""} aria-pressed={tab === "transfers"} onClick={() => setTab("transfers")}>
         Transfers{pending > 0 && <span className="tab-count">{pending}</span>}
       </button>
-    </div>
+    </div>}
     {tab === "shared" ? <>
       <div className="filters">
+        <label className="file-search">File name<span className="search"><Search size={16} />
+          <input type="search" value={name} onChange={event => setName(event.target.value)} placeholder="Search file names" />
+        </span></label>
         <label>Shared by<select value={person} onChange={event => setPerson(event.target.value)}>
           <option value="">Everyone</option>
           {people.map(user => <option key={user.id} value={user.id}>@{user.handle}</option>)}
@@ -134,8 +148,8 @@ export function FilesView({ conversation, people, transfers, revision, onChanged
         <label>From<input type="date" value={start} max={end || undefined} onChange={event => setStart(event.target.value)} /></label>
         <label>Through<input type="date" value={end} min={start || undefined} onChange={event => setEnd(event.target.value)} /></label>
       </div>
-      <SharedHistory key={[conversation, person, kind, start, end].join("|")} {...{
-        conversation, person, kind, start, end, revision, jobs, onChanged,
+      <SharedHistory key={JSON.stringify([conversation, person, kind, start, end, name])} {...{
+        conversation, person, kind, start, end, name, revision, recalled, jobs, onChanged,
       }} />
     </> : jobs.length
       ? <TransferList transfers={jobs} onChanged={onChanged} />
@@ -143,12 +157,12 @@ export function FilesView({ conversation, people, transfers, revision, onChanged
   </div>;
 }
 
-function SharedHistory({ conversation, person, kind, start, end, revision, jobs, onChanged }: {
-  conversation?: string; person: string; kind: Attachment["kind"] | ""; start: string; end: string;
-  revision: number; jobs: Transfer[]; onChanged: () => void;
+function SharedHistory({ conversation, person, kind, start, end, name, revision, recalled, jobs, onChanged }: {
+  conversation?: string; person: string; kind: Attachment["kind"] | ""; start: string; end: string; name: string;
+  revision: number; recalled: ReadonlySet<number>; jobs: Transfer[]; onChanged: () => void;
 }) {
   const read = useCallback((before?: number) => {
-    const filter: FileFilter = { conversation_id: conversation, sender_id: person || undefined, kind: kind || undefined };
+    const filter: FileFilter = { conversation_id: conversation, sender_id: person || undefined, kind: kind || undefined, name: name.trim() || undefined };
     if (start) filter.start_at = new Date(start + "T00:00:00").getTime();
     if (end) {
       const next = new Date(end + "T00:00:00");
@@ -156,13 +170,13 @@ function SharedHistory({ conversation, person, kind, start, end, revision, jobs,
       filter.end_before = next.getTime();
     }
     return api.files(filter, before);
-  }, [conversation, person, kind, start, end]);
-  const { page, failure, loading, older } = usePage(read, revision);
+  }, [conversation, person, kind, start, end, name]);
+  const { page, failure, loading, older } = usePage(read, revision, recalled);
   const downloads = new Map(jobs.filter(job => job.direction === "download").map(job => [job.attachment.id, job]));
   if (failure) return <p className="inline-error" role="alert">{failure}</p>;
   if (!page) return <p className="muted loading" role="status">Loading shared files…</p>;
   if (page.items.length === 0) return <Blank icon={<FolderOpen size={27} />} title="No shared files found">
-    <p>{person || kind || start || end ? "Try changing the filters." : "Files and folders shared in chats will appear here."}</p>
+    <p>{person || kind || start || end || name ? "Try changing the filters." : "Files and folders shared in chats will appear here."}</p>
   </Blank>;
   return <div className="shared-list">
     {page.items.map(message => <SharedFile key={message.seq} message={message}

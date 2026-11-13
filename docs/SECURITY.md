@@ -29,10 +29,10 @@ We **cannot** promise protection from: screenshots or cameras, recipients manual
 - Use read-only file handles for selected attachments and guard against path traversal, symlinks and scope expansion at the capability boundary.
 - Treat message/file contents as untrusted data. Instructions embedded in them cannot expand AI permissions.
 - Private-session content is not sent to cloud AI. If on-device AI is later introduced, review its actual network behavior before allowing private context.
-- The Windows client encrypts provider keys with user-scoped DPAPI and binds each key to its provider. The local account profile stores the encrypted key, name and model. The renderer receives only the name, provider and model on subsequent reads.
+- The Windows client encrypts provider keys with user-scoped DPAPI and binds each key to its provider. The renderer receives configuration metadata, including the API base URL. Changing the base URL requires entering the key for that endpoint.
 - The native app verifies normal-chat membership, reads only the selected text and snapshots UTF-8 files from a native picker through read-only handles. Reparse points, nonlocal path forms and files larger than 32 KiB are rejected. The provider receives only the prompt, selected text with sender handles, and picked filenames with their text.
-- The confirmation consumes one in-memory snapshot. A fixed HTTPS endpoint receives one request with redirects and retries disabled. OpenAI and xAI requests set `store: false`; DeepSeek's Responses API is stateless. Provider-side handling remains subject to the provider's terms.
-- Unshared replies are local to the current sign-in. Sharing uses a separate user action and the ordinary message path.
+- The send action consumes one in-memory snapshot of up to 60 text messages and 256 KiB. The disclosed HTTPS endpoint receives one request with normal certificate validation, including OS-trusted roots for managed gateways. Redirects and retries are disabled. OpenAI and xAI requests set `store: false`. DeepSeek's Responses API is stateless. Provider-side handling remains subject to the provider's terms.
+- Unshared replies stay in memory for the current sign-in. When the user explicitly shares a reply, the server validates the selected chat members and enforces that audience for message synchronization and conversation previews.
 
 ## Ordinary chats and files
 
@@ -44,7 +44,9 @@ M1 uses Argon2id password hashes and expiring opaque session tokens. The service
 
 Downloads require authenticated conversation membership for each chunk. Upload changes require ownership, and incomplete uploads are unavailable to recipients. A file or folder archive is limited to 256 MiB. The service reserves attachment storage up to 2 GiB and 256 transfers per account, and 16 GiB and 4,096 transfers overall. Unfinished uploads can be discarded. Published attachment retention is indefinite in M1, so an operator must budget for the database and its write-ahead log.
 
-Local attachment paths come from a native picker or an explicitly confirmed drop. The app does not extract received archives or overwrite existing destinations.
+Local attachment paths come from a native picker or an explicitly confirmed drop. Pasted images supply bounded image bytes, without a path. Media previews use the same authenticated chunk access as downloads. The app does not extract received archives or overwrite existing destinations.
+
+Contact approval can only be performed by the recipient. Recall can only be performed by the original sender within five minutes according to server time. Recalled attachments are unavailable through the service, and the app keeps a notice in the timeline. Copies already saved by a recipient remain on that device.
 
 Normal group join codes are renewable bearer invitations available to group members. The server stores a hash and expires each code after seven days. QR admission records a message sequence cutoff, enforced on synchronized messages, previews and file downloads. Existing group members retain the history they could already access.
 

@@ -2,6 +2,7 @@
 
 mod ai;
 mod commands;
+mod media;
 mod private_runtime;
 
 use commands::{Desktop, DropOffer};
@@ -16,6 +17,7 @@ fn main() {
     let closing = AtomicBool::new(false);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .register_asynchronous_uri_scheme_protocol("zibblu-media", media::preview)
         .setup(|app| {
             let data = match std::env::var_os("ZIBBLU_DATA_DIR") {
                 Some(path) => std::path::absolute(PathBuf::from(path))?,
@@ -26,6 +28,15 @@ fn main() {
             let config = &app.config().app.windows[0];
             WebviewWindowBuilder::from_config(app, config)?
                 .data_directory(data.join("webview"))
+                .on_navigation(|url| {
+                    matches!(url.scheme(), "tauri") && url.host_str() == Some("localhost")
+                        || matches!(url.scheme(), "http" | "https")
+                            && url.host_str() == Some("tauri.localhost")
+                        || cfg!(debug_assertions)
+                            && url.scheme() == "http"
+                            && url.host_str() == Some("127.0.0.1")
+                            && url.port() == Some(1420)
+                })
                 .build()?;
             Ok(())
         })
@@ -75,14 +86,19 @@ fn main() {
             commands::files,
             commands::find_user,
             commands::add_contact,
+            commands::respond_contact,
             commands::remove_contact,
             commands::create_conversation,
             commands::group_invite,
             commands::group_preview,
             commands::group_join,
             commands::send_message,
+            commands::recall_message,
+            commands::publish_ai_reply,
+            media::paste_image,
             ai::ai_assistants,
             ai::ai_save_assistant,
+            ai::ai_test_connection,
             ai::ai_remove_assistant,
             ai::ai_open_view,
             ai::ai_close_view,

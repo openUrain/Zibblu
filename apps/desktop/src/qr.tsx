@@ -177,7 +177,7 @@ export function ScanQr({ session, close, contactAdded, groupJoined, privateJoine
           <strong>{result.group.title}</strong><p>{result.group.member_count} members · New messages only</p></>}
         {result.kind === "private" && <p>Join this temporary private chat over the local network.</p>}
         <button className="button primary" disabled={busy} onClick={() => void confirm()}>
-          {result.kind === "contact" ? "Add contact" : "Join chat"}
+          {result.kind === "contact" ? "Send contact request" : "Join chat"}
         </button>
       </> : <div className="qr-actions">
         <button className="button subtle" disabled={busy} onClick={() => setCamera(!camera)}>

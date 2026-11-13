@@ -2,7 +2,7 @@ use super::*;
 use crate::assistant::AiMessage;
 use sqlx::SqliteConnection;
 
-const MAX_MESSAGES: usize = 20;
+const MAX_MESSAGES: usize = 60;
 
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -54,7 +54,7 @@ async fn scoped_messages(
     scope: AiScope,
 ) -> Result<Vec<AiMessage>> {
     let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-        "SELECT payload FROM inbox WHERE attachment_id IS NULL AND conversation_id = ",
+        "SELECT payload FROM inbox WHERE json_type(payload, '$.text') = 'text' AND attachment_id IS NULL AND conversation_id = ",
     );
     query.push_bind(conversation.to_string());
     let expected = match scope {
@@ -63,23 +63,23 @@ async fn scoped_messages(
             let count = sequences.len();
             ensure!(
                 (1..=MAX_MESSAGES).contains(&count),
-                "Select between 1 and 20 messages"
+                "Select between 1 and 60 messages"
             );
             query.push(" AND seq IN (");
             let mut ids = query.separated(", ");
             for sequence in sequences {
                 ids.push_bind(sequence);
             }
-            ids.push_unseparated(") ORDER BY seq");
+            ids.push_unseparated(") ORDER BY json_extract(payload, '$.created_at'), seq");
             Some(count)
         }
         AiScope::Recent { limit } => {
             ensure!(
                 (1..=MAX_MESSAGES).contains(&limit),
-                "Choose up to 20 recent messages"
+                "Choose up to 60 recent messages"
             );
             query
-                .push(" ORDER BY seq DESC LIMIT ")
+                .push(" ORDER BY json_extract(payload, '$.created_at') DESC, seq DESC LIMIT ")
                 .push_bind(limit as i64);
             None
         }
@@ -155,6 +155,8 @@ mod tests {
                 created_at: seq,
                 text: Some(text.into()),
                 attachment: None,
+                ai_provider: None,
+                recalled: false,
             })?;
             sqlx::query("INSERT INTO inbox VALUES (?, ?, ?, ?)")
                 .bind(seq)
@@ -198,7 +200,7 @@ mod tests {
                 .is_empty()
         );
         assert!(
-            scoped_messages(&mut db, chat, AiScope::Recent { limit: 21 })
+            scoped_messages(&mut db, chat, AiScope::Recent { limit: 61 })
                 .await
                 .is_err()
         );

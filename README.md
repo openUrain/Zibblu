@@ -45,9 +45,9 @@ npm ci
 npm run tauri dev
 ```
 
-Create an account at `http://127.0.0.1:7841` and add another account by its handle in **Contacts**. For remote users, terminate HTTPS at a reverse proxy in front of the loopback service and give both clients the same HTTPS origin. Configure rate limiting for login and registration and keep the database reachable only by trusted services.
+Create an account at `http://127.0.0.1:7841` and send a request to another account by username in **Contacts**. After approval, both accounts see each other and can start a chat. For remote users, terminate HTTPS at a reverse proxy in front of the loopback service and give both clients the same HTTPS origin. Configure rate limiting for login and registration and keep the database reachable only by trusted services.
 
-Use the paperclip or folder button to share an attachment. Dropping one file or folder into an open chat brings up a confirmation. Folders arrive as ZIP archives. **Shared files** in a chat and the global **Files** workspace show attachments and transfers. Save a download to an unused filename. If a transfer pauses or fails, choose **Resume** or **Retry** to continue.
+Use the paperclip, folder button, drag and drop, or paste an image into the composer. Folders arrive as ZIP archives. Use the conversation's **…** menu for **Search chat** and **Shared files**. The sidebar **Files** workspace shows all shared files by time, with filename search and transfer controls. Save a download to an unused filename. If a transfer pauses or fails, choose **Resume** or **Retry** to continue.
 
 For two independent local profiles, launch the Windows executable with a different `ZIBBLU_DATA_DIR` in each process. By default, the app uses its Windows local app data directory.
 
@@ -66,7 +66,7 @@ cargo test --locked -p zibblu-online --test m1 -- --nocapture
 
 ## Try a private LAN chat
 
-Use the same Zibblu HTTPS server on two Windows devices signed in to different test accounts with a shared conversation. On a trusted home or office subnet, allow Zibblu through Windows Defender Firewall for the Private profile. Discovery needs mDNS (UDP 5353) or configured site DNS-SD, and private chat needs direct UDP. Open **Nearby devices** from the top bar on both devices and choose a matching account to invite. Check that both devices appear again after switching between Wi-Fi and Ethernet. Move one device outside the allowed LAN and check that a new private connection fails.
+Use the same Zibblu HTTPS server on two Windows devices signed in to different test accounts. On a trusted home or office subnet, allow Zibblu through Windows Defender Firewall for the Private profile. Discovery needs mDNS (UDP 5353) or configured site DNS-SD, and private chat needs direct UDP. Open **Nearby devices** on both devices before adding contacts. Each device should appear with its identity unverified. Create a shared conversation and select the matching account to invite. Check that both devices appear again after switching between Wi-Fi and Ethernet. Move one device outside the allowed LAN and check that a new private connection fails.
 
 The **ghost** in a normal conversation also starts a private invitation and lets you choose invitees in a group. The invitation covers the Zibblu window. When that window is minimized on Windows, a compact invitation appears above the taskbar at the lower right. Accepting opens the private chat. Declining leaves the main window minimized. A valid response applies to that account's devices. Participants can switch to another conversation and return without ending the session. Minimizing keeps Zibblu running on the taskbar. Closing the main window exits Zibblu and ends local private sessions.
 
@@ -84,11 +84,11 @@ Verify across two approved VLANs, then repeat from a subnet or firewall segment 
 
 ## Ask a read-only AI assistant
 
-In **Settings → AI assistants**, choose OpenAI, DeepSeek, or Grok. Set a mention name, model ID and your own provider API key. Windows protects the key in the local Zibblu account profile.
+In **Settings → AI assistants**, choose OpenAI, DeepSeek, or Grok. Set a mention name, model ID and your own provider API key. **Test connection** lists models when the provider supports it. The model ID remains editable. **Advanced connection settings** accepts an HTTPS API base URL. Windows protects the key in the local Zibblu account profile.
 
-Start a normal chat message with `@name`, enter a prompt, then choose the context. You can use the prompt alone, pick up to 20 text messages from the current chat, or include the latest 5, 10 or 20. Add up to three individual UTF-8 text files of 32 KiB each. Review the exact text and provider before sending. The request leaves Zibblu over HTTPS.
+Start a normal chat message with `@name` and enter a prompt. The context screen lets you use the prompt alone, pick up to 60 text messages from the current chat, or include a recent range. Add up to three individual UTF-8 text files of 32 KiB each. The combined snapshot is capped at 256 KiB. Review the exact text and destination on that screen and send over HTTPS.
 
-The latest answer in each chat stays in memory for your sign-in. To share one, choose **Review to share**, read the result, then use **Post reply**. The posted reply appears as a normal message under your account.
+Replies stay in memory for your sign-in. To share one, use **Visible to** on the reply and select the chat members who should receive it. The shared reply appears in those members' timelines. Provider logos identify [OpenAI](https://openai.com/brand/), [DeepSeek](https://github.com/deepseek-ai/awesome-deepseek-integration/tree/main/docs/_logo%20svg) and [Grok](https://x.ai/legal/brand-guidelines), and belong to their respective owners.
 
 ## Documentation
 

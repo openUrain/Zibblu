@@ -4,8 +4,8 @@ use sqlx::postgres::PgPoolOptions;
 use std::{path::Path, sync::Arc, time::Duration};
 use uuid::Uuid;
 use zibblu_core::{
-    CHUNK_SIZE, Client, ConversationRequest, Credentials, Direction, FileFilter, SendMessage,
-    Session, Transfer, TransferStatus,
+    AiProvider, AiScope, CHUNK_SIZE, Client, ConversationRequest, Credentials, Direction,
+    FileFilter, PublishAiReply, SendMessage, Session, Transfer, TransferStatus,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -16,7 +16,7 @@ async fn normal_chat_and_files() -> Result<()> {
         .max_connections(6)
         .connect(&url)
         .await?;
-    let app = zibblu_online::router(db).await?;
+    let app = zibblu_online::router(db.clone()).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let server = format!("http://{}", listener.local_addr()?);
     let task = tokio::spawn(async move { axum::serve(listener, app).await });
@@ -25,19 +25,44 @@ async fn normal_chat_and_files() -> Result<()> {
     let suffix = &Uuid::new_v4().simple().to_string()[..10];
     let password = format!("acceptance-{suffix}");
     let alice_handle = format!("alice_{suffix}");
-    let bob_handle = format!("bob_{suffix}");
+    let bob_handle = format!("Bob_{suffix}");
     let outsider_handle = format!("outsider_{suffix}");
     let alice = sign_in(first.path(), &server, &alice_handle, &password, true).await?;
     let bob = sign_in(second.path(), &server, &bob_handle, &password, true).await?;
 
-    let contact = alice.find_user(&bob_handle).await?;
+    let contact = alice.find_user(&bob_handle.to_lowercase()).await?;
     assert_eq!(contact.id, bob.user.id);
+    assert_eq!(contact.handle, bob_handle);
+    assert!(
+        sign_in(
+            second.path(),
+            &server,
+            &bob_handle.to_lowercase(),
+            &password,
+            true
+        )
+        .await
+        .is_err()
+    );
+    let request = || ConversationRequest::Direct {
+        contact_id: contact.id,
+    };
     alice.add_contact(contact.id).await?;
-    let chat = alice
-        .create_conversation(ConversationRequest::Direct {
-            contact_id: contact.id,
-        })
-        .await?;
+    assert!(alice.create_conversation(request()).await.is_err());
+    assert!(alice.respond_contact(contact.id, true).await.is_err());
+    let outgoing = alice.sync().await?.pending_contacts;
+    assert_eq!(outgoing[0].user.id, bob.user.id);
+    assert!(!outgoing[0].incoming);
+    let incoming = bob.sync().await?.pending_contacts;
+    assert_eq!(incoming[0].user.id, alice.user.id);
+    assert!(incoming[0].incoming);
+    bob.respond_contact(alice.user.id, false).await?;
+    assert!(alice.sync().await?.pending_contacts.is_empty());
+    alice.add_contact(contact.id).await?;
+    bob.respond_contact(alice.user.id, true).await?;
+    assert_eq!(alice.sync().await?.contacts, [bob.user.clone()]);
+    assert_eq!(bob.sync().await?.contacts, [alice.user.clone()]);
+    let chat = alice.create_conversation(request()).await?;
     send(&alice, chat, "Hello from Alice").await?;
     bob.sync().await?;
     assert_eq!(
@@ -54,7 +79,15 @@ async fn normal_chat_and_files() -> Result<()> {
     bob.logout().await?;
     drop(bob);
     send(&alice, chat, "This arrived while you were away").await?;
-    let bob = sign_in(second.path(), &server, &bob_handle, &password, false).await?;
+    let bob = sign_in(
+        second.path(),
+        &server,
+        &bob_handle.to_lowercase(),
+        &password,
+        false,
+    )
+    .await?;
+    assert_eq!(bob.user.handle, bob_handle);
     assert_eq!(
         bob.messages(chat, None).await?.items.len(),
         2,
@@ -169,7 +202,84 @@ async fn normal_chat_and_files() -> Result<()> {
     );
     println!("The service rejected unauthenticated reads and nonmember reads/writes");
 
+    let old = history[2].seq;
+    sqlx::query("UPDATE messages SET created_at = created_at - 301000 WHERE seq = $1")
+        .bind(old)
+        .execute(&db)
+        .await?;
+    assert!(alice.recall_message(chat, old).await.is_err());
+    let incoming = history[1].seq;
+    assert!(alice.recall_message(chat, incoming).await.is_err());
+    let recalled = history[0].seq;
+    alice.recall_message(chat, recalled).await?;
+    alice.recall_message(chat, recalled).await?;
+    let changes = bob.sync_updates().await?;
+    assert_eq!(changes.recalled, [recalled]);
+    let tombstone = bob
+        .messages(chat, None)
+        .await?
+        .items
+        .into_iter()
+        .find(|item| item.seq == recalled)
+        .unwrap();
+    assert!(tombstone.recalled && tombstone.text.is_none());
+    assert!(
+        bob.search_messages(chat, None, Some("while you were away"))
+            .await?
+            .items
+            .is_empty()
+    );
+    assert!(
+        bob.ai_messages(
+            chat,
+            AiScope::Selected {
+                sequences: vec![recalled]
+            }
+        )
+        .await
+        .is_err()
+    );
+    let file_seq = bob.files(FileFilter::default(), None).await?.items[0].seq;
+    alice.recall_message(chat, file_seq).await?;
+    assert!(bob.attachment(id).await.is_ok());
+    let reader: Session = http
+        .post(format!("{server}/v1/login"))
+        .json(&Credentials {
+            handle: bob_handle.clone(),
+            password: password.clone(),
+        })
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        http.get(&chunk)
+            .bearer_auth(&reader.token)
+            .send()
+            .await?
+            .status(),
+        404
+    );
+    bob.sync().await?;
+    assert!(
+        bob.files(FileFilter::default(), None)
+            .await?
+            .items
+            .is_empty()
+    );
+    assert!(bob.attachment(id).await.is_err());
+    println!(
+        "Recall synchronized to an existing SQLite history, denied other senders and expired messages, and blocked file access"
+    );
+
     alice.add_contact(outsider.user.id).await?;
+    http.post(format!("{server}/v1/contacts/{}/decision", alice.user.id))
+        .bearer_auth(&outsider.token)
+        .json(&serde_json::json!({"accept": true}))
+        .send()
+        .await?
+        .error_for_status()?;
     let group = alice
         .create_conversation(ConversationRequest::Group {
             title: "QR acceptance".into(),
@@ -256,6 +366,174 @@ async fn normal_chat_and_files() -> Result<()> {
             .await?
             .as_ref(),
         b"New attachment"
+    );
+    let image = [
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
+        0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 8, 215, 99, 248, 207, 192, 240, 31,
+        0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+    let pasted = alice.queue_pasted_image(chat, image.to_vec()).await?;
+    let image_id = pasted.attachment.id;
+    wait_transfer(&alice, image_id, Direction::Upload, |job| {
+        job.status == TransferStatus::Complete
+    })
+    .await?;
+    bob.sync().await?;
+    assert_eq!(pasted.attachment.preview_mime(), Some("image/png"));
+    assert_eq!(
+        bob.read_attachment_chunk(image_id, 0, image.len()).await?,
+        image
+    );
+    let global = bob.files(FileFilter::default(), None).await?.items;
+    assert!(global.iter().any(|item| item.conversation_id == group));
+    assert_eq!(global[0].attachment.as_ref().unwrap().id, image_id);
+    assert!(
+        global
+            .windows(2)
+            .all(|pair| pair[0].created_at >= pair[1].created_at)
+    );
+    let scoped = bob
+        .files(
+            FileFilter {
+                conversation_id: Some(chat),
+                ..FileFilter::default()
+            },
+            None,
+        )
+        .await?
+        .items;
+    assert_eq!(scoped.len(), 1);
+    assert_eq!(scoped[0].attachment.as_ref().unwrap().id, image_id);
+    assert_eq!(
+        bob.files(
+            FileFilter {
+                name: Some("PASTED IMAGE".into()),
+                ..FileFilter::default()
+            },
+            None
+        )
+        .await?
+        .items
+        .len(),
+        1
+    );
+
+    let nonce = Uuid::new_v4();
+    let generated_at: i64 =
+        sqlx::query_scalar("SELECT (extract(epoch FROM clock_timestamp()) * 1000)::BIGINT - 1")
+            .fetch_one(&db)
+            .await?;
+    send(&alice, group, "Later text").await?;
+    let ai_reply = |readers| PublishAiReply {
+        nonce,
+        provider: AiProvider::DeepSeek,
+        text: "Scoped AI reply".into(),
+        created_at: generated_at,
+        readers,
+    };
+    let directory_before = scanner.sync().await?;
+    assert!(
+        alice
+            .publish_ai_reply(group, ai_reply(vec![Uuid::new_v4()]))
+            .await
+            .is_err()
+    );
+    alice
+        .publish_ai_reply(group, ai_reply(vec![bob.user.id]))
+        .await?;
+    alice
+        .publish_ai_reply(group, ai_reply(vec![bob.user.id]))
+        .await?;
+    assert!(
+        alice
+            .publish_ai_reply(group, ai_reply(vec![scanner.user.id]))
+            .await
+            .is_err()
+    );
+    let reader_preview = bob.sync().await?;
+    assert_eq!(
+        reader_preview
+            .conversations
+            .iter()
+            .find(|chat| chat.id == group)
+            .unwrap()
+            .preview
+            .as_deref(),
+        Some("Later text")
+    );
+    let ordered = bob.messages(group, None).await?.items;
+    let reply = &ordered[1];
+    assert_eq!(reply.ai_provider, Some(AiProvider::DeepSeek));
+    assert_eq!(reply.text.as_deref(), Some("Scoped AI reply"));
+    assert_eq!(reply.created_at, generated_at);
+    assert_eq!(ordered[0].text.as_deref(), Some("Later text"));
+    assert!(ordered[0].created_at >= reply.created_at && ordered[0].seq < reply.seq);
+    assert_eq!(
+        bob.messages(group, Some(ordered[0].seq)).await?.items[0].seq,
+        reply.seq
+    );
+    let directory_after = scanner.sync().await?;
+    let preview = |directory: zibblu_core::Directory| {
+        directory
+            .conversations
+            .into_iter()
+            .find(|chat| chat.id == group)
+            .unwrap()
+            .preview
+    };
+    assert_ne!(preview(directory_before), Some("Scoped AI reply".into()));
+    assert_eq!(preview(directory_after), Some("Later text".into()));
+    assert!(
+        scanner
+            .search_messages(group, None, Some("Scoped AI reply"))
+            .await?
+            .items
+            .is_empty()
+    );
+    assert!(
+        scanner
+            .ai_messages(
+                group,
+                AiScope::Selected {
+                    sequences: vec![reply.seq]
+                }
+            )
+            .await
+            .is_err()
+    );
+    let preview_nonce = Uuid::new_v4();
+    alice
+        .publish_ai_reply(
+            group,
+            PublishAiReply {
+                nonce: preview_nonce,
+                provider: AiProvider::OpenAi,
+                text: "Latest restricted preview".into(),
+                created_at: i64::MAX,
+                readers: vec![bob.user.id],
+            },
+        )
+        .await?;
+    assert_eq!(
+        preview(bob.sync().await?),
+        Some("Latest restricted preview".into())
+    );
+    assert_eq!(preview(scanner.sync().await?), Some("Later text".into()));
+    assert_eq!(
+        ordered
+            .iter()
+            .filter(|item| item.ai_provider.is_some())
+            .count(),
+        1
+    );
+    alice.remove_contact(bob.user.id).await?;
+    assert!(
+        send(&bob, chat, "A removed contact cannot send")
+            .await
+            .is_err()
+    );
+    println!(
+        "Pasted bytes, file-name filtering and conversation isolation verified; AI audience enforced in feed, preview and SQLite context"
     );
     println!("QR admission exposed only post-join messages, previews and attachments");
     task.abort();

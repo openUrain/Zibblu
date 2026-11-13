@@ -18,8 +18,11 @@ use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
     path::{Path, PathBuf},
-    sync::{Arc, atomic::AtomicBool},
-    time::Duration,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicI64, Ordering},
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::Mutex;
 use transfer::{Active, JobKey};
@@ -46,6 +49,7 @@ pub struct Client {
     prepare_gate: Mutex<()>,
     workers: Mutex<HashMap<JobKey, Active>>,
     closed: AtomicBool,
+    server_clock_offset: AtomicI64,
     _profile_lock: File,
 }
 
@@ -55,6 +59,15 @@ pub struct Page {
     pub has_more: bool,
 }
 
+#[derive(Serialize)]
+pub struct SyncUpdate {
+    pub directory: Directory,
+    pub recalled: Vec<i64>,
+    pub server_now: i64,
+    pub last_seq: i64,
+    pub latest_ai_seq: i64,
+}
+
 #[derive(Default, Deserialize)]
 pub struct FileFilter {
     pub conversation_id: Option<Uuid>,
@@ -62,6 +75,7 @@ pub struct FileFilter {
     pub kind: Option<AttachmentKind>,
     pub start_at: Option<i64>,
     pub end_before: Option<i64>,
+    pub name: Option<String>,
 }
 
 impl Client {
@@ -112,8 +126,16 @@ impl Client {
                 attachment_id TEXT UNIQUE
              );
              CREATE INDEX IF NOT EXISTS inbox_chat ON inbox (conversation_id, seq);
+             CREATE INDEX IF NOT EXISTS inbox_chat_time ON inbox (conversation_id, json_extract(payload, '$.created_at'), seq);
+             CREATE INDEX IF NOT EXISTS inbox_recalled ON inbox (seq)
+                WHERE json_extract(payload, '$.recalled') = 1;
+             CREATE INDEX IF NOT EXISTS inbox_ai_replies ON inbox (seq)
+                WHERE json_type(payload, '$.ai_provider') = 'text';
              CREATE TABLE IF NOT EXISTS directory (
                 id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS recall_cursor (
+                id INTEGER PRIMARY KEY CHECK (id = 1), seq INTEGER NOT NULL
              );
              CREATE TABLE IF NOT EXISTS transfers (
                 id TEXT NOT NULL, direction TEXT NOT NULL, payload TEXT NOT NULL,
@@ -135,6 +157,7 @@ impl Client {
             prepare_gate: Mutex::new(()),
             workers: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
+            server_clock_offset: AtomicI64::new(0),
         }))
     }
 
@@ -154,21 +177,39 @@ impl Client {
     }
 
     pub async fn sync(&self) -> Result<Directory> {
+        Ok(self.sync_updates().await?.directory)
+    }
+
+    pub async fn sync_updates(&self) -> Result<SyncUpdate> {
         let _sync = self.sync_gate.lock().await;
         let mut after: i64 = sqlx::query_scalar("SELECT coalesce(max(seq), 0) FROM inbox")
             .fetch_one(&self.db)
             .await?;
+        let mut recall_after: i64 =
+            sqlx::query_scalar("SELECT seq FROM recall_cursor WHERE id = 1")
+                .fetch_optional(&self.db)
+                .await?
+                .unwrap_or_default();
         loop {
+            let started = unix_millis();
             let page: SyncPage = self
                 .api
                 .json(
                     self.api
                         .request(Method::GET, "/v1/sync")
-                        .query(&[("after", after)]),
+                        .query(&[("after", after), ("recall_after", recall_after)]),
                 )
                 .await?;
+            if let Some(server_time) = page.server_time {
+                let elapsed = unix_millis().saturating_sub(started);
+                self.server_clock_offset.store(
+                    server_time.saturating_sub(started + elapsed / 2),
+                    Ordering::Relaxed,
+                );
+            }
             let mut tx = self.db.begin().await?;
             let count = page.messages.len();
+            let recall_count = page.recalls.len();
             for message in page.messages {
                 ensure!(
                     message.seq > after
@@ -182,6 +223,28 @@ impl Client {
                     .bind(message.attachment.as_ref().map(|attachment| attachment.id.to_string()))
                     .execute(&mut *tx).await?;
             }
+            for recall in page.recalls {
+                ensure!(
+                    recall.seq > recall_after && recall.message_seq < recall.seq,
+                    OnlineError::InvalidResponse
+                );
+                recall_after = recall.seq;
+                sqlx::query(
+                    "UPDATE inbox SET attachment_id = NULL,
+                         payload = json_set(payload, '$.text', NULL, '$.attachment', NULL, '$.recalled', json('true'))
+                     WHERE seq = ?",
+                )
+                .bind(recall.message_seq).execute(&mut *tx).await?;
+            }
+            if recall_count > 0 {
+                sqlx::query(
+                    "INSERT INTO recall_cursor (id, seq) VALUES (1,?)
+                     ON CONFLICT (id) DO UPDATE SET seq = excluded.seq",
+                )
+                .bind(recall_after)
+                .execute(&mut *tx)
+                .await?;
+            }
             sqlx::query(
                 "INSERT INTO directory (id, payload) VALUES (1,?)
                  ON CONFLICT (id) DO UPDATE SET payload = excluded.payload",
@@ -190,8 +253,22 @@ impl Client {
             .execute(&mut *tx)
             .await?;
             tx.commit().await?;
-            if count < SYNC_PAGE_SIZE {
-                return Ok(page.directory);
+            if count < SYNC_PAGE_SIZE && recall_count < SYNC_PAGE_SIZE {
+                let recalled = sqlx::query_scalar(
+                    "SELECT seq FROM inbox WHERE json_extract(payload, '$.recalled') = 1 ORDER BY seq",
+                )
+                .fetch_all(&self.db).await?;
+                let latest_ai_seq = sqlx::query_scalar(
+                    "SELECT coalesce(max(seq), 0) FROM inbox WHERE json_type(payload, '$.ai_provider') = 'text'",
+                )
+                .fetch_one(&self.db).await?;
+                return Ok(SyncUpdate {
+                    directory: page.directory,
+                    recalled,
+                    server_now: self.server_now(),
+                    last_seq: after,
+                    latest_ai_seq,
+                });
             }
         }
     }
@@ -206,19 +283,46 @@ impl Client {
             .map_err(Into::into)
     }
 
+    pub fn server_now(&self) -> i64 {
+        unix_millis().saturating_add(self.server_clock_offset.load(Ordering::Relaxed))
+    }
+
     pub async fn messages(&self, conversation: Uuid, before: Option<i64>) -> Result<Page> {
-        let rows = sqlx::query_scalar(
-            "SELECT payload FROM inbox WHERE conversation_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?",
-        ).bind(conversation.to_string()).bind(before.unwrap_or(i64::MAX))
-            .bind(LOCAL_PAGE as i64 + 1).fetch_all(&self.db).await?;
-        read_page(rows)
+        self.search_messages(conversation, before, None).await
+    }
+
+    pub async fn search_messages(
+        &self,
+        conversation: Uuid,
+        before: Option<i64>,
+        search: Option<&str>,
+    ) -> Result<Page> {
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT payload FROM inbox WHERE conversation_id = ",
+        );
+        query.push_bind(conversation.to_string());
+        if let Some(before) = before {
+            push_before(&mut query, before);
+        }
+        if let Some(search) = search.filter(|value| !value.trim().is_empty()) {
+            query
+                .push(" AND instr(lower(json_extract(payload, '$.text')), lower(")
+                .push_bind(search.trim())
+                .push(")) > 0");
+        }
+        query
+            .push(" ORDER BY json_extract(payload, '$.created_at') DESC, seq DESC LIMIT ")
+            .push_bind(LOCAL_PAGE as i64 + 1);
+        read_page(query.build_query_scalar().fetch_all(&self.db).await?)
     }
 
     pub async fn files(&self, filter: FileFilter, before: Option<i64>) -> Result<Page> {
         let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-            "SELECT payload FROM inbox WHERE attachment_id IS NOT NULL AND seq < ",
+            "SELECT payload FROM inbox WHERE attachment_id IS NOT NULL",
         );
-        query.push_bind(before.unwrap_or(i64::MAX));
+        if let Some(before) = before {
+            push_before(&mut query, before);
+        }
         if let Some(id) = filter.conversation_id {
             query
                 .push(" AND conversation_id = ")
@@ -244,8 +348,14 @@ impl Client {
                 .push(" AND json_extract(payload, '$.created_at') < ")
                 .push_bind(end);
         }
+        if let Some(name) = filter.name.filter(|name| !name.trim().is_empty()) {
+            query
+                .push(" AND instr(lower(json_extract(payload, '$.attachment.name')), lower(")
+                .push_bind(name.trim().to_owned())
+                .push(")) > 0");
+        }
         query
-            .push(" ORDER BY seq DESC LIMIT ")
+            .push(" ORDER BY json_extract(payload, '$.created_at') DESC, seq DESC LIMIT ")
             .push_bind(LOCAL_PAGE as i64 + 1);
         read_page(query.build_query_scalar().fetch_all(&self.db).await?)
     }
@@ -287,6 +397,41 @@ impl Client {
             .send(
                 self.api
                     .request(Method::DELETE, &format!("/v1/contacts/{user_id}")),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn respond_contact(&self, user_id: Uuid, accept: bool) -> Result<()> {
+        self.api
+            .send(
+                self.api
+                    .request(Method::POST, &format!("/v1/contacts/{user_id}/decision"))
+                    .json(&ContactDecision { accept }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn recall_message(&self, conversation: Uuid, seq: i64) -> Result<()> {
+        self.api
+            .send(self.api.request(
+                Method::DELETE,
+                &format!("/v1/conversations/{conversation}/messages/{seq}"),
+            ))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn publish_ai_reply(&self, conversation: Uuid, reply: PublishAiReply) -> Result<()> {
+        self.api
+            .send(
+                self.api
+                    .request(
+                        Method::POST,
+                        &format!("/v1/conversations/{conversation}/ai-replies"),
+                    )
+                    .json(&reply),
             )
             .await?;
         Ok(())
@@ -350,6 +495,23 @@ impl Client {
             .await?;
         Ok(())
     }
+}
+
+fn push_before(query: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>, before: i64) {
+    query
+        .push(
+            " AND (json_extract(payload, '$.created_at'), seq) < (
+        SELECT json_extract(payload, '$.created_at'), seq FROM inbox WHERE seq = ",
+        )
+        .push_bind(before)
+        .push(")");
+}
+
+fn unix_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 fn read_page(rows: Vec<String>) -> Result<Page> {

@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-src 'none'"
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data: blob: zibblu-media: http://zibblu-media.localhost; media-src 'self' blob: zibblu-media: http://zibblu-media.localhost; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-src 'none'"
     }
   },
   "bundle": {
