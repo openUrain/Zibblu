@@ -76,6 +76,8 @@ pub struct FileFilter {
     pub start_at: Option<i64>,
     pub end_before: Option<i64>,
     pub name: Option<String>,
+    #[serde(default)]
+    pub oldest_first: bool,
 }
 
 impl Client {
@@ -131,6 +133,9 @@ impl Client {
                 WHERE json_extract(payload, '$.recalled') = 1;
              CREATE INDEX IF NOT EXISTS inbox_ai_replies ON inbox (seq)
                 WHERE json_type(payload, '$.ai_provider') = 'text';
+             CREATE TABLE IF NOT EXISTS hidden_messages (
+                seq INTEGER PRIMARY KEY REFERENCES inbox (seq), attachment_id TEXT UNIQUE
+             );
              CREATE TABLE IF NOT EXISTS directory (
                 id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL
              );
@@ -263,7 +268,7 @@ impl Client {
                 )
                 .fetch_one(&self.db).await?;
                 return Ok(SyncUpdate {
-                    directory: page.directory,
+                    directory: self.visible_directory(page.directory).await?,
                     recalled,
                     server_now: self.server_now(),
                     last_seq: after,
@@ -277,10 +282,45 @@ impl Client {
         let json: Option<String> = sqlx::query_scalar("SELECT payload FROM directory WHERE id = 1")
             .fetch_optional(&self.db)
             .await?;
-        json.map(|value| serde_json::from_str(&value))
-            .transpose()
-            .map(|value| value.unwrap_or_default())
-            .map_err(Into::into)
+        let directory = json
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?
+            .unwrap_or_default();
+        self.visible_directory(directory).await
+    }
+
+    async fn visible_directory(&self, mut directory: Directory) -> Result<Directory> {
+        let hidden: Vec<(i64, String, bool, bool)> = sqlx::query_as(
+            "SELECT i.seq, i.conversation_id, json_extract(i.payload, '$.sender.id') <> ?,
+                    coalesce(json_extract(i.payload, '$.recalled'), 0)
+             FROM hidden_messages h JOIN inbox i ON i.seq = h.seq",
+        )
+        .bind(self.user.id.to_string())
+        .fetch_all(&self.db)
+        .await?;
+        let mut chats: HashMap<_, _> = directory
+            .conversations
+            .iter_mut()
+            .map(|chat| (chat.id.to_string(), chat))
+            .collect();
+        for (seq, id, incoming, recalled) in hidden {
+            let Some(chat) = chats.get_mut(&id) else {
+                continue;
+            };
+            if incoming && !recalled && seq > chat.read_through {
+                chat.unread = (chat.unread - 1).max(0);
+            }
+            if chat.preview_seq == Some(seq) {
+                chat.preview = sqlx::query_scalar(
+                    "SELECT CASE WHEN json_extract(payload, '$.recalled') = 1 THEN 'Message recalled'
+                                 ELSE coalesce(substr(json_extract(payload, '$.text'), 1, 100),
+                                               json_extract(payload, '$.attachment.name')) END
+                     FROM inbox WHERE conversation_id = ? AND seq NOT IN (SELECT seq FROM hidden_messages)
+                     ORDER BY json_extract(payload, '$.created_at') DESC, seq DESC LIMIT 1",
+                ).bind(&id).fetch_optional(&self.db).await?;
+            }
+        }
+        Ok(directory)
     }
 
     pub fn server_now(&self) -> i64 {
@@ -298,11 +338,11 @@ impl Client {
         search: Option<&str>,
     ) -> Result<Page> {
         let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-            "SELECT payload FROM inbox WHERE conversation_id = ",
+            "SELECT payload FROM inbox WHERE seq NOT IN (SELECT seq FROM hidden_messages) AND conversation_id = ",
         );
         query.push_bind(conversation.to_string());
         if let Some(before) = before {
-            push_before(&mut query, before);
+            push_before(&mut query, before, false);
         }
         if let Some(search) = search.filter(|value| !value.trim().is_empty()) {
             query
@@ -318,10 +358,10 @@ impl Client {
 
     pub async fn files(&self, filter: FileFilter, before: Option<i64>) -> Result<Page> {
         let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-            "SELECT payload FROM inbox WHERE attachment_id IS NOT NULL",
+            "SELECT payload FROM inbox WHERE attachment_id IS NOT NULL AND seq NOT IN (SELECT seq FROM hidden_messages)",
         );
         if let Some(before) = before {
-            push_before(&mut query, before);
+            push_before(&mut query, before, filter.oldest_first);
         }
         if let Some(id) = filter.conversation_id {
             query
@@ -355,13 +395,17 @@ impl Client {
                 .push(")) > 0");
         }
         query
-            .push(" ORDER BY json_extract(payload, '$.created_at') DESC, seq DESC LIMIT ")
+            .push(if filter.oldest_first {
+                " ORDER BY json_extract(payload, '$.created_at'), seq LIMIT "
+            } else {
+                " ORDER BY json_extract(payload, '$.created_at') DESC, seq DESC LIMIT "
+            })
             .push_bind(LOCAL_PAGE as i64 + 1);
         read_page(query.build_query_scalar().fetch_all(&self.db).await?)
     }
 
     pub async fn attachment(&self, id: Uuid) -> Result<Message> {
-        let json: String = sqlx::query_scalar("SELECT payload FROM inbox WHERE attachment_id = ?")
+        let json: String = sqlx::query_scalar("SELECT payload FROM inbox WHERE attachment_id = ? AND seq NOT IN (SELECT seq FROM hidden_messages)")
             .bind(id.to_string())
             .fetch_optional(&self.db)
             .await?
@@ -382,11 +426,15 @@ impl Client {
     }
 
     pub async fn add_contact(&self, user_id: Uuid) -> Result<()> {
+        self.request_contact(user_id, String::new()).await
+    }
+
+    pub async fn request_contact(&self, user_id: Uuid, greeting: String) -> Result<()> {
         self.api
             .send(
                 self.api
                     .request(Method::POST, "/v1/contacts")
-                    .json(&ContactRequest { user_id }),
+                    .json(&ContactRequest { user_id, greeting }),
             )
             .await?;
         Ok(())
@@ -403,14 +451,150 @@ impl Client {
     }
 
     pub async fn respond_contact(&self, user_id: Uuid, accept: bool) -> Result<()> {
+        self.decide_contact(user_id, accept, None).await
+    }
+
+    pub async fn decide_contact(
+        &self,
+        user_id: Uuid,
+        accept: bool,
+        request_id: Option<Uuid>,
+    ) -> Result<()> {
         self.api
             .send(
                 self.api
                     .request(Method::POST, &format!("/v1/contacts/{user_id}/decision"))
-                    .json(&ContactDecision { accept }),
+                    .json(&ContactDecision { accept, request_id }),
             )
             .await?;
         Ok(())
+    }
+
+    pub async fn profile(&self, id: Uuid) -> Result<Profile> {
+        Ok(self
+            .api
+            .json(self.api.request(Method::GET, &format!("/v1/profiles/{id}")))
+            .await?)
+    }
+
+    pub async fn set_bio(&self, bio: String) -> Result<()> {
+        self.api
+            .send(
+                self.api
+                    .request(Method::PUT, "/v1/profiles/me/bio")
+                    .json(&ProfileBio { bio }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_contact_notes(&self, id: Uuid, notes: ContactNotes) -> Result<()> {
+        self.api
+            .send(
+                self.api
+                    .request(Method::PUT, &format!("/v1/contacts/{id}"))
+                    .json(&notes),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_profile_image(&self, kind: ProfileImage, bytes: Vec<u8>) -> Result<()> {
+        ensure!(
+            bytes.len() <= MAX_PROFILE_IMAGE_BYTES,
+            "Profile images can be up to 2 MiB"
+        );
+        self.api
+            .send(
+                self.api
+                    .request(
+                        Method::PUT,
+                        &format!("/v1/profiles/me/images/{}", kind.as_str()),
+                    )
+                    .header(reqwest::header::CONTENT_TYPE, "image/png")
+                    .body(bytes),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn profile_image(&self, id: Uuid, version: Uuid) -> Result<Vec<u8>> {
+        let response = self
+            .api
+            .send(
+                self.api
+                    .request(Method::GET, &format!("/v1/profiles/{id}/images/{version}")),
+            )
+            .await?;
+        ensure!(
+            response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .is_some_and(|value| value == "image/png"),
+            OnlineError::InvalidResponse
+        );
+        Ok(read_limited(response, MAX_PROFILE_IMAGE_BYTES).await?)
+    }
+
+    pub async fn set_read_receipts(&self, enabled: bool) -> Result<()> {
+        self.api
+            .send(
+                self.api
+                    .request(Method::PUT, "/v1/read-receipts")
+                    .json(&ReadPreference { enabled }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn read_update(&self, conversation: Uuid, update: ReadUpdate) -> Result<Vec<i64>> {
+        if let Some(through) = update.through {
+            let arrived: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM inbox WHERE seq = ? AND conversation_id = ?)",
+            )
+            .bind(through)
+            .bind(conversation.to_string())
+            .fetch_one(&self.db)
+            .await?;
+            ensure!(arrived, "Wait for the conversation to finish syncing");
+        }
+        Ok(self
+            .api
+            .json(
+                self.api
+                    .request(
+                        Method::POST,
+                        &format!("/v1/conversations/{conversation}/read"),
+                    )
+                    .json(&update),
+            )
+            .await?)
+    }
+
+    pub async fn hide_message(&self, conversation: Uuid, seq: i64) -> Result<()> {
+        let found = sqlx::query(
+            "INSERT OR IGNORE INTO hidden_messages (seq, attachment_id)
+             SELECT seq, attachment_id FROM inbox WHERE seq = ? AND conversation_id = ?",
+        )
+        .bind(seq)
+        .bind(conversation.to_string())
+        .execute(&self.db)
+        .await?;
+        if found.rows_affected() == 0 {
+            let hidden: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM hidden_messages h JOIN inbox i USING(seq) WHERE h.seq = ? AND i.conversation_id = ?)")
+                .bind(seq).bind(conversation.to_string()).fetch_one(&self.db).await?;
+            ensure!(hidden, "This message is unavailable");
+        }
+        Ok(())
+    }
+
+    pub async fn quoted_message(&self, conversation: Uuid, seq: i64) -> Result<Option<Message>> {
+        let payload: Option<String> = sqlx::query_scalar(
+            "SELECT payload FROM inbox WHERE seq = ? AND conversation_id = ? AND seq NOT IN (SELECT seq FROM hidden_messages)",
+        ).bind(seq).bind(conversation.to_string()).fetch_optional(&self.db).await?;
+        Ok(payload
+            .map(|json| serde_json::from_str(&json))
+            .transpose()?)
     }
 
     pub async fn recall_message(&self, conversation: Uuid, seq: i64) -> Result<()> {
@@ -483,6 +667,12 @@ impl Client {
     }
 
     pub async fn send_message(&self, conversation: Uuid, message: SendMessage) -> Result<()> {
+        if let Some(seq) = message.reply_to {
+            ensure!(
+                self.quoted_message(conversation, seq).await?.is_some(),
+                "This quoted message is unavailable"
+            );
+        }
         self.api
             .send(
                 self.api
@@ -497,12 +687,11 @@ impl Client {
     }
 }
 
-fn push_before(query: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>, before: i64) {
+fn push_before(query: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>, before: i64, oldest_first: bool) {
     query
-        .push(
-            " AND (json_extract(payload, '$.created_at'), seq) < (
-        SELECT json_extract(payload, '$.created_at'), seq FROM inbox WHERE seq = ",
-        )
+        .push(" AND (json_extract(payload, '$.created_at'), seq) ")
+        .push(if oldest_first { ">" } else { "<" })
+        .push(" (SELECT json_extract(payload, '$.created_at'), seq FROM inbox WHERE seq = ")
         .push_bind(before)
         .push(")");
 }

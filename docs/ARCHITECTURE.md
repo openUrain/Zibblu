@@ -41,6 +41,7 @@ Use fewer packages if implementation proves simpler.
 - An upload holds a stable ID, expected size and SHA-256. PostgreSQL commits each chunk with its offset and publishes the attachment message only after verification. Downloads resume from a local partial file and verify SHA-256 before publishing to the selected destination.
 - Recall uses the same ordered server sequence as publication and a separate cursor for message updates. The client replaces affected SQLite payloads with recall notices and removes those attachments from file history. This preserves the existing message cursor and history.
 - The desktop previews ordinary attachments through a native WebView resource handler that requests authenticated file chunks. Video uses ranges. Clipboard images enter the same staged upload path as other files.
+- An additive migration stores profile metadata, per-owner contact notes, read cursors, opt-in receipts and quote references in PostgreSQL. The read cursor starts at existing history during upgrade. Account and conversation polling supplies unread counts. The active view requests receipt status only for its displayed sent messages. SQLite stores per-device hide markers independently from the sync cursor.
 
 ## Data ownership and flow
 
@@ -61,7 +62,7 @@ The nearby list reads the existing mDNS cache and configured site DNS-SD records
 
 The host device coordinates a temporary room over mutually authenticated QUIC streams. Named room scope identifies the source conversation and exact invited accounts, and the receiver checks that scope against its cached directory. The first device decision for an account is applied by the host. The accepting device signs the session scope. Other devices verify that approval before they enter automatically. A QR join presents an expiring capability through the authenticated stream. The host sends participant metadata and new text to currently joined devices, with no historical replay.
 
-A nearby invitation uses the same named room scope and consent exchange. The initiating device connects only to permitted addresses advertised for the selected instance and requires the expected account certificate. The invitation stays on that connection. A new connection from the nearby list requires a new invitation.
+A nearby invitation uses the same consent exchange and stays on the selected connection. The initiator connects to an advertised address allowed by LAN policy, verifies the account-service certificate, and compares the authenticated account to the discovery tag. A shared conversation uses the existing room scope. Otherwise the scope contains exactly the two accounts and no conversation ID. The latter path requires the nearby certificate name on the target and support for standalone invitations on both clients.
 
 Ordinary private transport filters both IPv4 source and destination to a directly connected subnet and applies TTL one. An explicitly configured company site binds to an approved local interface and allows direct UDP among the specified private prefixes. The private runtime owns no M1 storage handle. The desktop rebuilds discovery and closes existing private connections when the eligible adapter set changes, including a switch between adapters with the same address. Invitation windows check the Windows notification state independently of certificate renewal.
 

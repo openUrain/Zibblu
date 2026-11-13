@@ -1,5 +1,5 @@
 use super::{Client, OnlineError, ensure_new_destination, read_limited, staging};
-use crate::{Attachment, CHUNK_SIZE, MAX_PASTED_IMAGE_BYTES, UploadProgress};
+use crate::{Attachment, CHUNK_SIZE, MAX_PASTED_IMAGE_BYTES, UploadProgress, User};
 use anyhow::{Context, Result, bail, ensure};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -55,6 +55,8 @@ pub struct Transfer {
     pub status: TransferStatus,
     pub received: u64,
     pub error: Option<String>,
+    #[serde(default)]
+    pub sharer: Option<User>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -81,6 +83,7 @@ impl Job {
                 status: TransferStatus::Paused,
                 received: 0,
                 error: None,
+                sharer: None,
             },
             destination: None,
         }
@@ -93,12 +96,29 @@ impl Job {
 
 impl Client {
     pub async fn transfers(&self) -> Result<Vec<Transfer>> {
-        let rows: Vec<String> =
-            sqlx::query_scalar("SELECT payload FROM transfers ORDER BY rowid DESC")
-                .fetch_all(&self.db)
-                .await?;
-        rows.iter()
-            .map(|json| Ok(serde_json::from_str::<Job>(json)?.transfer))
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT t.payload, json_extract(i.payload, '$.sender') FROM transfers t
+             LEFT JOIN inbox i ON t.id = i.attachment_id
+             WHERE json_extract(t.payload, '$.status') <> 'complete'
+                OR NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h.attachment_id = t.id)
+             ORDER BY t.rowid DESC",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        rows.into_iter()
+            .map(|(json, sender)| {
+                let mut transfer = serde_json::from_str::<Job>(&json)?.transfer;
+                if transfer.sharer.is_none() {
+                    transfer.sharer = if transfer.direction == Direction::Upload {
+                        Some(self.user.clone())
+                    } else {
+                        sender
+                            .map(|value| serde_json::from_str(&value))
+                            .transpose()?
+                    };
+                }
+                Ok(transfer)
+            })
             .collect()
     }
 
@@ -153,7 +173,8 @@ impl Client {
         conversation: Uuid,
         attachment: Attachment,
     ) -> Result<Transfer> {
-        let job = Job::new(attachment, conversation, Direction::Upload);
+        let mut job = Job::new(attachment, conversation, Direction::Upload);
+        job.transfer.sharer = Some(self.user.clone());
         if let Err(error) = self.store_job(&job).await {
             let _ = fs::remove_file(self.spool(job.key())).await;
             return Err(error);
@@ -189,6 +210,7 @@ impl Client {
             }
         };
         job.destination = Some(destination);
+        job.transfer.sharer = Some(message.sender);
         job.transfer.status = TransferStatus::Paused;
         job.transfer.error = None;
         self.store_job(&job).await?;

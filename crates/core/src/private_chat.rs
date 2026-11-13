@@ -1,11 +1,11 @@
 mod identity;
 mod lan;
 
-use crate::{LanCredential, MAX_GROUP_MEMBERS, User, valid_handle};
+use crate::{LAN_NEARBY_NAME, LanCredential, MAX_GROUP_MEMBERS, User, lan_peer_name, valid_handle};
 use anyhow::{Context, Result, bail, ensure};
 pub use identity::DeviceKey;
 use identity::{Consent, Identity};
-use lan::{Lan, Scope};
+use lan::{Lan, Scope, discovery_instance};
 use quinn::{Connection, ConnectionError, RecvStream, SendStream};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -69,6 +69,7 @@ struct PrivateMessage {
     seq: u64,
     sender: User,
     text: String,
+    created_at: u64,
 }
 
 #[derive(Serialize)]
@@ -111,6 +112,10 @@ struct Room {
 }
 
 impl Room {
+    fn standalone(&self) -> bool {
+        !self.open && self.conversation.is_none()
+    }
+
     fn proof_message(&self) -> Result<Vec<u8>> {
         let mut bytes = b"zibblu-private-approval-v2\0".to_vec();
         bytes.extend(serde_json::to_vec(self)?);
@@ -177,6 +182,7 @@ impl Feed {
             seq: self.seq,
             sender,
             text,
+            created_at: now_millis(),
         });
     }
 
@@ -479,21 +485,12 @@ impl PrivateLobby {
         }
     }
 
-    pub async fn invite_nearby(&self, device: Uuid, account: Uuid) -> Result<Uuid> {
+    pub async fn invite_nearby(&self, device: Uuid, account: Option<Uuid>) -> Result<Uuid> {
         let own = self.engine.own.id;
-        ensure!(account != own, "Select a device from another account.");
-        let conversation = self
-            .engine
-            .state()
-            .memberships
-            .iter()
-            .filter(|(_, members)| {
-                members.iter().any(|member| member.id == own)
-                    && members.iter().any(|member| member.id == account)
-            })
-            .min_by_key(|(id, members)| (members.len(), **id))
-            .map(|(&id, _)| id)
-            .context("A shared conversation is required for a private invitation.")?;
+        ensure!(
+            account != Some(own),
+            "Select a device from another account."
+        );
         let lan = &self.engine.lan;
         ensure!(
             lan.discovery_available(),
@@ -503,28 +500,38 @@ impl PrivateLobby {
             .nearby(Some(device))
             .await?
             .remove(&device)
-            .filter(|record| record.tag == lan.tag(account))
-            .context("This device is no longer listed for that account.")?;
+            .filter(|record| account.is_none_or(|account| record.tag == lan.tag(account)))
+            .context("This device is no longer listed.")?;
         ensure!(
             self.network_matches(),
             "The LAN changed. Wait for the list to refresh."
         );
         let mut attempts = JoinSet::new();
+        let name = account
+            .map(lan_peer_name)
+            .unwrap_or_else(|| LAN_NEARBY_NAME.into());
         for address in record.addresses.into_iter().take(MAX_DEVICE_COUNT) {
             let engine = self.engine.clone();
+            let name = name.clone();
+            let tag = record.tag.clone();
             attempts.spawn(async move {
                 let connection = engine
                     .lan
-                    .connect(&engine.identity(), account, address)
+                    .connect_name(&engine.identity(), &name, address)
                     .await?;
+                let certified = identity::peer(&connection)?;
+                let peer = certified.user;
                 ensure!(
-                    identity::peer(&connection)?.user.id == account,
+                    peer.id != own
+                        && account.is_none_or(|id| peer.id == id)
+                        && (account.is_some() || discovery_instance(&certified.device) == device)
+                        && engine.lan.tag(peer.id) == tag,
                     "Unexpected device account."
                 );
-                Ok::<_, anyhow::Error>(connection)
+                Ok::<_, anyhow::Error>((connection, peer))
             });
         }
-        let connection = loop {
+        let (connection, peer) = loop {
             match attempts.join_next().await {
                 Some(Ok(Ok(connection))) => break connection,
                 None => bail!(
@@ -537,7 +544,18 @@ impl PrivateLobby {
         let (send, recv) = timeout(Duration::from_secs(4), connection.open_bi())
             .await
             .context("The selected device did not open a private connection.")??;
-        let id = self.create_room(Some(conversation), vec![account], false, true)?;
+        let conversation = self
+            .engine
+            .state()
+            .memberships
+            .iter()
+            .filter(|(_, members)| {
+                members.iter().any(|user| user.id == own)
+                    && members.iter().any(|user| user.id == peer.id)
+            })
+            .min_by_key(|(id, members)| (members.len(), **id))
+            .map(|(&id, _)| id);
+        let id = self.create_room(conversation, vec![peer.id], false, Some(peer))?;
         let engine = self.engine.clone();
         tokio::spawn(async move {
             let _ = host_link(&engine, connection, send, recv, id, None).await;
@@ -600,7 +618,11 @@ impl PrivateLobby {
         invited: Vec<Uuid>,
         open: bool,
     ) -> Result<Uuid> {
-        self.create_room(conversation, invited, open, false)
+        ensure!(
+            open || conversation.is_some(),
+            "Open an existing conversation first."
+        );
+        self.create_room(conversation, invited, open, None)
     }
 
     fn create_room(
@@ -608,7 +630,7 @@ impl PrivateLobby {
         conversation: Option<Uuid>,
         mut invited: Vec<Uuid>,
         open: bool,
-        nearby: bool,
+        nearby: Option<User>,
     ) -> Result<Uuid> {
         invited.sort_unstable();
         invited.dedup();
@@ -627,7 +649,7 @@ impl PrivateLobby {
             invited,
             open,
         };
-        let people = validate_room(&state.memberships, own.id, &room)?;
+        let people = validate_room(&state.memberships, own, &room, nearby.as_ref())?;
         let approval = identity.sign(&room.proof_message()?)?;
         let id = room.id;
         state.hosted.insert(
@@ -641,7 +663,7 @@ impl PrivateLobby {
                 code: None,
                 feed: Feed::new(),
                 ever_connected: false,
-                nearby,
+                nearby: nearby.is_some(),
             },
         );
         Ok(id)
@@ -851,8 +873,9 @@ fn now_millis() -> u64 {
 
 fn validate_room(
     memberships: &HashMap<Uuid, Vec<User>>,
-    own: Uuid,
+    own: &User,
     room: &Room,
+    peer: Option<&User>,
 ) -> Result<Vec<User>> {
     if room.open {
         ensure!(
@@ -870,9 +893,18 @@ fn validate_room(
         "Invalid private participants."
     );
     ensure!(
-        own == room.host || room.invited.contains(&own),
+        own.id == room.host || room.invited.contains(&own.id),
         "This invitation belongs to another account."
     );
+    if room.standalone() {
+        let peer = peer.context("Authenticate the selected LAN device first.")?;
+        let invitee = if own.id == room.host { peer } else { own };
+        ensure!(
+            room.invited == [invitee.id],
+            "A nearby invitation is for one account."
+        );
+        return Ok(vec![invitee.clone()]);
+    }
     let members = room
         .conversation
         .and_then(|id| memberships.get(&id))
@@ -1228,7 +1260,11 @@ fn attach_guest_task(
     let (sender, outgoing) = mpsc::channel(32);
     {
         let mut state = engine.state();
-        let named = validate_room(&state.memberships, engine.own.id, &room)?;
+        let named = validate_room(&state.memberships, &engine.own, &room, Some(&peer.user))?;
+        ensure!(
+            !room.standalone() || !decided,
+            "A nearby invitation requires fresh consent."
+        );
         if let Some(old) = state.guests.get(&id) {
             ensure!(
                 old.room == room && old.sender.is_none(),
@@ -1291,6 +1327,11 @@ fn attach_guest_task(
                     approval,
                     participants,
                 } => {
+                    ensure!(
+                        !guest.room.standalone()
+                            || (guest.voted && guest.summary.phase == Phase::Authenticating),
+                        "A nearby invitation requires fresh consent."
+                    );
                     identity.verify(
                         &approval,
                         &guest.room.proof_message()?,
@@ -1407,6 +1448,10 @@ async fn recv_frame(recv: &mut RecvStream) -> Result<Wire> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rcgen::{
+        BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair,
+        KeyUsagePurpose,
+    };
 
     #[test]
     fn dismissing_a_disconnected_guest_blocks_automatic_rejoin_after_rebind() {
@@ -1480,5 +1525,129 @@ mod tests {
         };
         assert!(host.valid_qr(secret, deadline - Duration::from_millis(1)));
         assert!(!host.valid_qr(secret, deadline));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a private IPv4 interface with local mDNS and UDP"]
+    async fn nearby_requires_fresh_consent_from_certified_strangers() -> Result<()> {
+        let key = KeyPair::generate()?;
+        let mut params = CertificateParams::default();
+        params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+        params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
+        let authority = params.self_signed(&key)?;
+        let issuer = rcgen::Issuer::new(params, key);
+        let start = |handle: &str| -> Result<PrivateLobby> {
+            let own = User {
+                id: Uuid::new_v4(),
+                handle: handle.into(),
+            };
+            let key = DeviceKey::generate()?;
+            let mut params =
+                CertificateParams::new(vec![lan_peer_name(own.id), LAN_NEARBY_NAME.into()])?;
+            params
+                .distinguished_name
+                .push(rcgen::DnType::CommonName, handle);
+            params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+            params.extended_key_usages = vec![
+                ExtendedKeyUsagePurpose::ServerAuth,
+                ExtendedKeyUsagePurpose::ClientAuth,
+            ];
+            let certificate = params.signed_by(key.key_pair(), &issuer)?;
+            PrivateLobby::new(
+                "https://zibblu-test.invalid/".into(),
+                own,
+                key,
+                LanCredential {
+                    certificate: certificate.der().to_vec(),
+                    authority: authority.der().to_vec(),
+                    expires_at: i64::MAX,
+                },
+                HashMap::new(),
+                DismissedRooms::default(),
+            )
+        };
+        let alice = start("alice")?;
+        let bob = start("bob")?;
+        let expected = discovery_instance(&bob.engine.identity().device);
+        let device = timeout(Duration::from_secs(12), async {
+            loop {
+                if let Some(device) = alice
+                    .nearby_devices()
+                    .await
+                    .devices
+                    .into_iter()
+                    .find(|device| device.id == expected && device.matched_account.is_none())
+                {
+                    break device.id;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .context("The local mDNS environment did not discover the second test device")?;
+        assert!(
+            alice
+                .invite_nearby(device, Some(Uuid::new_v4()))
+                .await
+                .is_err()
+        );
+        let id = alice.invite_nearby(device, None).await?;
+        let wait_phase = |lobby: &PrivateLobby, phase: Phase| {
+            let engine = lobby.engine.clone();
+            async move {
+                timeout(Duration::from_secs(5), async {
+                    loop {
+                        if engine
+                            .state()
+                            .guests
+                            .get(&id)
+                            .is_some_and(|guest| guest.summary.phase == phase)
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+            }
+        };
+        wait_phase(&bob, Phase::Invited).await?;
+        assert!(alice.send(id, "Before consent".into()).is_err());
+        assert!(bob.send(id, "Before consent".into()).is_err());
+        bob.respond(id, true)?;
+        wait_phase(&bob, Phase::Connected).await?;
+        alice.send(id, "LAN message".into())?;
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if bob.view(id, 0).is_ok_and(|view| {
+                    view.messages
+                        .iter()
+                        .any(|message| message.text == "LAN message")
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await?;
+        alice.end(id);
+        wait_phase(&bob, Phase::Ended).await?;
+        assert!(bob.view(id, 0)?.messages.is_empty());
+        let declined = alice.invite_nearby(device, None).await?;
+        timeout(Duration::from_secs(5), async {
+            while !bob
+                .list()
+                .iter()
+                .any(|room| room.id == declined && room.phase == Phase::Invited)
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await?;
+        bob.respond(declined, false)?;
+        assert!(bob.send(declined, "After declining".into()).is_err());
+        alice.quit().await;
+        bob.quit().await;
+        Ok(())
     }
 }

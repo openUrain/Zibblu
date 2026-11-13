@@ -1,8 +1,9 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { ClipboardPaste, Copy, TextCursorInput } from "lucide-react";
 
-type Item = { label: string; action: () => void; disabled?: boolean; danger?: boolean };
+type Item = { label: string; action: () => void; disabled?: boolean; icon?: ReactNode };
 type Menu = { x: number; y: number; anchor: HTMLElement; items: Item[]; restoreFocus: HTMLElement | null };
 const OpenMenu = createContext<(anchor: HTMLElement, items: Item[], point?: { x: number; y: number }) => void>(() => {});
 export const useMenu = () => useContext(OpenMenu);
@@ -12,6 +13,7 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
   const panel = useRef<HTMLDivElement>(null);
 
   function open(anchor: HTMLElement, items: Item[], point?: { x: number; y: number }) {
+    if (!items.some(item => !item.disabled)) { setMenu(undefined); return; }
     const rect = anchor.getBoundingClientRect();
     setMenu({
       x: point?.x ?? rect.left, y: point?.y ?? rect.bottom + 4, anchor, items,
@@ -67,11 +69,11 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     if (!privateChat && !password) {
       const text = field ? start !== null && end !== null ? field.value.slice(start, end) : "" : window.getSelection()?.toString();
       if (text) items.push({
-        label: "Copy", action: () => { void navigator.clipboard.writeText(text).catch(() => {}); },
+        label: "Copy", icon: <Copy size={15} />, action: () => { void navigator.clipboard.writeText(text).catch(() => {}); },
       });
     }
     if (editable) items.push({
-      label: "Paste", action: () => {
+      label: "Paste", icon: <ClipboardPaste size={15} />, action: () => {
         field.focus({ preventScroll: true });
         if (start !== null && end !== null) field.setSelectionRange(start, end);
         void navigator.clipboard.readText().then(value => {
@@ -80,9 +82,9 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
       },
     });
     if (editable || (field && start !== null && !privateChat)) {
-      items.push({ label: "Select all", action: () => field.select() });
+      items.push({ label: "Select all", icon: <TextCursorInput size={15} />, action: () => field.select() });
     }
-    open(target, items.length ? items : [{ label: "No actions available", disabled: true, action: () => {} }],
+    open(target, items,
       event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : undefined);
   }
 
@@ -105,7 +107,7 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
         }
       }}>
       {menu.items.map(item => <button type="button" role="menuitem" key={item.label} disabled={item.disabled}
-        className={item.danger ? "danger" : undefined} onClick={() => { close(true); item.action(); }}>{item.label}</button>)}
-    </div>, menu.anchor.closest("dialog") ?? document.body)}
+        onClick={() => { close(true); item.action(); }}>{item.icon}{item.label}</button>)}
+    </div>, menu.anchor.closest("dialog, .private-chat") ?? document.body)}
   </div></OpenMenu.Provider>;
 }

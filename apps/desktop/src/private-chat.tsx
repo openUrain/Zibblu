@@ -1,9 +1,9 @@
-import { ArrowLeft, Ghost, QrCode, Send } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ArrowDown, ArrowLeft, Ghost, QrCode, Send, UserPlus } from "lucide-react";
+import { Fragment, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, errorMessage } from "./api";
-import type { Discovery, NearbyDevice, PrivateList, PrivateMessage, PrivateSummary, User } from "./api";
-import { Avatar, Blank, Dialog } from "./common";
+import type { Directory, Discovery, NearbyDevice, PrivateList, PrivateMessage, PrivateSummary, User } from "./api";
+import { Avatar, Blank, Dialog, People, PersonAvatar, displayName, messageTimeLabel, startsTimeGroup } from "./common";
 
 export function usePrivateRooms() {
   const [list, setList] = useState<PrivateList>({ rooms: [], prompt: null });
@@ -57,6 +57,15 @@ export const privatePhaseLabel: Record<PrivateSummary["phase"], string> = {
 };
 
 function InvitePrompt({ room, compact = false }: { room: PrivateSummary; compact?: boolean }) {
+  const { remarks } = useContext(People);
+  const [compactRemarks, setCompactRemarks] = useState<Directory["remarks"]>({});
+  useEffect(() => {
+    if (!compact) return;
+    let current = true;
+    void api.directory().then(directory => { if (current) setCompactRemarks(directory.remarks); }).catch(() => {});
+    return () => { current = false; };
+  }, [compact]);
+  const names = compact ? compactRemarks : remarks;
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
 
@@ -68,10 +77,10 @@ function InvitePrompt({ room, compact = false }: { room: PrivateSummary; compact
   }
 
   return <div className={"private-invite" + (compact ? " compact" : "")}>
-    <Avatar name={room.host.handle} large />
-    <h2>@{room.host.handle}</h2>
+    <Avatar name={displayName(room.host, names)} large />
+    <h2>{displayName(room.host, names)}</h2>
     {room.invited.length > 1 && <ul className="invitees" aria-label="Invited accounts" tabIndex={compact ? 0 : undefined}>
-      {room.invited.map(person => <li key={person.id}>@{person.handle}</li>)}
+      {room.invited.map(person => <li key={person.id}>{displayName(person, names)}</li>)}
     </ul>}
     <div className="private-actions">
       <button className="button subtle" disabled={busy} onClick={() => void respond(false)}>Decline</button>
@@ -84,6 +93,7 @@ function InvitePrompt({ room, compact = false }: { room: PrivateSummary; compact
 export function PrivateTargets({ people, close, start }: {
   people: User[]; close: () => void; start: (ids: string[]) => Promise<void>;
 }) {
+  const { remarks } = useContext(People);
   const [selected, setSelected] = useState<string[]>([]);
   const [failure, setFailure] = useState("");
   const [busy, setBusy] = useState(false);
@@ -93,7 +103,7 @@ export function PrivateTargets({ people, close, start }: {
         <input type="checkbox" disabled={busy} checked={selected.includes(person.id)}
           onChange={event => setSelected(previous => event.target.checked
             ? [...previous, person.id] : previous.filter(id => id !== person.id))} />
-        <Avatar name={person.handle} /> @{person.handle}
+        <PersonAvatar user={person} /> {displayName(person, remarks)}
       </label>)}
     </fieldset>
     {failure && <p className="inline-error" role="alert">{failure}</p>}
@@ -111,6 +121,7 @@ export function PrivateTargets({ people, close, start }: {
 export function NearbyDevices({ own, close, invited }: {
   own: string; close: () => void; invited: (id: string) => void;
 }) {
+  const { remarks } = useContext(People);
   const [discovery, setDiscovery] = useState<Discovery>({ status: "starting", devices: [] });
   const { devices, status } = discovery;
   const [choice, setChoice] = useState<NearbyDevice>();
@@ -137,7 +148,7 @@ export function NearbyDevices({ own, close, invited }: {
     && device.matched_account?.id === choice?.matched_account?.id);
   const account = selected?.matched_account?.id;
   async function invite() {
-    if (!selected || !account || account === own || busy) return;
+    if (!selected || account === own || busy) return;
     setBusy(true);
     setFailure("");
     try { invited(await api.inviteNearby(selected.id, account)); }
@@ -151,7 +162,7 @@ export function NearbyDevices({ own, close, invited }: {
         <input type="radio" name="nearby-device" checked={selected?.id === device.id}
           onChange={() => { setChoice(device); setFailure(""); }} />
         <span className="chat-row-text">
-          <strong>{device.matched_account ? `Possible match: @${device.matched_account.handle}` : "Unknown Zibblu device"}</strong>
+          <strong>{device.matched_account ? `Possible match: ${displayName(device.matched_account, remarks)}` : "Unknown Zibblu device"}</strong>
           <small>Device {device.id.slice(0, 8)}</small>
         </span>
       </label>)}
@@ -161,7 +172,7 @@ export function NearbyDevices({ own, close, invited }: {
         : status === "discovery_failed" ? "LAN discovery could not start or the configured discovery service failed."
         : "No Zibblu devices found. Keep both clients open and signed in on the same allowed network."}
     </p>}
-    {selected && !account && <p className="muted">A shared conversation is required to send an invitation.</p>}
+    {selected && !account && <p className="muted">Zibblu verifies the selected device’s account before sending the invitation.</p>}
     {account === own && <p className="muted">Private invitations go to a different account.</p>}
     {choice && !selected && status === "ready" && <p className="muted" role="status">The selected device is no longer listed for that account.</p>}
     {failure && <p className="inline-error" role="alert">{failure}</p>}
@@ -171,22 +182,29 @@ export function NearbyDevices({ own, close, invited }: {
     </p>}
     <div className="dialog-actions">
       <button className="button subtle" disabled={busy} onClick={close}>Close</button>
-      <button className="button primary" disabled={busy || !account || account === own}
+      <button className="button primary" disabled={busy || !selected || account === own}
         onClick={() => void invite()}>{busy ? "Connecting…" : "Send private invitation"}</button>
     </div>
   </Dialog>;
 }
 
-export function PrivateChatView({ id, own, back, showCode }: {
+export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isContact }: {
   id: string; own: User; back: () => void; showCode: (id: string) => Promise<void>;
+  draft: string; setDraft: (change: (draft: string) => string) => void; isContact: (id: string) => boolean;
 }) {
+  const { remarks, open } = useContext(People);
+  const inputId = useId();
   const [room, setRoom] = useState<PrivateSummary>();
   const [messages, setMessages] = useState<PrivateMessage[]>([]);
-  const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
   const [closed, setClosed] = useState(false);
   const timeline = useRef<HTMLDivElement>(null);
+  const latestAtOpen = useRef<number | undefined>(undefined);
+  const [away, setAway] = useState(false);
+  const nearBottom = useRef(true);
+  const clearDraft = useRef(setDraft);
+  clearDraft.current = setDraft;
 
   useEffect(() => {
     let disposed = false;
@@ -205,23 +223,25 @@ export function PrivateChatView({ id, own, back, showCode }: {
           connection = result.connection;
           after = 0;
           setMessages([]);
-          setDraft("");
+          if (after || latestAtOpen.current !== undefined) clearDraft.current(() => "");
+          latestAtOpen.current = undefined;
         }
         const { messages: incoming, ...summary } = result;
         setRoom(summary);
         setClosed(false);
         if (summary.phase !== "connected") {
           setMessages([]);
-          setDraft("");
+          clearDraft.current(() => "");
         } else if (incoming.length) {
           after = incoming.at(-1)!.seq;
           setMessages(previous => [...previous, ...incoming].slice(-100));
         }
+        if (summary.phase === "connected") latestAtOpen.current ??= incoming.at(-1)?.seq ?? 0;
       } catch {
         if (disposed) return;
         setClosed(true);
         setMessages([]);
-        setDraft("");
+        clearDraft.current(() => "");
       } finally {
         if (!disposed) timer = window.setTimeout(poll, 300);
       }
@@ -231,7 +251,7 @@ export function PrivateChatView({ id, own, back, showCode }: {
   }, [id]);
 
   useLayoutEffect(() => {
-    if (timeline.current) timeline.current.scrollTop = timeline.current.scrollHeight;
+    if (nearBottom.current && timeline.current) timeline.current.scrollTop = timeline.current.scrollHeight;
   }, [messages]);
 
   async function act(action: () => Promise<void>) {
@@ -248,6 +268,7 @@ export function PrivateChatView({ id, own, back, showCode }: {
   const terminal = closed || room?.phase === "ended" || room?.phase === "missed" || failed;
   const people = room?.participants ?? [];
   const oversized = new TextEncoder().encode(draft.trim()).length > 2048;
+  let groupStart: number | undefined;
   function send(event: FormEvent) {
     event.preventDefault();
     const text = draft.trim();
@@ -265,7 +286,7 @@ export function PrivateChatView({ id, own, back, showCode }: {
       <button className="icon-button" onClick={back} aria-label="Return to chats"><ArrowLeft size={19} /></button>
       <Ghost className="private-ghost" size={22} aria-hidden="true" />
       <div className="chat-heading">
-        <h2>{room ? privateTitle(room, own.id) : "Private chat"}</h2>
+        <h2>{room ? privateTitle(room, own.id, remarks) : "Private chat"}</h2>
         <span role="status">{connected ? "Verified private connection" : failed ? "Connection failed" : terminal ? "Session ended" : "LAN only"}
           {room?.open && !terminal ? " · QR access" : ""}</span>
       </div>
@@ -273,28 +294,50 @@ export function PrivateChatView({ id, own, back, showCode }: {
         aria-label="Share private QR code" onClick={() => void act(() => showCode(id))}><QrCode size={20} /></button>}
       {room && room.phase !== "invited" && <button className="button subtle" onClick={() => void act(async () => {
         await api.endPrivate(id);
+        setDraft(() => "");
         back();
       })}>{terminal ? "Dismiss" : "End session"}</button>}
     </header>
     {connected ? <>
       <div className="private-people" aria-label="Current participants">
-        {people.map(person => <span key={person.id}>@{person.handle}</span>)}
+        {people.map(person => <button className="person-link" key={person.id} onClick={() => open?.(person)}
+          title={person.id !== own.id && !isContact(person.id) ? "View profile or add contact" : "View profile"}>
+          {person.id !== own.id && !isContact(person.id) && <UserPlus size={14} />}{displayName(person, remarks)}
+        </button>)}
       </div>
-      <div className="timeline-wrap"><div className="timeline private-timeline" ref={timeline} role="log" aria-label="Private messages">
-        {messages.map(message => <div className={"message-row" + (message.sender.id === own.id ? " mine" : "")} key={message.seq}>
-          <div className="message-body">
-            <span className="message-author">{message.sender.id === own.id ? "You" : "@" + message.sender.handle}</span>
-            <div className="bubble">{message.text}</div>
-          </div>
-        </div>)}
-      </div></div>
+      <div className="timeline-wrap"><div className="timeline" ref={timeline} role="log" aria-label="Private messages" onScroll={event => {
+        const element = event.currentTarget;
+        nearBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
+        setAway(!nearBottom.current);
+      }}>
+        {messages.map(message => {
+          const mine = message.sender.id === own.id;
+          const group = startsTimeGroup(message.created_at, groupStart);
+          if (group) groupStart = message.created_at;
+          const avatar = <Avatar name={displayName(message.sender, remarks)} />;
+          return <Fragment key={message.seq}>
+            {group && <div className="day-divider"><time dateTime={new Date(message.created_at).toISOString()}>{messageTimeLabel(message.created_at)}</time></div>}
+            <div className={"message-row" + (mine ? " mine" : "") + (message.seq > (latestAtOpen.current ?? 0) ? " message-arrival" : "")}>
+              {!mine && avatar}
+              <div className="message-body">
+                {!mine && <span className="message-author">{displayName(message.sender, remarks)}</span>}
+                <div className="bubble">{message.text}</div>
+              </div>
+              {mine && avatar}
+            </div>
+          </Fragment>;
+        })}
+      </div>{away && <button className="button subtle jump-bottom" onClick={() => {
+        if (timeline.current) timeline.current.scrollTop = timeline.current.scrollHeight;
+      }}><ArrowDown size={15} /> Latest messages</button>}</div>
       <form className="composer" onSubmit={send}>
         {(failure || oversized) && <p className="inline-error" role="alert">
           {oversized ? "Private messages can be up to 2 KiB." : failure}
         </p>}
-        <div className="composer-box">
-          <textarea aria-label="Private message" placeholder="Write a private message…" rows={2} autoComplete="off"
-            spellCheck={false} value={draft} onChange={event => setDraft(event.target.value)}
+        <fieldset className="composer-box floating-field">
+          <legend><label htmlFor={inputId}>Write a private message…</label></legend>
+          <textarea id={inputId} aria-label="Private message" rows={2} autoComplete="off"
+            spellCheck={false} value={draft} onChange={event => { const value = event.target.value; setDraft(() => value); }}
             onKeyDown={event => {
               if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
@@ -303,9 +346,9 @@ export function PrivateChatView({ id, own, back, showCode }: {
             }} />
           <div className="composer-bar private-composer-bar">
             <button className="button primary send-button" type="submit" aria-label="Send private message"
-              disabled={busy || !draft.trim() || oversized}>Send <Send size={16} /></button>
+              disabled={busy || !draft.trim() || oversized}>{busy ? "Sending…" : "Send"} <Send size={16} /></button>
           </div>
-        </div>
+        </fieldset>
       </form>
     </> : <div className="private-status" aria-live="polite">
       {room?.phase === "invited" && !closed ? <InvitePrompt key={room.id} room={room} /> : <Blank
@@ -313,15 +356,15 @@ export function PrivateChatView({ id, own, back, showCode }: {
           : failed ? "Private connection failed" : terminal ? "Private session ended"
           : room?.open && room.hosted ? "Waiting for a QR scan"
           : room ? privatePhaseLabel[room.phase] : "Opening private chat"}>
-        {room?.phase === "missed" && <p>@{room.host.handle} invited you. The invitation ended before you responded.</p>}
+        {room?.phase === "missed" && <p>{displayName(room.host, remarks)} invited you. The invitation ended before you responded.</p>}
         {failure && <p className="inline-error" role="alert">{failure}</p>}
       </Blank>}
     </div>}
   </section>;
 }
 
-export function privateTitle(room: PrivateSummary, own: string) {
+export function privateTitle(room: PrivateSummary, own: string, remarks: Directory["remarks"]) {
   if (room.open) return "Private QR chat";
   const others = [room.host, ...room.invited].filter(person => person.id !== own);
-  return others.length ? others.map(person => "@" + person.handle).join(", ") : "Private chat";
+  return others.length ? others.map(person => displayName(person, remarks)).join(", ") : "Private chat";
 }

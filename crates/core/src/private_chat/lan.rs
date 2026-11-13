@@ -206,7 +206,7 @@ impl Lan {
             .map(|_| TokioResolver::builder_tokio().map(|builder| builder.build()))
             .transpose()?;
         let daemon = ServiceDaemon::new()?;
-        let device = Uuid::new_v4().simple().to_string();
+        let device = discovery_instance(&identity.device).simple().to_string();
         let props = [("account", account_tag(&origin, account))];
         let info = ServiceInfo::new(
             SERVICE,
@@ -399,15 +399,23 @@ impl Lan {
         account: Uuid,
         address: SocketAddr,
     ) -> Result<Connection> {
+        self.connect_name(identity, &lan_peer_name(account), address)
+            .await
+    }
+
+    pub async fn connect_name(
+        &self,
+        identity: &Identity,
+        name: &str,
+        address: SocketAddr,
+    ) -> Result<Connection> {
         ensure!(
             self.scope.allows(address),
             "This device is outside the allowed LAN."
         );
         let mut client = identity.client.clone();
         client.transport_config(transport());
-        let connection = self
-            .endpoint
-            .connect_with(client, address, &lan_peer_name(account))?;
+        let connection = self.endpoint.connect_with(client, address, name)?;
         Ok(timeout(ATTEMPT, connection).await??)
     }
 }
@@ -433,6 +441,10 @@ fn account_tag(origin: &str, account: Uuid) -> String {
 
 fn service_instance(name: &str, service: &str) -> Option<Uuid> {
     Uuid::parse_str(name.strip_suffix(service)?.strip_suffix('.')?).ok()
+}
+
+pub(super) fn discovery_instance(fingerprint: &[u8; 32]) -> Uuid {
+    Uuid::from_slice(&fingerprint[..16]).expect("16-byte discovery instance")
 }
 
 fn valid_tag(tag: &str) -> bool {

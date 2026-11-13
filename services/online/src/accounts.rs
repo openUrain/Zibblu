@@ -1,4 +1,7 @@
-use crate::{App, Auth, Error, Result};
+use crate::{
+    App, Auth, Error, Result,
+    chats::{insert_conversation, lock_message_feed},
+};
 use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
     password_hash::{SaltString, rand_core::OsRng},
@@ -151,6 +154,10 @@ pub(crate) async fn add_contact(
     if auth.user_id == input.user_id {
         return Err(Error::bad("Choose another account."));
     }
+    let greeting = input.greeting.trim();
+    if greeting.chars().count() > 200 || greeting.contains('\0') {
+        return Err(Error::bad("Enter a greeting of up to 200 characters."));
+    }
     let mut tx = app.db.begin().await?;
     lock_pair(&mut tx, auth.user_id, input.user_id).await?;
     let (approved, request, outgoing): (bool, Option<Uuid>, i64) = sqlx::query_as(
@@ -176,11 +183,14 @@ pub(crate) async fn add_contact(
             "You can have up to 200 outgoing contact requests.",
         ));
     }
-    sqlx::query("INSERT INTO contact_requests (requester_id, recipient_id) VALUES ($1,$2)")
-        .bind(auth.user_id)
-        .bind(input.user_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "INSERT INTO contact_requests (requester_id, recipient_id, greeting) VALUES ($1,$2,$3)",
+    )
+    .bind(auth.user_id)
+    .bind(input.user_id)
+    .bind(greeting)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -216,14 +226,20 @@ pub(crate) async fn respond_contact(
     Json(decision): Json<ContactDecision>,
 ) -> Result<StatusCode> {
     let mut tx = app.db.begin().await?;
+    if decision.accept {
+        lock_message_feed(&mut tx).await?;
+    }
     lock_pair(&mut tx, auth.user_id, requester).await?;
-    let pending =
-        sqlx::query("DELETE FROM contact_requests WHERE requester_id = $1 AND recipient_id = $2")
-            .bind(requester)
-            .bind(auth.user_id)
-            .execute(&mut *tx)
-            .await?;
-    if pending.rows_affected() == 0 {
+    let pending: Option<String> = sqlx::query_scalar(
+        "DELETE FROM contact_requests WHERE requester_id = $1 AND recipient_id = $2
+                        AND ($3::uuid IS NULL OR request_id = $3) RETURNING greeting",
+    )
+    .bind(requester)
+    .bind(auth.user_id)
+    .bind(decision.request_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(greeting) = pending else {
         let approved: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM contacts WHERE owner_id = $1 AND contact_id = $2)",
         )
@@ -236,7 +252,7 @@ pub(crate) async fn respond_contact(
         } else {
             Err(Error::missing())
         };
-    }
+    };
     if decision.accept {
         let full: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM contacts WHERE owner_id IN ($1, $2)
@@ -256,6 +272,11 @@ pub(crate) async fn respond_contact(
             .bind(requester)
             .execute(&mut *tx)
             .await?;
+        let id = insert_conversation(&mut tx, auth.user_id, None, vec![requester]).await?;
+        if !greeting.is_empty() {
+            sqlx::query("INSERT INTO messages (nonce, conversation_id, sender_id, text) VALUES ($1,$2,$3,$4)")
+                .bind(Uuid::new_v4()).bind(id).bind(requester).bind(greeting).execute(&mut *tx).await?;
+        }
     }
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
