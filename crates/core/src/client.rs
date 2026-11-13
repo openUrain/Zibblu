@@ -64,6 +64,8 @@ pub struct SyncUpdate {
     pub directory: Directory,
     pub recalled: Vec<i64>,
     pub server_now: i64,
+    pub last_seq: i64,
+    pub latest_ai_seq: i64,
 }
 
 #[derive(Default, Deserialize)]
@@ -127,6 +129,8 @@ impl Client {
              CREATE INDEX IF NOT EXISTS inbox_chat_time ON inbox (conversation_id, json_extract(payload, '$.created_at'), seq);
              CREATE INDEX IF NOT EXISTS inbox_recalled ON inbox (seq)
                 WHERE json_extract(payload, '$.recalled') = 1;
+             CREATE INDEX IF NOT EXISTS inbox_ai_replies ON inbox (seq)
+                WHERE json_type(payload, '$.ai_provider') = 'text';
              CREATE TABLE IF NOT EXISTS directory (
                 id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL
              );
@@ -254,10 +258,16 @@ impl Client {
                     "SELECT seq FROM inbox WHERE json_extract(payload, '$.recalled') = 1 ORDER BY seq",
                 )
                 .fetch_all(&self.db).await?;
+                let latest_ai_seq = sqlx::query_scalar(
+                    "SELECT coalesce(max(seq), 0) FROM inbox WHERE json_type(payload, '$.ai_provider') = 'text'",
+                )
+                .fetch_one(&self.db).await?;
                 return Ok(SyncUpdate {
                     directory: page.directory,
                     recalled,
                     server_now: self.server_now(),
+                    last_seq: after,
+                    latest_ai_seq,
                 });
             }
         }

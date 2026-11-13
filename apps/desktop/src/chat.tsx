@@ -62,8 +62,8 @@ type ChatAssistants = {
   answered: (reply: AiReply) => void; dismiss: (id: string) => void;
 };
 
-export function ChatView({ chat, own, revision, recalled, clockOffset, transfers, changed, refresh, back, share, openPrivate, groupCode, aiChat }: {
-  chat: Conversation; own: User; revision: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
+export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, back, share, openPrivate, groupCode, aiChat }: {
+  chat: Conversation; own: User; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
   refresh: () => Promise<void>; back: () => void; share: (source: ShareSource) => Promise<void>; openPrivate: () => void;
   groupCode: () => void; aiChat: ChatAssistants;
 }) {
@@ -88,14 +88,14 @@ export function ChatView({ chat, own, revision, recalled, clockOffset, transfers
     </header>
     {showFiles
       ? <FilesView conversation={chat.id} people={chat.members} transfers={transfers} revision={revision} recalled={recalled} onChanged={changed} />
-      : <ChatMessages chat={chat} own={own} revision={revision} recalled={recalled} clockOffset={clockOffset} transfers={transfers}
+      : <ChatMessages chat={chat} own={own} revision={revision} latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset} transfers={transfers}
         changed={changed} refresh={refresh} share={share} aiChat={aiChat} />}
-    {search && <ChatSearch conversation={chat.id} revision={revision} recalled={recalled} close={() => setSearch(false)} />}
+    {search && <ChatSearch conversation={chat.id} revision={revision} latestAiSeq={latestAiSeq} recalled={recalled} close={() => setSearch(false)} />}
   </section>;
 }
 
-function ChatSearch({ conversation, revision, recalled, close }: {
-  conversation: string; revision: number; recalled: ReadonlySet<number>; close: () => void;
+function ChatSearch({ conversation, revision, latestAiSeq, recalled, close }: {
+  conversation: string; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; close: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
@@ -105,15 +105,15 @@ function ChatSearch({ conversation, revision, recalled, close }: {
         onChange={event => setQuery(event.target.value)} placeholder="Search message text" autoFocus /></label>
       <button className="button primary" type="submit" disabled={!query.trim()}>Search</button>
     </form>
-    {search && <SearchResults key={search} {...{ conversation, search, revision, recalled }} />}
+    {search && <SearchResults key={search} {...{ conversation, search, revision, latestAiSeq, recalled }} />}
   </Dialog>;
 }
 
-function SearchResults({ conversation, search, revision, recalled }: {
-  conversation: string; search: string; revision: number; recalled: ReadonlySet<number>;
+function SearchResults({ conversation, search, revision, latestAiSeq, recalled }: {
+  conversation: string; search: string; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>;
 }) {
   const read = useCallback((before?: number) => api.messages(conversation, before, search), [conversation, search]);
-  const { page, failure, loading, older } = usePage(read, revision, recalled);
+  const { page, failure, loading, older } = usePage(read, revision, recalled, false, latestAiSeq);
   return <div className="chat-search-results">
     {failure && <p className="inline-error" role="alert">{failure}</p>}
     {!page && !failure && <p className="muted" role="status">Searching…</p>}
@@ -127,12 +127,12 @@ function SearchResults({ conversation, search, revision, recalled }: {
   </div>;
 }
 
-function ChatMessages({ chat, own, revision, recalled, clockOffset, transfers, changed, refresh, share, aiChat }: {
-  chat: Conversation; own: User; revision: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
+function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, share, aiChat }: {
+  chat: Conversation; own: User; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
   refresh: () => Promise<void>; share: (source: ShareSource) => Promise<void>; aiChat: ChatAssistants;
 }) {
   const read = useCallback((before?: number) => api.messages(chat.id, before), [chat.id]);
-  const { page, failure, loading, older, newestAtOpen } = usePage(read, revision, recalled, true);
+  const { page, failure, loading, older, newestAtOpen } = usePage(read, revision, recalled, true, latestAiSeq);
   const viewport = useRef<HTMLDivElement>(null);
   const nearBottom = useRef(true);
   const [away, setAway] = useState(false);

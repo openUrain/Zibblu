@@ -49,7 +49,9 @@ export const api = {
     invoke<Session>("login", { server, handle, password, register }),
   logout: () => invoke<void>("logout"),
   directory: () => invoke<Directory>("directory"),
-  sync: () => invoke<{ directory: Directory; recalled: number[]; server_now: number }>("sync"),
+  sync: () => invoke<{
+    directory: Directory; recalled: number[]; server_now: number; last_seq: number; latest_ai_seq: number;
+  }>("sync"),
   messages: (conversation: string, before?: number, search?: string) => invoke<Page>("messages", { conversation, before, search }),
   files: (filter: FileFilter, before?: number) => invoke<Page>("files", { filter, before }),
   findUser: (handle: string) => invoke<User>("find_user", { handle }),

@@ -46,6 +46,7 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
   const joined = useRef(new Set<string>());
   const privateOpen = privateId !== undefined;
   const [revision, setRevision] = useState(0);
+  const [latestAiSeq, setLatestAiSeq] = useState(0);
   const [connection, setConnection] = useState<"Connecting" | "Connected" | "Reconnecting" | "Session expired">("Connecting");
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [failure, setFailure] = useState("");
@@ -71,7 +72,8 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
         setRecalled(previous => previous.size === update.recalled.length
           ? previous : new Set(update.recalled));
         setConnection("Connected");
-        setRevision(value => value + 1);
+        setRevision(update.last_seq);
+        setLatestAiSeq(update.latest_ai_seq);
       } catch (error) {
         setConnection(isExpired(error) ? "Session expired" : "Reconnecting");
       } finally {
@@ -278,7 +280,8 @@ export function Workspace({ session, theme, setTheme, privateQuiet, setPrivateQu
           openPrivate={selectPrivate} createQr={() => void createPrivateCode()} />
         {privateId ? <PrivateChatView key={privateId} id={privateId} own={session.user}
             back={() => { setPrivateId(undefined); if (!active) setMobileChat(false); }} showCode={showPrivateCode} />
-          : active ? <ChatView key={active.id} chat={active} own={session.user} revision={revision} recalled={recalled} clockOffset={clockOffset}
+          : active ? <ChatView key={active.id} chat={active} own={session.user} revision={revision}
+            latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset}
             transfers={transfers} changed={changed} refresh={refresh} back={() => setMobileChat(false)}
             share={source => share(active.id, source)} openPrivate={() => void invitePrivate(active)}
             groupCode={() => void showGroupCode(active)} aiChat={{
