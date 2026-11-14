@@ -7,12 +7,17 @@
 
 ## Interface
 
-Main navigation: **Chats · Contacts · Files · Settings**.
+**Authoritative cross-platform UI/UX design:** [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) (Owner-approved, 2026-11-14). The following are **target design rules**, not a claim that all v0.1.1 screens already comply.
 
-- Chat view: uncluttered conversation list and composer; attachment action and a small **ghost** entry for private sessions.
-- Files view: search, type and time order for a conversation; the global view also filters by sharer. Both default to newest first and show the sharer's avatar and name.
-- AI is invoked **inside the existing composer** with `@custom-name`; it is not a constantly running participant or an autonomous agent.
-- The app and ordinary chats use a light palette. Private conversations use a dark palette and the same message and composer controls. Message groups are labeled in local 24-hour time, with a new group on day changes or after five minutes.
+- Chat behavior, chat-list hierarchy, profile and settings organization follow **WeChat**. File operation capabilities and media viewer follow **QQ**. Visual polish is **iMessage-first** with subtle **Snapchat** playfulness; overall presentation is Apple-like restraint.
+- Main desktop navigation: **Chats · Contacts · Files · Settings**, with three panes (nav / conversation list / content). Phone: four bottom tabs **Chats · Contacts · Files · Me**. Tablet: two-pane adaptive layout; preserve platform-native gestures and typography.
+- Chat: retain **current message bubble visuals unchanged**. Use WeChat-style chat list and contextual operations (desktop right-click; mobile long-press). Composer uses WeChat functionality and iMessage visual treatment. Show only necessary message states.
+- Files: the **Files view only lists ordinary attachments that cannot be directly previewed inside chat and must be downloaded**. Pictures and videos stay in **per-conversation chat/media history and media search**, with in-chat previews when supported. Ordinary file messages use **WeChat-style cards** with **progress directly in chat**. File actions and batch management follow QQ; the media viewer supports QQ-style navigation and save operations where available.
+- Profile: concise WeChat-like summary, extended info at a second level. Settings: desktop split-panel, phone hierarchical lists.
+- Normal app/chat uses a lightly lavender-tinted **light theme**. M2 private chat **keeps its existing separate dark theme**, same core controls and explicit LAN-only indicators. AI stays inside normal chat as an opt-in `@name` flow with conspicuous per-request authorization.
+- Shared semantic tokens, system fonts, linear icons with filled selected state, small radii, mostly flat surfaces (glass only on temporary overlays), balanced density and natural moderate motion. Never use excessive decoration, crowded controls or inconsistent cross-platform interactions.
+- Existing local 24-hour message time grouping, privacy boundaries, M1 history/sync and M3 one-shot disclosure semantics remain unchanged.
+
 
 ## 01 — Chat & Files (normal mode)
 
@@ -66,8 +71,14 @@ Rules:
 ## Brand
 
 Name: **Zibblu**. Tagline: **Chat freely. Share privately.**  
-Personality: warm, quick, playful without visual clutter.  
-Working palette (not implementation requirements): primary `#5865F2`, local-private accent `#35D4FF`, light `#F7F8FC`, dark `#12141D`. Avoid a visual color cue as the sole privacy-state indicator.
+Personality: **Apple-like restraint, warm and precise, lightly playful without visual clutter.**
+
+- **Main hue:** Lavender. **Exact HEX is not yet Owner-approved**; candidate prototypes are listed in [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) and must be reviewed for accessible contrast before being frozen.
+- **Normal mode:** light surfaces with very subtle lavender tint, flat presentation and restrained accents.
+- **Private LAN mode:** preserve independent dark theme; use explicit text/icon security states instead of relying on color as a privacy claim.
+- **Reference hierarchy:** WeChat for chat/profiles/settings; QQ for files and media controls; iMessage for visual effects, Snapchat for small touches of personality.
+- **Exceptions:** existing message bubbles remain unchanged; the file/media separation and in-chat progress are non-negotiable without a new Owner decision.
+
 
 ## Success definition
 
