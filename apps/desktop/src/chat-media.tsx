@@ -131,7 +131,7 @@ export function MediaViewer({ message, conversation, revision, recalled, hidden,
     if (item && !unavailable) { event.preventDefault(); open(item); }
   }}>
     {unavailable ? <p className="inline-error" role="alert">This attachment is no longer available.</p> : <>
-      <ViewerMedia key={file.id} file={file} />
+      <ViewerMedia key={"preview:" + file.id} file={file} />
       <div className="media-viewer-footer">
         <strong title={file.name}>{file.name}</strong>
         <div className="media-nav">
@@ -146,7 +146,7 @@ export function MediaViewer({ message, conversation, revision, recalled, hidden,
           <RotateCcw size={15} /> Retry media history
         </button>
       </div>}
-      <AttachmentDownload key={file.id} {...{ file, transfer, onChanged }} />
+      <AttachmentDownload key={"download:" + file.id} {...{ file, transfer, onChanged }} />
     </>}
   </Dialog>;
 }
