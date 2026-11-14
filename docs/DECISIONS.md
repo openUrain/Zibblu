@@ -22,6 +22,8 @@ Small, durable decisions only. Add a dated entry when an actual choice changes; 
 | D-016 | Keep AI visually integrated in ordinary chat, with explicit one-shot authorization; forbid excess ornamentation, crowded controls and inconsistent interaction logic. | Visual simplicity must not conceal M2 safety or M3 disclosure states. | Accepted |
 
 
+| D-017 | Interfaces should explain themselves through layout and purposeful controls, not excess instructional text; choose sliders, checkboxes, switches and selectors by actual state semantics; avoid redundant nested selection affordances (e.g. border plus checkbox for one state); express primary, secondary, tertiary and destructive importance through clear visual hierarchy. | Improve scanability, operation logic and visual clarity across devices while keeping critical security, error and AI-disclosure text explicit. | Accepted |
+
 ## Open decisions
 
 1. Online-message encryption protocol and key lifecycle; do not claim E2EE until implemented.
