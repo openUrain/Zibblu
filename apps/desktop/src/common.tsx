@@ -1,4 +1,4 @@
-import { Circle, CircleCheck, MessageCircleMore, UsersRound, X } from "lucide-react";
+import { Circle, CircleCheck, UsersRound, X } from "lucide-react";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { ComponentPropsWithoutRef, KeyboardEventHandler, ReactNode } from "react";
 import { api, errorMessage } from "./api";
@@ -18,7 +18,8 @@ export function PersonAvatar({ user, large, version }: { user: User; large?: boo
 }
 
 export function Brand() {
-  return <span className="brand" aria-label="Zibblu"><MessageCircleMore size={26} strokeWidth={2.3} /></span>;
+  return <img className="brand" src={new URL("../src-tauri/icons/icon.png", import.meta.url).href}
+    width={42} height={42} alt="Zibblu" />;
 }
 
 export function Avatar({ name, group = false, large = false, src }: { name: string; group?: boolean; large?: boolean; src?: string }) {
