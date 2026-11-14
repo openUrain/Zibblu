@@ -4,9 +4,9 @@ import { api, errorMessage } from "./api";
 import type { Profile, User } from "./api";
 import { Blank, Dialog, People, PersonAvatar, displayName } from "./common";
 
-export function ProfileView({ user, relationVersion, close, refresh, message, code }: {
+export function ProfileView({ user, relationVersion, close, refresh, saved, message, code }: {
   user: User; relationVersion: string; close: () => void; refresh: () => Promise<void>;
-  message: () => Promise<void>; code: () => void;
+  saved: () => void; message: () => Promise<void>; code: () => void;
 }) {
   const { remarks } = useContext(People);
   const [profile, setProfile] = useState<Profile>();
@@ -24,11 +24,16 @@ export function ProfileView({ user, relationVersion, close, refresh, message, co
     return () => { current = false; };
   }, [user.id, relationVersion, retry]);
 
-  async function save(action: () => Promise<void>) {
+  async function save(action: () => Promise<void>, closeOnSuccess = false) {
     if (busy) return;
     setBusy(true);
     setFailure("");
-    try { await action(); setProfile(await api.profile(user.id)); await refresh(); }
+    try {
+      await action();
+      if (closeOnSuccess) saved();
+      else setProfile(await api.profile(user.id));
+      await refresh();
+    }
     catch (error) { setFailure(errorMessage(error)); }
     finally { setBusy(false); }
   }
@@ -46,7 +51,7 @@ export function ProfileView({ user, relationVersion, close, refresh, message, co
   const name = profile?.notes?.remark || displayName(user, remarks);
   const own = profile?.relation === "own";
   const contact = profile?.relation === "contact";
-  return <Dialog title={own ? "Your profile" : "Profile"} className="profile-dialog" close={close}>
+  return <Dialog title={own ? "Your profile" : "Profile"} className="profile-dialog" close={close} closeDisabled={busy}>
     {!profile && (failure ? <Blank icon={<UserRound size={24} />} title="Profile unavailable">
       <p role="alert">{failure}</p><button className="button subtle" onClick={() => setRetry(value => value + 1)}>Retry</button>
     </Blank> : <p className="loading muted" role="status">Loading profile…</p>)}
@@ -68,16 +73,21 @@ export function ProfileView({ user, relationVersion, close, refresh, message, co
           </label>}
         </div>
         <div><h3>{name}</h3>{name !== profile.user.handle && <p className="muted">@{profile.user.handle}</p>}</div>
-        {own && <button className="button subtle" onClick={code}><QrCode size={17} /> Your QR code</button>}
-        {contact && <button className="button subtle" disabled={busy} onClick={() => void save(message)}><MessageSquare size={17} /> Message</button>}
+        {own && <button className="button subtle" disabled={busy} onClick={code}><QrCode size={17} /> Your QR code</button>}
+        {contact && <button className="button subtle" disabled={busy} onClick={async () => {
+          setBusy(true);
+          setFailure("");
+          try { await message(); }
+          catch (error) { setFailure(errorMessage(error)); setBusy(false); }
+        }}><MessageSquare size={17} /> Message</button>}
         {profile.relation === "stranger" && !asking && <button className="button primary" onClick={() => setAsking(true)}><UserPlus size={17} /> Add contact</button>}
       </div>
       {own && <form className="profile-fields" key={profile.bio} onSubmit={event => {
         event.preventDefault();
         const bio = String(new FormData(event.currentTarget).get("bio") ?? "");
-        void save(() => api.setBio(bio));
+        void save(() => api.setBio(bio), true);
       }}>
-        <label>Bio<textarea name="bio" rows={3} maxLength={300} defaultValue={profile.bio ?? ""} /></label>
+        <label>Bio<textarea name="bio" rows={3} maxLength={300} defaultValue={profile.bio ?? ""} readOnly={busy} /></label>
         <button className="button primary" disabled={busy}>Save bio</button>
       </form>}
       {contact && <>
@@ -87,11 +97,11 @@ export function ProfileView({ user, relationVersion, close, refresh, message, co
           const fields = new FormData(event.currentTarget);
           void save(() => api.setContactNotes(user.id, {
             remark: String(fields.get("remark") ?? ""), contact_info: String(fields.get("contact_info") ?? ""),
-          }));
+          }), true);
         }}>
-          <label>Remark<input name="remark" defaultValue={profile.notes.remark} maxLength={64} /></label>
+          <label>Remark<input name="remark" defaultValue={profile.notes.remark} maxLength={64} readOnly={busy} /></label>
           <label>Contact details <small>Only you can see these details</small>
-            <textarea name="contact_info" defaultValue={profile.notes.contact_info} maxLength={300} rows={2} />
+            <textarea name="contact_info" defaultValue={profile.notes.contact_info} maxLength={300} rows={2} readOnly={busy} />
           </label>
           <button className="button primary" disabled={busy}>Save contact details</button>
         </form>}

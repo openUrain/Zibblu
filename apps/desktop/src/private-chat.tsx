@@ -3,7 +3,7 @@ import { Fragment, useContext, useEffect, useId, useLayoutEffect, useRef, useSta
 import type { FormEvent } from "react";
 import { api, errorMessage } from "./api";
 import type { Directory, Discovery, NearbyDevice, PrivateList, PrivateMessage, PrivateSummary, User } from "./api";
-import { Avatar, Blank, Dialog, People, PersonAvatar, displayName, messageTimeLabel, startsTimeGroup } from "./common";
+import { Avatar, Blank, Choice, Dialog, People, PersonAvatar, displayName, messageTimeLabel, startsTimeGroup } from "./common";
 
 export function usePrivateRooms() {
   const [list, setList] = useState<PrivateList>({ rooms: [], prompt: null });
@@ -99,12 +99,11 @@ export function PrivateTargets({ people, close, start }: {
   const [busy, setBusy] = useState(false);
   return <Dialog title="Invite to private chat" close={() => { if (!busy) close(); }}>
     <fieldset className="dialog-contacts"><legend>Group members</legend>
-      {people.map(person => <label key={person.id} className="check-contact">
-        <input type="checkbox" disabled={busy} checked={selected.includes(person.id)}
-          onChange={event => setSelected(previous => event.target.checked
-            ? [...previous, person.id] : previous.filter(id => id !== person.id))} />
-        <PersonAvatar user={person} /> {displayName(person, remarks)}
-      </label>)}
+      {people.map(person => <Choice key={person.id} disabled={busy} checked={selected.includes(person.id)}
+        onChange={event => setSelected(previous => event.target.checked
+          ? [...previous, person.id] : previous.filter(id => id !== person.id))}>
+        <PersonAvatar user={person} /><span>{displayName(person, remarks)}</span>
+      </Choice>)}
     </fieldset>
     {failure && <p className="inline-error" role="alert">{failure}</p>}
     <div className="dialog-actions">
@@ -158,14 +157,13 @@ export function NearbyDevices({ own, close, invited }: {
   return <Dialog title="Nearby devices" close={() => { if (!busy) close(); }}>
     {devices.length ? <fieldset className="dialog-contacts" disabled={busy}>
       <legend>Seen on LAN · identity unverified</legend>
-      {devices.map(device => <label key={device.id} className="check-contact">
-        <input type="radio" name="nearby-device" checked={selected?.id === device.id}
-          onChange={() => { setChoice(device); setFailure(""); }} />
+      {devices.map(device => <Choice key={device.id} type="radio" name="nearby-device" checked={selected?.id === device.id}
+        onChange={() => { setChoice(device); setFailure(""); }}>
         <span className="chat-row-text">
           <strong>{device.matched_account ? `Possible match: ${displayName(device.matched_account, remarks)}` : "Unknown Zibblu device"}</strong>
           <small>Device {device.id.slice(0, 8)}</small>
         </span>
-      </label>)}
+      </Choice>)}
     </fieldset> : <p className="muted" role="status">
       {status === "starting" ? "Starting LAN discovery…"
         : status === "network_unavailable" ? "No approved IPv4 LAN is available. Connect to an allowed Wi-Fi or Ethernet network."
@@ -268,7 +266,7 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
   const terminal = closed || room?.phase === "ended" || room?.phase === "missed" || failed;
   const people = room?.participants ?? [];
   const oversized = new TextEncoder().encode(draft.trim()).length > 2048;
-  let groupStart: number | undefined;
+  let previousTime: number | undefined;
   function send(event: FormEvent) {
     event.preventDefault();
     const text = draft.trim();
@@ -312,8 +310,8 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
       }}>
         {messages.map(message => {
           const mine = message.sender.id === own.id;
-          const group = startsTimeGroup(message.created_at, groupStart);
-          if (group) groupStart = message.created_at;
+          const group = startsTimeGroup(message.created_at, previousTime);
+          previousTime = message.created_at;
           const avatar = <Avatar name={displayName(message.sender, remarks)} />;
           return <Fragment key={message.seq}>
             {group && <div className="day-divider"><time dateTime={new Date(message.created_at).toISOString()}>{messageTimeLabel(message.created_at)}</time></div>}
@@ -334,8 +332,8 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
         {(failure || oversized) && <p className="inline-error" role="alert">
           {oversized ? "Private messages can be up to 2 KiB." : failure}
         </p>}
-        <fieldset className="composer-box floating-field">
-          <legend><label htmlFor={inputId}>Write a private message…</label></legend>
+        <div className={"composer-box" + (draft.length > 0 ? " has-text" : "")}>
+          <label className="composer-label" htmlFor={inputId}>Write a private message</label>
           <textarea id={inputId} aria-label="Private message" rows={2} autoComplete="off"
             spellCheck={false} value={draft} onChange={event => { const value = event.target.value; setDraft(() => value); }}
             onKeyDown={event => {
@@ -348,7 +346,7 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
             <button className="button primary send-button" type="submit" aria-label="Send private message"
               disabled={busy || !draft.trim() || oversized}>{busy ? "Sending…" : "Send"} <Send size={16} /></button>
           </div>
-        </fieldset>
+        </div>
       </form>
     </> : <div className="private-status" aria-live="polite">
       {room?.phase === "invited" && !closed ? <InvitePrompt key={room.id} room={room} /> : <Blank

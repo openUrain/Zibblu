@@ -16,7 +16,7 @@
 - Profile: concise WeChat-like summary, extended info at a second level. Settings: desktop split-panel, phone hierarchical lists.
 - Normal app/chat uses a lightly lavender-tinted **light theme**. M2 private chat **keeps its existing separate dark theme**, same core controls and explicit LAN-only indicators. AI stays inside normal chat as an opt-in `@name` flow with conspicuous per-request authorization.
 - Shared semantic tokens, system fonts, linear icons with filled selected state, small radii, mostly flat surfaces (glass only on temporary overlays), balanced density and natural moderate motion. Never use excessive decoration, crowded controls or inconsistent cross-platform interactions.
-- Existing local 24-hour message time grouping, privacy boundaries, M1 history/sync and M3 one-shot disclosure semantics remain unchanged.
+- The first visible message has a local 24-hour time label. A new label appears when consecutive messages cross a local date boundary or are more than 10 minutes apart.
 
 
 ## 01 — Chat & Files (normal mode)
@@ -32,8 +32,8 @@ Initial functional scope:
 - The chat list shows unread counts. Optional account-level read receipts require both people to opt in. A message can be copied, quoted or hidden on this device. Drafts are kept per conversation in memory for the current sign-in.
 - The sender can recall an ordinary message or shared attachment within five minutes. Participants receive a recall notice in the timeline.
 - Sending files/folders; clear transfer state, file metadata, pause/resume and integrity verification. Folders are shared as ZIP downloads.
-- Paste a clipboard image into the composer and send it as an attachment. Supported images and video frames appear inline when the Windows WebView can decode them.
-- The conversation menu provides text search and files already shared in that chat. The sidebar Files view covers all chats, newest first, with filename search and transfer controls.
+- Paste a clipboard image into the composer and send it as an attachment. Open inline images and videos in the chat's media viewer to browse and save them. If a format cannot be previewed or decoded, download it from the chat or viewer.
+- The conversation menu provides text and media search plus a separate list of shared files. The sidebar Files view searches ordinary attachments across chats, with newest first as the default and Transfers available for maintenance.
 - Standard online routing is **separate** from private mode; ordinary messages can involve the server.
 
 Avoid in v1: voice/video, social feeds, bots, automatic cloud-drive sync, complex admin dashboards, mobile before desktop stabilization.

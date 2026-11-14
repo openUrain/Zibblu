@@ -13,7 +13,7 @@ export function messageTimeLabel(value: number, now = new Date()) {
   return day === yesterday.toDateString() ? `昨天 ${hour.format(value)}` : dateTimeLabel(value);
 }
 
-export function startsTimeGroup(value: number, start?: number) {
-  return start === undefined || value - start >= 5 * 60_000
-    || new Date(value).toDateString() !== new Date(start).toDateString();
+export function startsTimeGroup(value: number, previous?: number) {
+  return previous === undefined || value - previous > 10 * 60_000
+    || new Date(value).toDateString() !== new Date(previous).toDateString();
 }

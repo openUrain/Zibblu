@@ -1,6 +1,6 @@
-import { MessageCircleMore, UsersRound, X } from "lucide-react";
+import { Circle, CircleCheck, MessageCircleMore, UsersRound, X } from "lucide-react";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { ComponentPropsWithoutRef, KeyboardEventHandler, ReactNode } from "react";
 import { api, errorMessage } from "./api";
 import type { Conversation, Directory, Message, Page, User } from "./api";
 
@@ -51,8 +51,20 @@ export function Blank({ icon, title, children }: { icon: ReactNode; title: strin
   </div>;
 }
 
-export function Dialog({ title, close, children, className }: {
+export function Choice({ children, className = "", type = "checkbox", ...input }: {
+  children: ReactNode; className?: string; type?: "checkbox" | "radio";
+} & Pick<ComponentPropsWithoutRef<"input">, "checked" | "disabled" | "name" | "onChange">) {
+  const Indicator = input.checked ? CircleCheck : Circle;
+  return <label className={`choice ${className}`}>
+    <input type={type} {...input} />
+    {children}
+    <Indicator className="choice-indicator" size={16} aria-hidden="true" />
+  </label>;
+}
+
+export function Dialog({ title, close, children, className, onKeyDown, closeDisabled }: {
   title: string; close: () => void; children: ReactNode; className?: string;
+  onKeyDown?: KeyboardEventHandler<HTMLDialogElement>; closeDisabled?: boolean;
 }) {
   const element = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -60,9 +72,10 @@ export function Dialog({ title, close, children, className }: {
     dialog?.showModal();
     return () => dialog?.close();
   }, []);
-  return <dialog ref={element} className={className} onCancel={event => { event.preventDefault(); close(); }} aria-label={title}>
+  return <dialog ref={element} className={className} onCancel={event => { event.preventDefault(); if (!closeDisabled) close(); }}
+    onKeyDown={onKeyDown} aria-label={title}>
     <div className="dialog-head"><h2>{title}</h2>
-      <button className="icon-button" aria-label="Close dialog" onClick={close}><X size={19} /></button>
+      <button className="icon-button" aria-label="Close dialog" onClick={close} disabled={closeDisabled}><X size={19} /></button>
     </div>
     {children}
   </dialog>;

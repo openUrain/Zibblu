@@ -1,5 +1,5 @@
 import {
-  AtSign, Bot, Check, ChevronRight, Clock3, FileText, ListChecks,
+  AtSign, Bot, ChevronRight, CircleCheck, Clock3, FileText, ListChecks,
   LockKeyhole, MessageSquare, Paperclip, Send, X,
 } from "lucide-react";
 import { useContext, useEffect, useId, useMemo, useRef, useState } from "react";
@@ -8,7 +8,7 @@ import { ai, aiProviders } from "./ai-api";
 import type { AiFile, AiPreview, AiProvider, AiReply, AiScope, Assistant } from "./ai-api";
 import { api, errorMessage } from "./api";
 import type { Message, User } from "./api";
-import { bytes, Dialog, People, displayName } from "./common";
+import { bytes, Choice, Dialog, People, displayName } from "./common";
 import "./ai.css";
 
 const MAX_MESSAGES = 60;
@@ -158,6 +158,7 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
   const [previewFailure, setPreviewFailure] = useState("");
   const [preparing, setPreparing] = useState(true);
   const [spent, setSpent] = useState(false);
+  const scopeName = useId();
   const { remarks } = useContext(People);
   const chosenAssistant = preview?.assistant ?? assistant;
   const provider = aiProviders[chosenAssistant.provider].label;
@@ -233,8 +234,8 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
       <fieldset className="ai-section">
         <legend>Message context</legend>
         <div className="ai-segments">
-          {scopes.map(({ kind: value, label, Icon }) => <button key={value} type="button" aria-pressed={kind === value}
-            onClick={() => { if (kind !== value) updateSelection(() => setKind(value)); }} disabled={disabled}><Icon size={16} />{label}</button>)}
+          {scopes.map(({ kind: value, label, Icon }) => <Choice key={value} type="radio" name={scopeName} checked={kind === value}
+            onChange={() => updateSelection(() => setKind(value))} disabled={disabled}><Icon size={16} /><span>{label}</span></Choice>)}
         </div>
         {kind === "recent" && <label className="ai-recent">Include the latest
           <select value={limit} onChange={event => updateSelection(() => setLimit(Number(event.target.value)))} disabled={disabled}>
@@ -246,11 +247,11 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
           <div className="ai-message-options">
             {messages.filter(message => message.text !== null).map(message => {
               const checked = sequences.includes(message.seq);
-              return <label key={message.seq} className="ai-message-option">
-                <input type="checkbox" checked={checked} disabled={disabled || (!checked && sequences.length >= MAX_MESSAGES)}
-                  onChange={() => updateSelection(() => setSequences(current => checked ? current.filter(seq => seq !== message.seq) : [...current, message.seq]))} />
+              return <Choice key={message.seq} className="ai-message-option" checked={checked}
+                disabled={disabled || (!checked && sequences.length >= MAX_MESSAGES)}
+                onChange={() => updateSelection(() => setSequences(current => checked ? current.filter(seq => seq !== message.seq) : [...current, message.seq]))}>
                 <span><strong>{displayName(message.sender, remarks)}</strong><span>{message.text}</span></span>
-              </label>;
+              </Choice>;
             })}
             {!messages.some(message => message.text !== null) && <p className="muted">No text messages to select.</p>}
             {hasMore && <button className="button subtle" type="button" disabled={loading || disabled}
@@ -328,12 +329,11 @@ export function ShareAiReply({ reply, members, close, published }: {
     <p className="muted">Share this reply with the selected chat members. You will also be able to see it.</p>
     <fieldset className="dialog-contacts" disabled={posting || !!lockedReaders.current}>
       <legend>Chat members</legend>
-      {members.map(user => <label className="check-contact" key={user.id}>
-        <input type="checkbox" checked={readers.includes(user.id)} onChange={event => {
+      {members.map(user => <Choice key={user.id} checked={readers.includes(user.id)} onChange={event => {
           setReaders(event.target.checked ? [...readers, user.id] : readers.filter(id => id !== user.id));
-        }} />
+        }}>
         <span>{displayName(user, remarks)}</span>
-      </label>)}
+      </Choice>)}
     </fieldset>
     {tooLong && <p className="inline-error">Replies up to 24 KiB can be shared.</p>}
     {failure && <p className="inline-error" role="alert">{failure}</p>}
@@ -356,7 +356,7 @@ export function AssistantMenu({ id, assistants, active, choose, settings }: {
         onClick={() => choose(assistant)}>
         <ProviderLogo provider={assistant.provider} />
         <span><strong>@{assistant.name}</strong><small>{aiProviders[assistant.provider].label} · {assistant.model}</small></span>
-        {active === index && <Check size={15} />}
+        {active === index && <CircleCheck size={15} aria-hidden="true" />}
       </button>)}
     </div>
     {assistants.length === 0 && <button className="ai-mention-option" type="button" onClick={settings}>

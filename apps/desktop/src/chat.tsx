@@ -1,5 +1,5 @@
 import {
-  ArrowDown, ArrowLeft, ArrowRight, AtSign, CheckCheck, Copy, FilePlus2, FolderOpen, Ghost, LockKeyhole,
+  ArrowDown, ArrowLeft, ArrowRight, AtSign, CheckCheck, Copy, Download, FilePlus2, FolderOpen, Ghost, LockKeyhole,
   MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Reply, Search, Send, Trash2, Undo2, UsersRound, X,
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
@@ -9,9 +9,10 @@ import type { AiReply, Assistant } from "./ai-api";
 import { AiRequest, AssistantMenu, ProviderLogo, ShareAiReply } from "./ai";
 import { api, errorMessage } from "./api";
 import type { Conversation, Draft, Message, Page, PrivateSummary, ShareSource, Transfer, User } from "./api";
-import { Avatar, Blank, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName, messageTimeLabel, startsTimeGroup, usePage } from "./common";
+import { Avatar, Blank, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName, messageTimeLabel, startsTimeGroup, usePage } from "./common";
 import { useMenu } from "./context-menu";
-import { FilesView, SharedFile, TransferList } from "./files";
+import { FilesView, TransferList, useAttachmentSave } from "./files";
+import { ChatAttachment, MediaHistory, MediaViewer } from "./chat-media";
 import { privatePhaseLabel, privateTitle } from "./private-chat";
 
 export function ChatList({ chats, own, selected, open, newChat, rooms, activePrivate, openPrivate, createQr }: {
@@ -75,6 +76,7 @@ export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffs
 } & ChatDraft) {
   const [showFiles, setShowFiles] = useState(false);
   const [search, setSearch] = useState(false);
+  const [media, setMedia] = useState<Message>();
   const openMenu = useMenu();
   const { remarks, open } = useContext(People);
   const name = chatName(chat, own.id, remarks);
@@ -97,23 +99,35 @@ export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffs
     {showFiles
       ? <FilesView conversation={chat.id} people={chat.members} transfers={transfers} revision={revision} recalled={recalled} hidden={hidden} onChanged={changed} />
       : <ChatMessages chat={chat} own={own} revision={revision} latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset} transfers={transfers}
-        changed={changed} refresh={refresh} share={share} aiChat={aiChat} {...{ hidden, hide, readReceipts, draft, setDraft }} />}
-    {search && <ChatSearch conversation={chat.id} revision={revision} latestAiSeq={latestAiSeq} recalled={recalled} hidden={hidden} close={() => setSearch(false)} />}
+        changed={changed} refresh={refresh} share={share} aiChat={aiChat} openMedia={setMedia} {...{ hidden, hide, readReceipts, draft, setDraft }} />}
+    {search && <ChatSearch conversation={chat.id} {...{ revision, latestAiSeq, recalled, hidden }}
+      openMedia={setMedia} close={() => setSearch(false)} />}
+    {media && <MediaViewer message={media} conversation={chat.id} {...{ revision, recalled, hidden, transfers }}
+      open={setMedia} close={() => setMedia(undefined)} onChanged={changed} />}
   </section>;
 }
 
-function ChatSearch({ conversation, revision, latestAiSeq, recalled, hidden, close }: {
+function ChatSearch({ conversation, revision, latestAiSeq, recalled, hidden, openMedia, close }: {
   conversation: string; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; hidden: ReadonlySet<number>; close: () => void;
+  openMedia: (message: Message) => void;
 }) {
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
+  const [tab, setTab] = useState<"text" | "media">("text");
   return <Dialog title="Search chat" close={close}>
-    <form className="chat-search" onSubmit={event => { event.preventDefault(); setSearch(query.trim()); }}>
-      <label className="search"><Search size={16} /><input aria-label="Search message text" value={query}
-        onChange={event => setQuery(event.target.value)} placeholder="Search message text" autoFocus /></label>
-      <button className="button primary" type="submit" disabled={!query.trim()}>Search</button>
-    </form>
-    {search && <SearchResults key={search} {...{ conversation, search, revision, latestAiSeq, recalled, hidden }} />}
+    <fieldset className="tabs">
+      <legend className="sr-only">Search chat by</legend>
+      <Choice type="radio" name="chat-search" checked={tab === "text"} onChange={() => setTab("text")}>Messages</Choice>
+      <Choice type="radio" name="chat-search" checked={tab === "media"} onChange={() => setTab("media")}>Photos and videos</Choice>
+    </fieldset>
+    {tab === "media" ? <MediaHistory {...{ conversation, revision, recalled, hidden }} open={openMedia} /> : <>
+      <form className="chat-search" onSubmit={event => { event.preventDefault(); setSearch(query.trim()); }}>
+        <label className="search"><Search size={16} /><input aria-label="Search message text" value={query}
+          onChange={event => setQuery(event.target.value)} placeholder="Search message text" autoFocus /></label>
+        <button className="button primary" type="submit" disabled={!query.trim()}>Search</button>
+      </form>
+      {search && <SearchResults key={search} {...{ conversation, search, revision, latestAiSeq, recalled, hidden }} />}
+    </>}
   </Dialog>;
 }
 
@@ -137,10 +151,11 @@ function SearchResults({ conversation, search, revision, latestAiSeq, recalled, 
 }
 
 function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, share, aiChat,
-  hidden, hide, readReceipts, draft, setDraft }: {
+  hidden, hide, readReceipts, draft, setDraft, openMedia }: {
   chat: Conversation; own: User; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
   refresh: () => Promise<void>; share: (source: ShareSource) => Promise<void>; aiChat: ChatAssistants;
   hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean;
+  openMedia: (message: Message) => void;
 } & ChatDraft) {
   const read = useCallback((before?: number) => api.messages(chat.id, before), [chat.id]);
   const { page, failure, loading, older, newestAtOpen, loadedRevision } = usePage(read, revision, recalled, true, latestAiSeq, hidden);
@@ -153,6 +168,8 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
   const [sharingReply, setSharingReply] = useState<AiReply>();
   const [seen, setSeen] = useState<ReadonlySet<number>>(new Set());
   const openMenu = useMenu();
+  const { save, saving, failure: saveFailure } = useAttachmentSave(changed);
+  const press = useRef<{ anchor: HTMLElement; x: number; y: number; timer: number; opened: boolean; released?: number }>(undefined);
   const lastSeq = page?.items[0]?.seq;
   const pending = transfers.filter(job => job.direction === "upload" && job.conversation_id === chat.id && job.status !== "complete");
   const downloads = new Map(transfers.filter(job => job.direction === "download").map(job => [job.attachment.id, job]));
@@ -165,7 +182,9 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
     .map(message => message.seq) ?? [] : []);
   const readThrough = !away && loadedRevision === revision && chat.latest_seq <= revision && chat.latest_seq > chat.read_through
     ? chat.latest_seq : undefined;
-  let groupStart: number | undefined;
+  let previousTime: number | undefined;
+
+  useEffect(() => () => window.clearTimeout(press.current?.timer), []);
 
   useEffect(() => {
     const sequences: number[] = JSON.parse(sent);
@@ -226,10 +245,17 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
     setAway(!nearBottom.current);
   }
 
+  function openedByPress(anchor: HTMLElement) {
+    const active = press.current;
+    return active?.anchor === anchor && active.opened
+      && (active.released === undefined || Date.now() - active.released < 500);
+  }
+
   return <><div className="timeline-wrap">
     <div className="timeline" ref={viewport} onScroll={checkScroll}>
       {failure && <p className="inline-error" role="alert">{failure}</p>}
       {recallError && <p className="inline-error" role="alert">{recallError}</p>}
+      {saveFailure && <p className="inline-error" role="alert">{saveFailure}</p>}
       {!page && !failure && <p className="muted loading" role="status">Loading messages…</p>}
       {page?.has_more && <button className="button subtle more" disabled={loading} onClick={() => void older()}>Load older messages</button>}
       {page && history.length === 0 && pending.length === 0 && <Blank icon={<MessageCircle size={27} />} title="Start the conversation">
@@ -239,8 +265,8 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
         {history.map(({ message, reply, key, time }) => {
           const provider = message?.ai_provider ?? reply?.provider;
           const mine = message?.sender.id === own.id;
-          const newGroup = startsTimeGroup(time, groupStart);
-          if (newGroup) groupStart = time;
+          const newGroup = startsTimeGroup(time, previousTime);
+          previousTime = time;
           const animated = !!reply || (!!message && newestAtOpen !== undefined && message.seq > newestAtOpen);
           const canRecall = !!message && mine && !provider && !message.recalled && Date.now() + clockOffset - time <= 5 * 60_000;
           const avatar = provider ? <ProviderLogo provider={provider} /> : <button className="person-link message-avatar"
@@ -248,9 +274,13 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
             <PersonAvatar user={message!.sender} />
           </button>;
           const text = message?.text ?? reply?.text;
+          const file = message?.attachment;
+          const download = file ? downloads.get(file.id) : undefined;
           function actions(selection?: string) {
             const copy = selection || text;
             return [
+              ...(file && (!download || download.status === "complete") ? [{ label: "Save attachment", icon: <Download size={15} />,
+                disabled: saving, action: () => void save(file.id) }] : []),
               ...(copy ? [{ label: "Copy", icon: <Copy size={15} />, action: () => {
                 void navigator.clipboard.writeText(copy).catch(error => setRecallError(errorMessage(error)));
               } }] : []),
@@ -267,17 +297,56 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
             {newGroup && <div className="day-divider"><time dateTime={new Date(time).toISOString()}>{messageTimeLabel(time)}</time></div>}
             <div className={"message-row" + (mine ? " mine" : "") + (animated ? " message-arrival" : "")}
               onContextMenu={event => {
+                window.clearTimeout(press.current?.timer);
                 const selection = window.getSelection()?.toString();
                 event.preventDefault();
-                openMenu(event.currentTarget, actions(selection), { x: event.clientX, y: event.clientY });
-              }}>
-              {!mine && !message?.attachment && avatar}
-              <div className="message-body">
-                {!provider && !mine && !message?.attachment && <span className="message-author">{displayName(message!.sender, remarks)}</span>}
+                if (!openedByPress(event.currentTarget)) openMenu(event.currentTarget, actions(selection),
+                  event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : undefined);
+              }}
+              onPointerDown={file ? event => {
+                window.clearTimeout(press.current?.timer);
+                press.current = undefined;
+                if (event.pointerType === "mouse" || !event.isPrimary
+                  || !(event.target instanceof Element && event.target.closest(".media-tile, .file-main"))) return;
+                const anchor = event.currentTarget;
+                const point = { x: event.clientX, y: event.clientY };
+                const timer = window.setTimeout(() => {
+                  if (!press.current || !anchor.isConnected) return;
+                  press.current.opened = true;
+                  openMenu(anchor, actions(), point);
+                }, 550);
+                press.current = { ...point, anchor, timer, opened: false };
+              } : undefined}
+              onPointerMove={file ? event => {
+                const active = press.current;
+                if (active && Math.hypot(event.clientX - active.x, event.clientY - active.y) > 10) window.clearTimeout(active.timer);
+              } : undefined}
+              onPointerUp={file ? () => {
+                if (press.current) {
+                  window.clearTimeout(press.current.timer);
+                  press.current.released = Date.now();
+                }
+              } : undefined}
+              onPointerLeave={file ? () => window.clearTimeout(press.current?.timer) : undefined}
+              onPointerCancel={file ? () => {
+                window.clearTimeout(press.current?.timer);
+                press.current = undefined;
+              } : undefined}
+              onClickCapture={file ? event => {
+                if (openedByPress(event.currentTarget) && event.detail > 0) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  press.current = undefined;
+                }
+              } : undefined}>
+              {!mine && avatar}
+              <div className={"message-body" + (file ? " attachment-body" : "")}>
+                {!provider && !mine && <span className="message-author">{displayName(message!.sender, remarks)}</span>}
                 {message?.reply_to !== undefined && !message.recalled && <QuotedMessage conversation={chat.id} seq={message.reply_to}
                   known={bySequence.get(message.reply_to)} hidden={hidden.has(message.reply_to) || recalled.has(message.reply_to)} />}
                 {message?.recalled ? <div className="bubble recalled-message">Message recalled</div>
-                  : message?.attachment ? <SharedFile message={message} transfer={downloads.get(message.attachment.id)} onChanged={changed} compact />
+                  : message && file ? <ChatAttachment key={file.id} message={message} transfer={download}
+                    onChanged={changed} open={() => openMedia(message)} />
                     : <div className="bubble">{message?.text ?? reply?.text}</div>}
                 <div className="message-meta">
                   {message && readReceipts && seen.has(message.seq) && !message.recalled && <span className="read-mark" aria-label="Read" title="Read"><CheckCheck size={15} /></span>}
@@ -290,17 +359,19 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                     onClick={event => openMenu(event.currentTarget, actions())}><MoreHorizontal size={16} /></button>
                 </div>
               </div>
-              {mine && !message?.attachment && avatar}
+              {mine && avatar}
             </div>
           </Fragment>;
         })}
       </div>
-      {pending.length > 0 && <div className="pending-chat"><TransferList transfers={pending} onChanged={changed} /></div>}
     </div>
     {away && <button className="button subtle jump-bottom" onClick={() => {
       if (viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
     }}><ArrowDown size={15} /> Latest messages</button>}
   </div>
+    {pending.length > 0 && <section className="composer-transfers" aria-label="Pending uploads">
+      <TransferList transfers={pending} onChanged={changed} inChat />
+    </section>}
     <Composer conversation={chat.id} refresh={refresh} share={share} changed={changed} aiChat={aiChat}
       page={page} loading={loading} older={older} draft={draft} setDraft={setDraft}
       quoteUnavailable={!!draft.quote && (recalled.has(draft.quote.seq) || hidden.has(draft.quote.seq))} />
@@ -443,8 +514,8 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
       {ambiguous && <p className="inline-error" role="alert">Rename one of the matching assistants in Settings.</p>}
       {menu && <AssistantMenu id={menuId} assistants={suggestions} active={menuIndex}
         choose={choose} settings={aiChat.settings} />}
-      <fieldset className={"composer-box floating-field" + (assistant ? " ai-composer" : "")}>
-        <legend><label htmlFor={menuId + "-message"}>{assistant ? "Write a prompt…" : "Write a message…"}</label></legend>
+      <div className={"composer-box" + (draft.length > 0 ? " has-text" : "") + (assistant ? " ai-composer" : "")}>
+        <label className="composer-label" htmlFor={menuId + "-message"}>{assistant ? "Write a prompt" : "Write a message"}</label>
         <textarea ref={textarea} id={menuId + "-message"} aria-label={assistant ? "AI prompt" : "Message"}
           aria-autocomplete="list" aria-controls={menu ? menuId : undefined}
           aria-activedescendant={menu && activeOption ? menuId + "-" + menuIndex : undefined}
@@ -507,7 +578,7 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
                 setMenuIndex(0);
                 textarea.current?.focus();
               }}><AtSign size={19} /></button>
-            {!assistant && <span className="drop-hint">{preparing ? "Preparing attachment…" : "Drop a file or folder to share"}</span>}
+            {preparing && <span className="drop-hint" role="status">Preparing attachment…</span>}
           </div>
           <button className="button primary send-button" type="submit"
             disabled={(!draft.trim() && !pastedImage) || ambiguous || quoteUnavailable || oversized || sending || (!!assistant && (!view || !prompt))}
@@ -516,7 +587,7 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
               : <><span>{sending ? "Sending…" : "Send"}</span><Send size={16} /></>}
           </button>
         </div>
-      </fieldset>
+      </div>
     </form>
     {view && request && <AiRequest view={view} draft={request.id} assistant={request.assistant} prompt={request.prompt}
       messages={page?.items ?? []} hasMore={page?.has_more ?? false} loading={loading} older={older} conversation={conversation}
