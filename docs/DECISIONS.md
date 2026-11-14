@@ -15,6 +15,12 @@ Small, durable decisions only. Add a dated entry when an actual choice changes; 
 | D-009 | M2 uses short-lived account-bound device certificates, signed per-account approval, and a temporary room coordinated by the initiating device. Managed sites can opt in to routed private subnets. | Invitations and QR joins work across devices without sending private content through the account service. | Accepted |
 | D-010 | Normal group QR admission grants access from the message sequence recorded at join. | New members see post-join messages and attachments. | Accepted |
 | D-011 | M3 sends a one-use snapshot directly to a configured provider. Replies start in local memory; sharing requires a separate explicit normal-chat post. | The authorization covers a single inference request and the user controls group visibility. | Accepted |
+| D-012 | Cross-platform design authority is `docs/DESIGN_SYSTEM.md`: Apple-like restraint, **Lavender** hue, iMessage-led polish and subtle Snapchat playfulness. Exact brand HEX pending visual approval. | One coherent identity across Windows, mobile and tablet without relying on another brand's assets. | Accepted |
+| D-013 | **Chat and profile/settings reference WeChat**; keep existing Zibblu message bubbles. Desktop uses three panes; phone four bottom tabs; tablet two panes; maintain native platform fonts and gestures. | Preserve familiar interaction logic while avoiding destructive bubble redesign or pixel-identical platform copies. | Accepted |
+| D-014 | **Files view lists only non-inline-previewable/download-required ordinary attachments.** Photos/videos live in chat media history. File cards and in-chat transfer progress follow WeChat; management and media viewer capabilities follow QQ. | Separate media discovery from downloadable documents; combine QQ efficiency with a quiet chat surface. | Accepted |
+| D-015 | Normal UI is **light with subtle Lavender tint**; M2 private mode remains independently dark. Mostly flat, small-radius controls; glass only for overlays, line icons with filled selected state, natural restrained motion. | Maintain usability, legibility and consistent appearance without overdecorating. | Accepted |
+| D-016 | Keep AI visually integrated in ordinary chat, with explicit one-shot authorization; forbid excess ornamentation, crowded controls and inconsistent interaction logic. | Visual simplicity must not conceal M2 safety or M3 disclosure states. | Accepted |
+
 
 ## Open decisions
 
