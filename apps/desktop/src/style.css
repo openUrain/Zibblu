@@ -78,7 +78,7 @@ select:disabled { color: var(--muted); background: var(--soft); }
 input[type="range"] { accent-color: var(--accent); }
 ::placeholder { color: var(--muted); opacity: .9; }
 ::selection { background: var(--own); color: var(--ink); }
-button svg, .brand svg { flex: none; }
+button svg { flex: none; }
 svg { vertical-align: middle; }
 .muted, small { color: var(--muted); }
 .danger { color: var(--danger); }
@@ -88,11 +88,7 @@ svg { vertical-align: middle; }
   clip-path: inset(50%); white-space: nowrap;
 }
 
-.brand {
-  display: inline-grid; place-items: center; flex: none; width: 42px; height: 42px;
-  border-radius: 14px; color: #fff; background: linear-gradient(145deg, #8578fa, #5b4ce1 72%);
-  box-shadow: inset 0 0 0 1px #ffffff35, 0 5px 12px #201a5652;
-}
+.brand { display: block; flex: none; }
 .button, .icon-button, .square-primary {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   border: 1px solid transparent; border-radius: 9px; font-weight: 600; line-height: 1.2;

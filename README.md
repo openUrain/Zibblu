@@ -30,7 +30,7 @@ M1 uses **Tauri 2 + React + TypeScript**, a **Rust/Tokio** client, per-account *
 
 ## Install Zibblu on Windows
 
-1. On Windows 10 or 11 x64, run `Zibblu_0.1.1_x64_Client_Setup.exe`. Setup installs the desktop client for the current user. If Microsoft WebView2 is missing, setup downloads and installs it. No PostgreSQL, Rust, Docker, or local chat server is needed.
+1. On Windows 10 or 11 x64, download and run `Zibblu_0.1.2_x64_Client_Setup.exe` from the [v0.1.2 release](https://github.com/openUrain/Zibblu/releases/tag/v0.1.2). Setup installs the desktop client for the current user. If Microsoft WebView2 is missing, setup downloads and installs it. No PostgreSQL, Rust, Docker, or local chat server is needed.
 2. Open **Zibblu** from the Start menu. **Zibblu Online** selects the official server at `https://zibblu-api.openurain.com`. Create an account or sign in. The app shows **Connected** once it has synchronized with the server.
 3. In **Contacts**, find a friend by username and send a contact request. After approval you can start a conversation and share files.
 
@@ -38,7 +38,7 @@ The official service currently runs on the owner's Windows host through Cloudfla
 
 Use **Advanced** on the sign-in screen for a custom HTTPS origin without a path. Local development also supports `http://127.0.0.1:7841`. An upgrade keeps the last saved server, including the old loopback address. To switch to the official server, choose **Advanced → Use Zibblu Online** and sign in to an account there. The new choice is remembered after successful sign-in. Local histories stay separate by server and account. If you use an existing LAN Host or `Join-Zibblu.cmd` profile, keep using that launcher for its data directory and certificate configuration.
 
-The v0.1.1 client installer is prepared for Owner acceptance. The [v0.1.0 LAN Host release](https://github.com/openUrain/Zibblu/releases/tag/v0.1.0) is the older self-hosted package. It bundles PostgreSQL and the chat service and creates `Zibblu-Join.zip` for LAN users.
+The [v0.1.0 LAN Host release](https://github.com/openUrain/Zibblu/releases/tag/v0.1.0) is the older self-hosted package. It bundles PostgreSQL and the chat service and creates `Zibblu-Join.zip` for LAN users.
 
 ## Development and self-hosting
 
@@ -74,7 +74,7 @@ npm ci
 npm run tauri build -- --bundles nsis --target x86_64-pc-windows-msvc -- --locked
 ```
 
-The setup executable is `Zibblu_0.1.1_x64-setup.exe` under `target/x86_64-pc-windows-msvc/release/bundle/nsis` at the repository root. Name the acceptance copy `Zibblu_0.1.1_x64_Client_Setup.exe`. The installer preserves the existing Windows installer identity and defaults to the data directory `%LOCALAPPDATA%\com.zibblu.desktop`, separate from the installed executable.
+The setup executable is `Zibblu_0.1.2_x64-setup.exe` under `target/x86_64-pc-windows-msvc/release/bundle/nsis` at the repository root. The release asset is named `Zibblu_0.1.2_x64_Client_Setup.exe`. The installer preserves the existing Windows installer identity and defaults to the data directory `%LOCALAPPDATA%\com.zibblu.desktop`, separate from the installed executable.
 
 On a clean Windows 10 or 11 system, install and sign in with a test account. Change the theme, open a normal chat and save an attachment. Minimize and restore the app from the taskbar, then close it with **X** and start it again. Sign in and check that the server, theme and chat history are still available. With the app closed, run setup again and repeat that check. Uninstall without selecting the option to delete app data, reinstall, and check that the profile is still present. Use a small display or higher DPI to check that the native file and invitation controls remain reachable.
 
