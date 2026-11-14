@@ -3,21 +3,22 @@ import type { MouseEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ClipboardPaste, Copy, TextCursorInput } from "lucide-react";
 
-type Item = { label: string; action: () => void; disabled?: boolean; icon?: ReactNode };
-type Menu = { x: number; y: number; anchor: HTMLElement; items: Item[]; restoreFocus: HTMLElement | null };
-const OpenMenu = createContext<(anchor: HTMLElement, items: Item[], point?: { x: number; y: number }) => void>(() => {});
+export type MenuItem = { label: string; action: () => void; disabled?: boolean; icon?: ReactNode };
+type Menu = { x: number; y: number; anchor: HTMLElement; items: MenuItem[]; restoreFocus: HTMLElement | null };
+const OpenMenu = createContext<(anchor: HTMLElement, items: MenuItem[], point?: { x: number; y: number }) => void>(() => {});
 export const useMenu = () => useContext(OpenMenu);
 
 export function DesktopMenus({ children }: { children: ReactNode }) {
   const [menu, setMenu] = useState<Menu>();
   const panel = useRef<HTMLDivElement>(null);
 
-  function open(anchor: HTMLElement, items: Item[], point?: { x: number; y: number }) {
+  function open(anchor: HTMLElement, items: MenuItem[], point?: { x: number; y: number }) {
     if (!items.some(item => !item.disabled)) { setMenu(undefined); return; }
     const rect = anchor.getBoundingClientRect();
     setMenu({
       x: point?.x ?? rect.left, y: point?.y ?? rect.bottom + 4, anchor, items,
-      restoreFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+      restoreFocus: anchor.matches("button") ? anchor
+        : document.activeElement instanceof HTMLElement ? document.activeElement : null,
     });
   }
 
@@ -65,7 +66,7 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     const password = field instanceof HTMLInputElement && field.type === "password";
     const start = field?.selectionStart ?? null;
     const end = field?.selectionEnd ?? null;
-    const items: Item[] = [];
+    const items: MenuItem[] = [];
     if (!privateChat && !password) {
       const text = field ? start !== null && end !== null ? field.value.slice(start, end) : "" : window.getSelection()?.toString();
       if (text) items.push({
@@ -97,13 +98,14 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
           if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); }
           close(true);
         }
-        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
           event.preventDefault();
           const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
           if (!items.length) return;
           const index = items.indexOf(document.activeElement as HTMLButtonElement);
-          const step = event.key === "ArrowDown" ? 1 : -1;
-          items[(index + step + items.length) % items.length]?.focus();
+          const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+            : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+          items[next]?.focus();
         }
       }}>
       {menu.items.map(item => <button type="button" role="menuitem" key={item.label} disabled={item.disabled}

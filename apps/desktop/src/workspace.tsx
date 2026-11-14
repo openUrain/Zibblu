@@ -10,7 +10,7 @@ import type { AiReply, Assistant } from "./ai-api";
 import { AssistantSettings } from "./ai";
 import { api, errorMessage, isExpired } from "./api";
 import type { Conversation, ConversationRequest, Directory, Draft, DropOffer, Session, ShareSource, Transfer, User } from "./api";
-import { Blank, Brand, Dialog, People, PersonAvatar, chatName, displayName } from "./common";
+import { Blank, Brand, Choice, Dialog, People, PersonAvatar, chatName, displayName } from "./common";
 import { ChatList, ChatView } from "./chat";
 import { FilesView } from "./files";
 import { NearbyDevices, PrivateChatView, PrivateInvitationOverlay, PrivateTargets, usePrivateRooms } from "./private-chat";
@@ -37,6 +37,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, signedOut }:
   const [hidden, setHidden] = useState<ReadonlySet<number>>(new Set());
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [profile, setProfile] = useState<User>();
+  const [profileNotice, setProfileNotice] = useState(0);
   const refreshInFlight = useRef<Promise<void> | null>(null);
   const [clockOffset, setClockOffset] = useState(0);
   const [selected, setSelected] = useState<string>();
@@ -58,6 +59,12 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, signedOut }:
   const [offer, setOffer] = useState<DropOffer & { conversation: string }>();
   const [sharing, setSharing] = useState(false);
   const [leaving, setLeaving] = useState(false);
+
+  useEffect(() => {
+    if (!profileNotice) return;
+    const timer = window.setTimeout(() => setProfileNotice(0), 3000);
+    return () => window.clearTimeout(timer);
+  }, [profileNotice]);
 
   function setDraft(key: string, change: (draft: Draft) => Draft) {
     setDrafts(previous => {
@@ -282,15 +289,26 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, signedOut }:
   const offeredChat = directory.conversations.find(chat => chat.id === offer?.conversation);
   const connected = connection === "Connected";
   const invitation = privateRooms.find(room => room.id === prompt);
+  const attention: Partial<Record<Navigation, string>> = {
+    Chats: directory.conversations.some(chat => chat.unread > 0) ? "Unread messages" : undefined,
+    Contacts: directory.pending_contacts.some(request => request.incoming) ? "Pending contact requests" : undefined,
+    Files: transfers.some(transfer => transfer.status !== "complete") ? "Unfinished transfers" : undefined,
+  };
 
   return <People.Provider value={{ remarks: directory.remarks, avatars: directory.avatars, open: setProfile }}><main className="shell">
     <nav className="rail" aria-label="Main navigation">
       <div className="rail-brand"><Brand /></div>
       <div className="rail-links">{pages.map(({ name, Icon }) =>
         <button key={name} className={nav === name ? "nav-active" : ""} aria-label={name}
+          aria-describedby={attention[name] ? `rail-status-${name}` : undefined}
           aria-current={nav === name ? "page" : undefined} onClick={() => navigate(name)}>
-          <Icon size={22} strokeWidth={1.9} /><span>{name}</span>
+          <span className="rail-icon"><Icon size={22} strokeWidth={1.9} />
+            {attention[name] && <span className="rail-dot" aria-hidden="true" />}
+          </span><span>{name}</span>
         </button>)}</div>
+      <div className="sr-only" aria-live="polite" aria-atomic="true">
+        {pages.map(({ name }) => <span key={name} id={`rail-status-${name}`}>{attention[name] && `${attention[name]}. `}</span>)}
+      </div>
       <button className="rail-account" title={"@" + session.user.handle} aria-label="Your profile" onClick={() => setProfile(session.user)}>
         <PersonAvatar user={session.user} />
       </button>
@@ -372,10 +390,14 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, signedOut }:
     {profile && <ProfileView key={profile.id} user={profile}
       relationVersion={directory.contacts.some(person => person.id === profile.id) ? "contact"
         : directory.pending_contacts.find(request => request.user.id === profile.id)?.request_id ?? "other"}
-      refresh={refresh} close={() => setProfile(undefined)}
+      refresh={refresh} close={() => setProfile(undefined)} saved={() => {
+        setProfile(current => current?.id === profile.id ? undefined : current);
+        setProfileNotice(Date.now());
+      }}
       message={async () => { await create({ kind: "direct", contact_id: profile.id }); setProfile(undefined); }}
       code={() => { setProfile(undefined); setShareCode({ kind: "contact", name: "Your contact QR code", value: session.user.handle }); }} />}
     {invitation && <PrivateInvitationOverlay key={invitation.id} room={invitation} />}
+    <div className="profile-notice" role="status">{profileNotice > 0 && <span key={profileNotice} lang="zh-Hans">信息已更新</span>}</div>
   </main></People.Provider>;
 }
 
@@ -487,20 +509,20 @@ function NewChat({ contacts, create, close, findPeople }: {
       <p>Add a contact to start a conversation.</p>
       <button className="button primary" onClick={findPeople}>Find contacts <ArrowRight size={16} /></button>
     </div> : <>
-      <div className="tabs">
-        <button className={!group ? "active-tab" : ""} aria-pressed={!group} disabled={busy} onClick={() => { setGroup(false); setFailure(""); }}>Direct message</button>
-        <button className={group ? "active-tab" : ""} aria-pressed={group} disabled={busy} onClick={() => { setGroup(true); setFailure(""); }}>Group</button>
-      </div>
+      <fieldset className="tabs" disabled={busy}>
+        <legend className="sr-only">Conversation type</legend>
+        <Choice type="radio" name="conversation-type" checked={!group} onChange={() => { setGroup(false); setFailure(""); }}>Direct message</Choice>
+        <Choice type="radio" name="conversation-type" checked={group} onChange={() => { setGroup(true); setFailure(""); }}>Group</Choice>
+      </fieldset>
       {group ? <form className="group-form" onSubmit={submit}>
         <label>Group name<input required maxLength={64} value={title} onChange={event => setTitle(event.target.value)} /></label>
-        <fieldset><legend>Choose 2–15 contacts</legend><div className="dialog-contacts">{contacts.map(user => {
+        <fieldset className="dialog-contacts"><legend>Choose 2–15 contacts</legend>{contacts.map(user => {
           const checked = members.includes(user.id);
-          return <label key={user.id} className="check-contact">
-            <input type="checkbox" checked={checked} disabled={busy || (!checked && members.length >= 15)}
-              onChange={() => setMembers(current => checked ? current.filter(id => id !== user.id) : [...current, user.id])} />
-            <PersonAvatar user={user} /> {displayName(user, remarks)}
-          </label>;
-        })}</div></fieldset>
+          return <Choice key={user.id} checked={checked} disabled={busy || (!checked && members.length >= 15)}
+            onChange={() => setMembers(current => checked ? current.filter(id => id !== user.id) : [...current, user.id])}>
+            <PersonAvatar user={user} /><span>{displayName(user, remarks)}</span>
+          </Choice>;
+        })}</fieldset>
         {failure && <p className="inline-error" role="alert">{failure}</p>}
         <button className="button primary" type="submit" disabled={busy || members.length < 2 || !title.trim()}>Create group</button>
       </form> : <>
@@ -536,15 +558,17 @@ function SettingsView({ session, leaving, signOut, privateQuiet, setPrivateQuiet
       </div>
     </div>
     <div className="surface settings-card">
-      <label className="check-contact">
+      <label className="choice setting-switch">
+        <span>Read receipts<small>Both people must enable receipts to share read status.</small></span>
         <input type="checkbox" role="switch" checked={readReceipts} disabled={saving}
           onChange={event => { const enabled = event.target.checked; void save(() => setReadReceipts(enabled)); }} />
-        <span>Read receipts<small>Both people must enable receipts to share read status.</small></span>
+        <span className="switch-track" aria-hidden="true" />
       </label>
-      <label className="check-contact">
+      <label className="choice setting-switch">
+        <span>Pause private invitation pop-ups<small>Pending invitations stay in Private chats.</small></span>
         <input type="checkbox" role="switch" checked={privateQuiet} disabled={saving}
           onChange={event => { const quiet = event.target.checked; void save(() => setPrivateQuiet(quiet)); }} />
-        <span>Pause private invitation pop-ups<small>Pending invitations stay in Private chats.</small></span>
+        <span className="switch-track" aria-hidden="true" />
       </label>
       {failure && <p className="inline-error" role="alert">{failure}</p>}
     </div>
