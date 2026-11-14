@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 client = [
   "dep:anyhow", "dep:reqwest", "dep:serde_json", "dep:sha2", "dep:sqlx",
-  "dep:tempfile", "dep:thiserror", "dep:tokio", "dep:walkdir", "dep:zip",
+  "dep:rustls", "dep:tempfile", "dep:thiserror", "dep:tokio", "dep:walkdir", "dep:zip",
 ]
 private-chat = [
   "dep:anyhow", "dep:hickory-resolver", "dep:if-addrs", "dep:ipnet", "dep:mdns-sd",
@@ -26,6 +26,7 @@ quinn = { version = "0.11", default-features = false, features = ["runtime-tokio
 rcgen = { version = "0.14", default-features = false, features = ["ring"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json"], optional = true }
 ring = { version = "0.17", optional = true }
+rustls = { version = "0.23", default-features = false, optional = true }
 serde.workspace = true
 serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }

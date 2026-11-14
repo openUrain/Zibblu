@@ -16,6 +16,7 @@ use sqlx::{
 };
 use std::{
     collections::HashMap,
+    error::Error as _,
     fs::{File, OpenOptions},
     path::{Path, PathBuf},
     sync::{
@@ -32,12 +33,35 @@ const LOCAL_PAGE: usize = 60;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OnlineError {
-    #[error("Could not reach the Zibblu service.")]
+    #[error("{}", network_error_message(.0))]
     Network(#[from] reqwest::Error),
     #[error("{message}")]
     Rejected { status: StatusCode, message: String },
     #[error("The service returned an invalid response.")]
     InvalidResponse,
+}
+
+fn network_error_message(error: &reqwest::Error) -> &'static str {
+    let mut source = error.source();
+    while let Some(cause) = source {
+        if matches!(
+            cause.downcast_ref::<rustls::Error>(),
+            Some(rustls::Error::InvalidCertificate(_) | rustls::Error::NoCertificatesPresented)
+        ) {
+            return "The server's security certificate could not be verified. Check the address and your system clock, or contact the server administrator.";
+        }
+        source = match cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+        {
+            Some(inner) => Some(inner),
+            None => cause.source(),
+        };
+    }
+    if error.is_timeout() {
+        return "The Zibblu server took too long to respond. Try again in a moment.";
+    }
+    "Could not reach the Zibblu server. Check your connection and that the server is online."
 }
 
 pub struct Client {
@@ -771,7 +795,15 @@ impl Api {
             .ok()
             .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok())
             .and_then(|value| value.get("error")?.as_str().map(str::to_string))
-            .unwrap_or_else(|| format!("The service rejected the request ({status})."));
+            .unwrap_or_else(|| match status {
+                StatusCode::TOO_MANY_REQUESTS => {
+                    "Too many requests. Wait a moment and try again.".into()
+                }
+                status if status.is_server_error() => {
+                    "The Zibblu server is temporarily unavailable. Try again later.".into()
+                }
+                _ => format!("The service rejected the request ({status})."),
+            });
         Err(OnlineError::Rejected { status, message })
     }
 

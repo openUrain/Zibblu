@@ -16,6 +16,8 @@ Main navigation: **Chats · Contacts · Files · Settings**.
 
 ## 01 — Chat & Files (normal mode)
 
+On Windows, the standalone client defaults to **Zibblu Online** on a fresh profile. Sign in or create an account directly. **Advanced** allows a custom server, and upgrades keep the previously saved server and local profile. The client uses local SQLite. PostgreSQL runs with the server.
+
 **User flow:** sign in → find a username → send a contact request → wait for approval → send messages or start a group → share files and find them in Files.
 
 Initial functional scope:
