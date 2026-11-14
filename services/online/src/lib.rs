@@ -7,7 +7,7 @@ mod profiles;
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, FromRequestParts},
+    extract::{DefaultBodyLimit, FromRequestParts, State},
     http::{StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
@@ -15,7 +15,7 @@ use axum::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 use zibblu_core::{CHUNK_SIZE, MAX_PROFILE_IMAGE_BYTES};
@@ -80,11 +80,21 @@ pub async fn router(db: PgPool) -> anyhow::Result<Router> {
     Ok(json_routes
         .merge(chunks)
         .merge(profile_upload)
+        .route("/healthz", get(health))
         .with_state(App {
             db,
             password_work: Arc::new(Semaphore::new(4)),
             lan_authority,
         }))
+}
+
+async fn health(State(app): State<App>) -> impl IntoResponse {
+    let probe = sqlx::query("SELECT 1").execute(&app.db);
+    let status = match tokio::time::timeout(Duration::from_secs(2), probe).await {
+        Ok(Ok(_)) => StatusCode::OK,
+        _ => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    (status, [(header::CACHE_CONTROL, "no-store")])
 }
 
 struct Auth {

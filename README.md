@@ -42,6 +42,8 @@ The v0.1.1 client installer is prepared for Owner acceptance. The [v0.1.0 LAN Ho
 
 ## Development and self-hosting
 
+[Deploy `zibblu-online` with Docker Compose or migrate an existing PostgreSQL deployment.](docs/ONLINE_DEPLOYMENT.md)
+
 Install Rust 1.90 or newer, Node.js 22.12 or newer, PostgreSQL, and the [Tauri Windows prerequisites](https://v2.tauri.app/start/prerequisites/#windows). Use a Visual Studio x64 developer terminal to load MSVC and the Windows SDK. Create an empty PostgreSQL database owned by a dedicated Zibblu database user. From the repository root, start the service with that user's connection string.
 
 ```powershell

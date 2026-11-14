@@ -5,6 +5,7 @@
 **/src-tauri/gen/
 .env
 .env.*
+!/deploy/docker/.env.example
 *.db
 *.db-shm
 *.db-wal
