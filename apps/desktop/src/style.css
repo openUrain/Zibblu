@@ -122,7 +122,8 @@ svg { vertical-align: middle; }
 .private-chat .avatar.blue { background: #314268; color: #c8d8ff; }
 .private-chat .avatar.rose { background: #503347; color: #ffd0e4; }
 
-.boot { display: flex; align-items: center; justify-content: center; gap: 14px; height: 100dvh; color: var(--muted); }
+.boot { display: flex; align-items: center; justify-content: center; gap: 14px; height: 100dvh; padding: 0 20px; color: var(--muted); }
+.boot .inline-error { max-width: 420px; }
 .signin { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(360px, 1.05fr); min-height: 100dvh; background: var(--panel); }
 .signin-brand {
   display: flex; flex-direction: column; justify-content: space-between; gap: 46px; overflow: hidden;
@@ -147,6 +148,11 @@ svg { vertical-align: middle; }
 .floating-field:focus-within { border-color: var(--accent); }
 .floating-field:focus-within legend label { color: var(--accent); }
 .signin-form .floating-field > input { width: 100%; border: 0; background: transparent; padding: 5px 13px 8px; outline: 0; }
+.signin-server { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.signin-server > svg { flex-shrink: 0; color: var(--accent); }
+.signin-server > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.signin-server span { display: block; margin-top: 2px; font-size: 12px; }
+.signin-server-help { margin: 8px 0 0; font-size: 12px; line-height: 1.5; }
 .signin-submit { min-height: 44px; margin-top: 3px; }
 .signin-switch { color: var(--muted); margin-top: 17px; }
 .inline-error { overflow-wrap: anywhere; padding: 9px 11px; border-radius: 8px; background: var(--danger-bg); color: var(--danger); line-height: 1.45; }

@@ -1,7 +1,8 @@
 use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
 use std::{
-    path::PathBuf,
+    io::ErrorKind,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex},
 };
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
@@ -18,9 +19,11 @@ use zibblu_core::{
     ReadUpdate, SendMessage, SyncUpdate, Transfer, User,
 };
 
+const OFFICIAL_SERVER: &str = "https://zibblu-api.openurain.com";
+
 pub(crate) struct Desktop {
     data: PathBuf,
-    preferences: StdMutex<Preferences>,
+    preferences: StdMutex<anyhow::Result<Preferences>>,
     session: Mutex<Option<Arc<Client>>>,
     pub(crate) ai: StdMutex<crate::ai::AiState>,
     pub(crate) private: Mutex<Option<Arc<PrivateLobby>>>,
@@ -32,10 +35,7 @@ pub(crate) struct Desktop {
 
 impl Desktop {
     pub fn new(data: PathBuf) -> Self {
-        let preferences = std::fs::read(data.join("preferences.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+        let preferences = Preferences::load(&data);
         Self {
             data,
             preferences: StdMutex::new(preferences),
@@ -51,12 +51,15 @@ impl Desktop {
 
     fn update_preferences(&self, change: impl FnOnce(&mut Preferences)) -> anyhow::Result<()> {
         let mut current = self.preferences.lock().expect("preferences");
-        let mut next = current.clone();
+        let mut next = current
+            .as_ref()
+            .map_err(|error| anyhow!("{error}"))?
+            .clone();
         change(&mut next);
         let mut file = tempfile::NamedTempFile::new_in(&self.data)?;
         serde_json::to_writer(&mut file, &next)?;
         file.persist(self.data.join("preferences.json"))?;
-        *current = next;
+        *current = Ok(next);
         Ok(())
     }
 
@@ -96,7 +99,11 @@ impl Desktop {
     }
 
     pub(crate) fn private_quiet(&self) -> bool {
-        self.preferences.lock().expect("preferences").private_quiet
+        self.preferences
+            .lock()
+            .expect("preferences")
+            .as_ref()
+            .is_ok_and(|preferences| preferences.private_quiet)
     }
 
     pub(crate) fn webview_directory(&self) -> PathBuf {
@@ -105,19 +112,56 @@ impl Desktop {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub(crate) struct Preferences {
+struct Preferences {
     server: String,
     #[serde(default)]
     private_quiet: bool,
 }
 
-impl Default for Preferences {
-    fn default() -> Self {
-        Self {
-            server: "http://127.0.0.1:7841".into(),
-            private_quiet: false,
+impl Preferences {
+    fn load(data: &Path) -> anyhow::Result<Self> {
+        match std::fs::read(data.join("preferences.json")) {
+            Ok(bytes) => serde_json::from_slice(&bytes).context("Invalid server settings"),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Self {
+                server: OFFICIAL_SERVER.into(),
+                private_quiet: false,
+            }),
+            Err(error) => Err(error.into()),
         }
+        .context("Could not read saved server settings. Check preferences.json in your Zibblu data folder and restart the app.")
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_missing_settings_default_to_zibblu_online() -> anyhow::Result<()> {
+        let data = tempfile::tempdir()?;
+        assert_eq!(Preferences::load(data.path())?.server, OFFICIAL_SERVER);
+
+        let file = data.path().join("preferences.json");
+        for server in ["http://127.0.0.1:7841/", "https://chat.example.com:8443/"] {
+            std::fs::write(
+                &file,
+                format!(r#"{{"server":"{server}","private_quiet":true}}"#),
+            )?;
+            let saved = Preferences::load(data.path())?;
+            assert_eq!(saved.server, server);
+            assert!(saved.private_quiet);
+        }
+        std::fs::write(file, b"{broken")?;
+        assert!(Preferences::load(data.path()).is_err());
+        Ok(())
+    }
+}
+
+#[derive(Serialize)]
+pub(crate) struct SignInPreferences {
+    #[serde(flatten)]
+    saved: Preferences,
+    official_server: &'static str,
 }
 
 #[derive(Serialize)]
@@ -160,8 +204,15 @@ pub(crate) enum ShareSource {
 }
 
 #[tauri::command]
-pub(crate) fn preferences(state: State<'_, Desktop>) -> Preferences {
-    state.preferences.lock().expect("preferences").clone()
+pub(crate) fn preferences(state: State<'_, Desktop>) -> Result<SignInPreferences> {
+    let current = state.preferences.lock().expect("preferences");
+    Ok(SignInPreferences {
+        saved: current
+            .as_ref()
+            .map_err(|error| anyhow!("{error}"))?
+            .clone(),
+        official_server: OFFICIAL_SERVER,
+    })
 }
 
 #[tauri::command]

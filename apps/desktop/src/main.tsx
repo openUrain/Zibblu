@@ -11,43 +11,51 @@ import { Workspace } from "./workspace";
 import { PrivateInvitationWindow } from "./private-chat";
 import "./style.css";
 
-const defaults: Preferences = { server: "http://127.0.0.1:7841", private_quiet: false };
-
 function App() {
   const [preferences, setPreferences] = useState<Preferences>();
+  const [settingsError, setSettingsError] = useState("");
   const [session, setSession] = useState<Session>();
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
-    api.preferences().then(setPreferences).catch(() => setPreferences(defaults));
+    api.preferences().then(setPreferences).catch(error => setSettingsError(errorMessage(error)));
   }, []);
+  if (settingsError) return <main className="boot"><Brand /><p className="inline-error" role="alert">{settingsError}</p></main>;
   if (!preferences) return <main className="boot"><Brand /><span role="status">Opening Zibblu…</span></main>;
 
   if (session) {
     return <Workspace session={session}
       privateQuiet={preferences.private_quiet} setPrivateQuiet={async quiet => {
         await api.setPrivateQuiet(quiet);
-        setPreferences(current => ({ ...(current ?? defaults), private_quiet: quiet }));
+        setPreferences(current => current && { ...current, private_quiet: quiet });
       }} signedOut={message => {
       setNotice(message ?? "");
       setSession(undefined);
     }} />;
   }
-  return <SignIn initialServer={preferences.server} notice={notice} signedIn={result => {
+  return <SignIn initialServer={preferences.server} officialServer={preferences.official_server} notice={notice} signedIn={result => {
     setPreferences({ ...preferences, server: result.server });
     setSession(result);
   }} />;
 }
 
-function SignIn({ initialServer, notice, signedIn }: {
-  initialServer: string; notice: string; signedIn: (session: Session) => void;
+function SignIn({ initialServer, officialServer, notice, signedIn }: {
+  initialServer: string; officialServer: string; notice: string; signedIn: (session: Session) => void;
 }) {
   const [register, setRegister] = useState(false);
   const [server, setServer] = useState(initialServer);
+  const [advanced, setAdvanced] = useState(false);
   const [handle, setHandle] = useState("");
   const [password, setPassword] = useState("");
   const [failure, setFailure] = useState(notice);
   const [busy, setBusy] = useState(false);
+  const official = server.trim().replace(/\/$/, "") === officialServer;
+
+  function chooseServer(address: string) {
+    setServer(address);
+    setPassword("");
+    setFailure("");
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -75,11 +83,31 @@ function SignIn({ initialServer, notice, signedIn }: {
     <section className="signin-form">
       <div>
         <h2>{register ? "Create an account" : "Sign in to Zibblu"}</h2>
-        <p className="muted">{register ? "Choose a username friends can use to find you." : "Use your account and your Zibblu server address."}</p>
+        <p className="muted">{register ? "Choose a username friends can use to find you." : "Use your Zibblu username and password."}</p>
         <form onSubmit={submit}>
-          <fieldset className="floating-field"><legend><label htmlFor="server">Server address</label></legend>
-            <input id="server" type="url" value={server} onChange={event => setServer(event.target.value)} required />
-          </fieldset>
+          <div className="signin-server">
+            <Globe2 size={18} aria-hidden="true" />
+            <div>
+              <strong>{official ? "Zibblu Online" : "Custom server"}</strong>
+              <span className="muted">{official ? "Official server" : server.trim() || "Enter a server address"}</span>
+            </div>
+            <button className="text-button" type="button" disabled={busy} aria-expanded={advanced}
+              aria-controls="signin-advanced" onClick={() => setAdvanced(!advanced)}>Advanced</button>
+          </div>
+          <div id="signin-advanced" hidden={!advanced}>
+            {advanced && <>
+              <fieldset className="floating-field" disabled={busy}><legend><label htmlFor="server">Server address</label></legend>
+                <input id="server" type="url" value={server} onChange={event => chooseServer(event.target.value)} required />
+              </fieldset>
+              {!official && <div className="signin-server-help">
+                <p className="muted">Accounts and chat history belong to the selected server.</p>
+                <button className="text-button" type="button" disabled={busy} onClick={() => {
+                  chooseServer(officialServer);
+                  setAdvanced(false);
+                }}>Use Zibblu Online</button>
+              </div>}
+            </>}
+          </div>
           <fieldset className="floating-field"><legend><label htmlFor="username">Username</label></legend>
             <input id="username" value={handle} onChange={event => setHandle(event.target.value)} required
               autoComplete="username" maxLength={32} />

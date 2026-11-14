@@ -3,7 +3,7 @@ import type { AiProvider } from "./ai-api";
 
 export type User = { id: string; handle: string };
 export type Session = { user: User; server: string };
-export type Preferences = { server: string; private_quiet: boolean };
+export type Preferences = { server: string; official_server: string; private_quiet: boolean };
 export type Conversation = {
   id: string; title: string | null; members: User[]; activity_at: number; preview: string | null;
   latest_seq: number; unread: number; read_through: number;

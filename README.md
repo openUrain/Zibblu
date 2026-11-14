@@ -28,7 +28,19 @@ A modern messenger with a clean interface, serious file sharing, opt-in LAN-only
 
 M1 uses **Tauri 2 + React + TypeScript**, a **Rust/Tokio** client, per-account **SQLite** history, and one **Rust/PostgreSQL** service for authentication, message delivery, and attachments. Private sessions target **mDNS/DNS-SD discovery + authenticated QUIC** with fail-closed behavior.
 
-## Run Zibblu on Windows
+## Install Zibblu on Windows
+
+1. On Windows 10 or 11 x64, run `Zibblu_0.1.1_x64_Client_Setup.exe`. Setup installs the desktop client for the current user. If Microsoft WebView2 is missing, setup downloads and installs it. No PostgreSQL, Rust, Docker, or local chat server is needed.
+2. Open **Zibblu** from the Start menu. **Zibblu Online** selects the official server at `https://zibblu-api.openurain.com`. Create an account or sign in. The app shows **Connected** once it has synchronized with the server.
+3. In **Contacts**, find a friend by username and send a contact request. After approval you can start a conversation and share files.
+
+The official service currently runs on the owner's Windows host through Cloudflare Tunnel. When that host is offline, sign-in and online chat are unavailable. Ordinary chat uses server-assisted delivery and storage without end-to-end encryption. [Security boundaries](docs/SECURITY.md)
+
+Use **Advanced** on the sign-in screen for a custom HTTPS origin without a path. Local development also supports `http://127.0.0.1:7841`. An upgrade keeps the last saved server, including the old loopback address. To switch to the official server, choose **Advanced → Use Zibblu Online** and sign in to an account there. The new choice is remembered after successful sign-in. Local histories stay separate by server and account. If you use an existing LAN Host or `Join-Zibblu.cmd` profile, keep using that launcher for its data directory and certificate configuration.
+
+The v0.1.1 client installer is prepared for Owner acceptance. The [v0.1.0 LAN Host release](https://github.com/openUrain/Zibblu/releases/tag/v0.1.0) is the older self-hosted package. It bundles PostgreSQL and the chat service and creates `Zibblu-Join.zip` for LAN users.
+
+## Development and self-hosting
 
 Install Rust 1.90 or newer, Node.js 22.12 or newer, PostgreSQL, and the [Tauri Windows prerequisites](https://v2.tauri.app/start/prerequisites/#windows). Use a Visual Studio x64 developer terminal to load MSVC and the Windows SDK. Create an empty PostgreSQL database owned by a dedicated Zibblu database user. From the repository root, start the service with that user's connection string.
 
@@ -45,15 +57,22 @@ npm ci
 npm run tauri dev
 ```
 
-Create an account at `http://127.0.0.1:7841` and send a request to another account by username in **Contacts**. After approval, both accounts see each other and can start a chat. For remote users, terminate HTTPS at a reverse proxy in front of the loopback service and give both clients the same HTTPS origin. Configure rate limiting for login and registration and keep the database reachable only by trusted services.
+Open **Advanced**, enter `http://127.0.0.1:7841`, and create a test account. For remote users, terminate HTTPS at a reverse proxy in front of the loopback service and give both clients the same HTTPS origin. Configure rate limiting for login and registration before public access and keep the database reachable only by trusted services.
 
 Use the paperclip, folder button, drag and drop, or paste an image into the composer. Folders arrive as ZIP archives. Use the conversation's **…** menu for **Search chat** and **Shared files**. The sidebar **Files** workspace shows all shared files by time, with filename search and transfer controls. Save a download to an unused filename. If a transfer pauses or fails, choose **Resume** or **Retry** to continue.
 
 For two independent local profiles, launch the Windows executable with a different `ZIBBLU_DATA_DIR` in each process. By default, the app uses its Windows local app data directory.
 
-### Build and check the Windows installer
+### Build and check the Windows client installer
 
-From `apps/desktop`, run `npm ci` and `npm run tauri build -- --bundles nsis -- --locked`. The x64 setup executable is in `target/release/bundle/nsis` at the repository root. The current-user installer uses the Tauri WebView2 bootstrapper when the runtime is missing. The default profile is under `%LOCALAPPDATA%\com.zibblu.desktop`, separate from the installed executable.
+From an x64 developer terminal in `apps/desktop`, run:
+
+```powershell
+npm ci
+npm run tauri build -- --bundles nsis --target x86_64-pc-windows-msvc -- --locked
+```
+
+The setup executable is `Zibblu_0.1.1_x64-setup.exe` under `target/x86_64-pc-windows-msvc/release/bundle/nsis` at the repository root. Name the acceptance copy `Zibblu_0.1.1_x64_Client_Setup.exe`. The installer preserves the existing Windows installer identity and defaults to the data directory `%LOCALAPPDATA%\com.zibblu.desktop`, separate from the installed executable.
 
 On a clean Windows 10 or 11 system, install and sign in with a test account. Change the theme, open a normal chat and save an attachment. Minimize and restore the app from the taskbar, then close it with **X** and start it again. Sign in and check that the server, theme and chat history are still available. With the app closed, run setup again and repeat that check. Uninstall without selecting the option to delete app data, reinstall, and check that the profile is still present. Use a small display or higher DPI to check that the native file and invitation controls remain reachable.
 

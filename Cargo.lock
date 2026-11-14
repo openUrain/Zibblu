@@ -6359,6 +6359,7 @@ dependencies = [
  "rcgen",
  "reqwest 0.12.28",
  "ring",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
@@ -6374,7 +6375,7 @@ dependencies = [
 
 [[package]]
 name = "zibblu-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "serde",
