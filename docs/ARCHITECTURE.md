@@ -35,7 +35,7 @@ Use fewer packages if implementation proves simpler.
 
 ## M1 delivery and storage
 
-- A single Axum service serves normal-chat HTTP requests. It binds to loopback and expects an HTTPS reverse proxy for remote clients. Tauri commands use the Rust client for HTTP, SQLite, and local file access.
+- A single Axum service serves normal-chat HTTP requests. It binds to loopback by default. Docker Compose explicitly enables `0.0.0.0:7841` inside the container and publishes only to host loopback. Remote clients use an HTTPS reverse proxy. Tauri commands use the Rust client for HTTP, SQLite, and local file access. [Online deployment](ONLINE_DEPLOYMENT.md)
 - Accounts belong to one service. The original username is stored with case-insensitive lookup and uniqueness. Contact requests can start from a username or contact QR. Approval adds both address-book entries in one transaction. Removing a contact removes both entries and preserves chat history. New direct messages and attachment publication require an approved relationship.
 - PostgreSQL stores the normal-chat feed and retains messages while recipients are offline. Clients poll for changes and commit batches into per-server, per-account SQLite profiles. The same feed supplies chat history and attachment metadata. A client must be signed in to use its profile. Sending a new message requires reaching the service.
 - An upload holds a stable ID, expected size and SHA-256. PostgreSQL commits each chunk with its offset and publishes the attachment message only after verification. Downloads resume from a local partial file and verify SHA-256 before publishing to the selected destination.

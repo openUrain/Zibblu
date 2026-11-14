@@ -1,0 +1,18 @@
+services:
+  postgres:
+    profiles: [existing-postgres]
+    ports:
+      - "127.0.0.1:5433:5432"
+
+  zibblu-online:
+    depends_on: !reset {}
+
+networks:
+  database: !override
+    external: true
+    name: ${ZIBBLU_PG_NETWORK:-server_default}
+
+volumes:
+  zibblu_pgdata:
+    external: true
+    name: ${ZIBBLU_PG_VOLUME:-server_zibblu_pgdata}

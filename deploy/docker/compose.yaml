@@ -1,0 +1,58 @@
+x-logging: &logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-zibblu}
+      POSTGRES_DB: ${POSTGRES_DB:-zibblu}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - zibblu_pgdata:/var/lib/postgresql/data
+    networks: [database]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+    logging: *logging
+
+  zibblu-online:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    environment:
+      ZIBBLU_CONTAINER: "1"
+      ZIBBLU_BIND: 0.0.0.0:7841
+      DATABASE_URL: postgres://postgres:5432
+      PGUSER: ${POSTGRES_USER:-zibblu}
+      PGDATABASE: ${POSTGRES_DB:-zibblu}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:7841:7841"
+    networks: [http, database]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, curl, -fsS, --max-time, "3", http://127.0.0.1:7841/healthz]
+      interval: 5s
+      timeout: 4s
+      start_period: 15s
+      retries: 6
+    restart: unless-stopped
+    stop_grace_period: 60s
+    logging: *logging
+
+networks:
+  http:
+  database:
+    internal: true
+
+volumes:
+  zibblu_pgdata:

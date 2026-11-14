@@ -1,13 +1,41 @@
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{path::Path, process::Command, sync::Arc, time::Duration};
 use uuid::Uuid;
 use zibblu_core::{
     AiProvider, AiScope, CHUNK_SIZE, Client, ContactNotes, ConversationRequest, Credentials,
     Direction, FileFilter, MAX_PROFILE_IMAGE_BYTES, ProfileImage, ProfileRelation, PublishAiReply,
     ReadUpdate, SendMessage, Session, Transfer, TransferStatus,
 };
+
+#[test]
+fn non_loopback_bind_requires_container_opt_in() -> Result<()> {
+    for (address, mode, expected_error) in [
+        ("0.0.0.0:7841", "", "Bind the service to loopback"),
+        ("0.0.0.0:7841", "true", "Bind the service to loopback"),
+        ("0.0.0.0:8080", "1", "Bind the service to loopback"),
+        ("0.0.0.0:7841", "1", "Set DATABASE_URL"),
+        ("127.0.0.1:7841", "", "Set DATABASE_URL"),
+    ] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_zibblu-online"));
+        command
+            .env("ZIBBLU_BIND", address)
+            .env_remove("DATABASE_URL");
+        if mode.is_empty() {
+            command.env_remove("ZIBBLU_CONTAINER");
+        } else {
+            command.env("ZIBBLU_CONTAINER", mode);
+        }
+        let output = command.output()?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success() && stderr.contains(expected_error),
+            "unexpected startup result for {address} with container mode {mode:?}: {stderr}"
+        );
+    }
+    Ok(())
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn normal_chat_and_files() -> Result<()> {
@@ -268,10 +296,14 @@ async fn normal_chat_and_files() -> Result<()> {
     println!("The service rejected unauthenticated reads and nonmember reads/writes");
 
     let old = history[2].seq;
-    sqlx::query("UPDATE messages SET created_at = created_at - 301000 WHERE seq = $1")
-        .bind(old)
-        .execute(&db)
-        .await?;
+    sqlx::query(
+        "UPDATE messages SET created_at = (extract(epoch FROM clock_timestamp()) * 1000)::BIGINT
+         - $2 - 1000 WHERE seq = $1",
+    )
+    .bind(old)
+    .bind(zibblu_core::RECALL_WINDOW_MS)
+    .execute(&db)
+    .await?;
     assert!(alice.recall_message(chat, old).await.is_err());
     let incoming = history[1].seq;
     assert!(alice.recall_message(chat, incoming).await.is_err());
