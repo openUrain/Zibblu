@@ -280,12 +280,11 @@ impl Attachment {
             return None;
         }
         match self.name.rsplit_once('.')?.1.to_ascii_lowercase().as_str() {
-            "png" => Some("image/png"),
+            "png" | "apng" => Some("image/png"),
             "jpg" | "jpeg" => Some("image/jpeg"),
             "gif" => Some("image/gif"),
             "webp" => Some("image/webp"),
             "bmp" => Some("image/bmp"),
-            "avif" => Some("image/avif"),
             "mp4" | "m4v" => Some("video/mp4"),
             "webm" => Some("video/webm"),
             "mov" => Some("video/quicktime"),

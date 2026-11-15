@@ -2,6 +2,7 @@
 
 mod ai;
 mod commands;
+mod images;
 mod media;
 mod private_runtime;
 #[cfg(windows)]
@@ -136,6 +137,7 @@ fn main() {
             commands::recall_message,
             commands::publish_ai_reply,
             media::paste_image,
+            media::check_pasted_image,
             ai::ai_assistants,
             ai::ai_save_assistant,
             ai::ai_test_connection,

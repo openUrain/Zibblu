@@ -5,7 +5,9 @@ import { canPreview, mediaKind, readAttachmentPage } from "../src/attachment-med
 test("media stays in chat history even without an inline decoder", () => {
   const file = (name, size = 100, kind = "file") => ({ kind, name, size });
   for (const [name, kind, preview] of [
-    ["picture.PNG", "image", true], ["clip.webm", "video", true],
+    ["picture.PNG", "image", true], ["animation.apng", "image", true], ["photo.jpeg", "image", true],
+    ["sticker.webp", "image", true], ["animation.gif", "image", true], ["picture.bmp", "image", true],
+    ["clip.webm", "video", true], ["photo.avif", "image", false],
     ["photo.heic", "image", false], ["clip.avi", "video", false],
     ["report.pdf", undefined, false], ["png", undefined, false],
   ]) {

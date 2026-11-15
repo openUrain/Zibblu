@@ -9,6 +9,7 @@ import type { AiReply, Assistant } from "./ai-api";
 import { AiRequest, AssistantMenu, ProviderLogo, ShareAiReply } from "./ai";
 import { api, errorMessage } from "./api";
 import type { Conversation, Draft, Message, Page, PrivateSummary, ShareSource, Transfer, User } from "./api";
+import { MAX_IMAGE_BYTES } from "./attachment-media";
 import { Avatar, Blank, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName, messageTimeLabel, startsTimeGroup, usePage } from "./common";
 import { useMenu } from "./context-menu";
 import { FilesView, TransferList, useAttachmentSave } from "./files";
@@ -477,6 +478,7 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
   }
   const [sending, setSending] = useState(false);
   const [preparing, setPreparing] = useState(false);
+  const [checkingImage, setCheckingImage] = useState(false);
   const [failure, setFailure] = useState("");
   useLayoutEffect(() => {
     const url = pastedImage ? URL.createObjectURL(pastedImage) : undefined;
@@ -488,7 +490,7 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
   async function send(event: FormEvent) {
     event.preventDefault();
     const text = draft.trim();
-    if (oversized || sending || request || ambiguous || quoteUnavailable || (!text && !pastedImage)) return;
+    if (oversized || sending || checkingImage || request || ambiguous || quoteUnavailable || (!text && !pastedImage)) return;
     if (pastedImage && !assistant) {
       setSending(true);
       setFailure("");
@@ -537,6 +539,20 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
     finally { setPreparing(false); }
   }
 
+  async function preparePastedImage(file: File) {
+    setFailure("");
+    if (file.size > MAX_IMAGE_BYTES) {
+      setFailure("Pasted images can be up to 16 MiB.");
+      return;
+    }
+    setCheckingImage(true);
+    try {
+      const type = await api.checkPastedImage(await file.arrayBuffer());
+      setDraft(previous => ({ ...previous, image: new File([file], file.name, { type }) }));
+    } catch (error) { setFailure(errorMessage(error)); }
+    finally { setCheckingImage(false); }
+  }
+
   return <>
     <form className="composer" onSubmit={send} onBlur={event => {
       if (!event.currentTarget.contains(event.relatedTarget)) setMenu(false);
@@ -560,13 +576,7 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
             const file = Array.from(event.clipboardData.items).find(item => item.kind === "file" && item.type.startsWith("image/"))?.getAsFile();
             if (!file) return;
             event.preventDefault();
-            if (sending) return;
-            setFailure("");
-            if (file.size > 16 * 1024 * 1024 || !/^image\/(png|jpeg|gif|webp|bmp)$/.test(file.type)) {
-              setFailure("Paste a PNG, JPEG, GIF, WebP or BMP image up to 16 MiB.");
-              return;
-            }
-            setDraft(previous => ({ ...previous, image: file }));
+            if (!sending && !checkingImage) void preparePastedImage(file);
           }}
           onKeyDown={event => {
             if (event.nativeEvent.isComposing) return;
@@ -592,7 +602,7 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
         </div>}
         {imageUrl && <div className="pasted-image">
           <img src={imageUrl} alt="Pasted image ready to send" />
-          <button className="icon-button" type="button" disabled={sending} aria-label="Remove pasted image"
+          <button className="icon-button" type="button" disabled={sending || checkingImage} aria-label="Remove pasted image"
             onClick={() => setDraft(previous => ({ ...previous, image: undefined }))}><X size={16} /></button>
         </div>}
         <div className="composer-bar">
@@ -610,9 +620,10 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
                 textarea.current?.focus();
               }}><AtSign size={19} /></button>
             {preparing && <span className="drop-hint" role="status">Preparing attachment…</span>}
+            {checkingImage && <span className="drop-hint" role="status">Checking image…</span>}
           </div>
           <button className="button primary send-button" type="submit"
-            disabled={(!draft.trim() && !pastedImage) || ambiguous || quoteUnavailable || oversized || sending || (!!assistant && (!view || !prompt))}
+            disabled={(!draft.trim() && !pastedImage) || ambiguous || quoteUnavailable || oversized || sending || checkingImage || (!!assistant && (!view || !prompt))}
             aria-label={assistant ? "Choose AI context" : sending ? "Sending message" : "Send message"}>
             {assistant ? <>Choose context <ArrowRight size={16} /></>
               : <><span>{sending ? "Sending…" : "Send"}</span><Send size={16} /></>}

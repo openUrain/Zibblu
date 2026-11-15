@@ -1,14 +1,42 @@
 use crate::commands::{Desktop, Result as CommandResult};
+use crate::images;
 use anyhow::{Context, Result, ensure};
+use sha2::{Digest, Sha256};
 use tauri::{
     AppHandle, Manager, State, UriSchemeContext, UriSchemeResponder, Wry,
-    http::{Method, Request, Response, StatusCode, header},
+    http::{Method, Request, Response, StatusCode, header, response::Builder},
     ipc::InvokeBody,
 };
+use tokio::sync::Semaphore;
 use uuid::Uuid;
-use zibblu_core::{
-    CHUNK_SIZE, MAX_PASTED_IMAGE_BYTES, MAX_PROFILE_IMAGE_BYTES, ProfileImage, Transfer,
-};
+use zibblu_core::{CHUNK_SIZE, MAX_PASTED_IMAGE_BYTES, ProfileImage, Transfer};
+
+static IMAGE_JOBS: Semaphore = Semaphore::const_new(2);
+
+fn image_body(body: &InvokeBody) -> Result<&[u8]> {
+    let InvokeBody::Raw(bytes) = body else {
+        anyhow::bail!("Choose a {} image.", images::FORMATS);
+    };
+    ensure!(
+        bytes.len() <= MAX_PASTED_IMAGE_BYTES,
+        "Images can be up to 16 MiB."
+    );
+    Ok(bytes)
+}
+
+async fn process_upload<T: Send + 'static>(
+    body: &InvokeBody,
+    work: impl FnOnce(Vec<u8>) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let bytes = image_body(body)?;
+    let permit = IMAGE_JOBS.acquire().await?;
+    let bytes = bytes.to_vec();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        work(bytes)
+    })
+    .await?
+}
 
 #[tauri::command]
 pub(crate) async fn set_profile_image(
@@ -24,17 +52,16 @@ pub(crate) async fn set_profile_image(
         Some("cover") => ProfileImage::Cover,
         _ => return Err(anyhow::anyhow!("Choose an avatar or cover image").into()),
     };
-    let InvokeBody::Raw(bytes) = request.body() else {
-        return Err(anyhow::anyhow!("Choose a PNG image").into());
-    };
-    if bytes.len() > MAX_PROFILE_IMAGE_BYTES {
-        return Err(anyhow::anyhow!("Profile images can be up to 2 MiB").into());
-    }
-    Ok(state
-        .client()
-        .await?
-        .set_profile_image(kind, bytes.clone())
-        .await?)
+    let client = state.client().await?;
+    let png = process_upload(request.body(), |bytes| images::profile_png(&bytes)).await?;
+    Ok(client.set_profile_image(kind, png).await?)
+}
+
+#[tauri::command]
+pub(crate) async fn check_pasted_image(
+    request: tauri::ipc::Request<'_>,
+) -> CommandResult<&'static str> {
+    Ok(process_upload(request.body(), |bytes| images::verified_mime(&bytes)).await?)
 }
 
 #[tauri::command]
@@ -42,27 +69,19 @@ pub(crate) async fn paste_image(
     state: State<'_, Desktop>,
     request: tauri::ipc::Request<'_>,
 ) -> CommandResult<Transfer> {
-    let result = (|| -> Result<_> {
-        let conversation = request
-            .headers()
-            .get("zibblu-conversation")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| Uuid::parse_str(value).ok())
-            .context("Open a normal chat before pasting an image")?;
-        let InvokeBody::Raw(bytes) = request.body() else {
-            anyhow::bail!("Paste an image from the clipboard");
-        };
-        ensure!(
-            bytes.len() <= MAX_PASTED_IMAGE_BYTES,
-            "Pasted images can be up to 16 MiB"
-        );
-        Ok((conversation, bytes.clone()))
-    })()?;
-    Ok(state
-        .client()
-        .await?
-        .queue_pasted_image(result.0, result.1)
-        .await?)
+    let conversation = request
+        .headers()
+        .get("zibblu-conversation")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .context("Open a normal chat before pasting an image")?;
+    let client = state.client().await?;
+    let bytes = process_upload(request.body(), |bytes| {
+        images::verified_mime(&bytes)?;
+        Ok(bytes)
+    })
+    .await?;
+    Ok(client.queue_pasted_image(conversation, bytes).await?)
 }
 
 pub(crate) fn preview(
@@ -117,14 +136,8 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Re
         let bytes = client
             .profile_image(Uuid::parse_str(id)?, Uuid::parse_str(version)?)
             .await?;
-        return Ok(Response::builder()
-            .header(header::CONTENT_TYPE, "image/png")
-            .header(header::CACHE_CONTROL, "no-store")
-            .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
-            .header(
-                header::CONTENT_SECURITY_POLICY,
-                "default-src 'none'; sandbox",
-            )
+        images::check_stored_profile(&bytes)?;
+        return Ok(preview_headers("image/png")
             .header(header::CONTENT_LENGTH, bytes.len())
             .body(if *request.method() == Method::HEAD {
                 Vec::new()
@@ -138,24 +151,14 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Re
         .await?
         .attachment
         .context("Missing attachment")?;
-    let mime = file.preview_mime().context("Unsupported media type")?;
-    let video = mime.starts_with("video/");
-    let response = Response::builder()
-        .header(header::CONTENT_TYPE, mime)
-        .header(header::CACHE_CONTROL, "no-store")
-        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
-        .header(
-            header::CONTENT_SECURITY_POLICY,
-            "default-src 'none'; sandbox",
-        )
-        .header(header::ACCEPT_RANGES, if video { "bytes" } else { "none" });
-    if *request.method() == Method::HEAD {
-        return Ok(response
-            .header(header::CONTENT_LENGTH, file.size)
-            .body(Vec::new())?);
-    }
-
-    if video {
+    let mime_hint = file.preview_mime().context("Unsupported media type")?;
+    if mime_hint.starts_with("video/") {
+        let response = preview_headers(mime_hint).header(header::ACCEPT_RANGES, "bytes");
+        if *request.method() == Method::HEAD {
+            return Ok(response
+                .header(header::CONTENT_LENGTH, file.size)
+                .body(Vec::new())?);
+        }
         let range = request.headers().get(header::RANGE);
         let (start, end) = if let Some(value) = range {
             match value
@@ -195,6 +198,7 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Re
         file.size <= MAX_PASTED_IMAGE_BYTES as u64,
         "Image too large for inline preview"
     );
+    let permit = IMAGE_JOBS.acquire().await?;
     let mut bytes = Vec::with_capacity(file.size as usize);
     for offset in (0..file.size).step_by(CHUNK_SIZE as usize) {
         bytes.extend(
@@ -203,9 +207,35 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Re
                 .await?,
         );
     }
-    Ok(response
+    let (mime, bytes) = tauri::async_runtime::spawn_blocking(move || -> Result<_> {
+        let _permit = permit;
+        ensure!(
+            format!("{:x}", Sha256::digest(&bytes)) == file.sha256,
+            "Image verification failed"
+        );
+        let mime = images::verified_mime(&bytes)?;
+        Ok((mime, bytes))
+    })
+    .await??;
+    Ok(preview_headers(mime)
+        .header(header::ACCEPT_RANGES, "none")
         .header(header::CONTENT_LENGTH, bytes.len())
-        .body(bytes)?)
+        .body(if *request.method() == Method::HEAD {
+            Vec::new()
+        } else {
+            bytes
+        })?)
+}
+
+fn preview_headers(mime: &str) -> Builder {
+    Response::builder()
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(
+            header::CONTENT_SECURITY_POLICY,
+            "default-src 'none'; sandbox",
+        )
 }
 
 fn preview_range(value: &str, size: u64) -> Option<(u64, u64)> {

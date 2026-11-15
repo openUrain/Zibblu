@@ -576,6 +576,8 @@ legend { padding: 0 5px; color: var(--muted); }
 .profile-identity > div:nth-child(2) { min-width: 0; flex: 1; align-self: flex-end; }
 .profile-identity h3 { margin: 0; font-size: 23px; line-height: 1.1; overflow-wrap: anywhere; }
 .profile-identity > button { margin-left: auto; align-self: flex-end; }
+.profile-image-approval { padding: 11px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.profile-image-approval .muted { margin-top: 4px; }
 .profile-fields { display: grid; gap: 10px; padding-top: 11px; border-top: 1px solid var(--line); }
 .profile-fields label { display: grid; gap: 4px; color: var(--ink); font-weight: 650; }
 .profile-fields small { color: var(--muted); font-weight: 400; }
