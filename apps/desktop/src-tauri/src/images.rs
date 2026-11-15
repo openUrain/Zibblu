@@ -234,6 +234,10 @@ pub(crate) fn verified_mime(bytes: &[u8]) -> Result<&'static str> {
 }
 
 pub(crate) fn check_stored_profile(bytes: &[u8]) -> Result<()> {
+    stored_profile_decoder(bytes).map(|_| ())
+}
+
+fn stored_profile_decoder(bytes: &[u8]) -> Result<PngDecoder<Cursor<&[u8]>>> {
     let mut limits = Limits::default();
     limits.max_image_width = Some(1024);
     limits.max_image_height = Some(1024);
@@ -244,7 +248,23 @@ pub(crate) fn check_stored_profile(bytes: &[u8]) -> Result<()> {
             && decoder.color_type().bytes_per_pixel() == decoder.color_type().channel_count(),
         "Unsupported stored profile image"
     );
-    Ok(())
+    Ok(decoder)
+}
+
+pub(crate) fn saved_avatar(bytes: &[u8]) -> Result<Vec<u8>> {
+    let image = DynamicImage::from_decoder(stored_profile_decoder(bytes)?)?;
+    encode_png(&image.thumbnail(96, 96).into_rgba8())
+}
+
+fn encode_png(pixels: &image::RgbaImage) -> Result<Vec<u8>> {
+    let mut png = Vec::new();
+    PngEncoder::new(&mut png).write_image(
+        pixels,
+        pixels.width(),
+        pixels.height(),
+        image::ExtendedColorType::Rgba8,
+    )?;
+    Ok(png)
 }
 
 pub(crate) fn profile_png(bytes: &[u8]) -> Result<Vec<u8>> {
@@ -255,13 +275,7 @@ pub(crate) fn profile_png(bytes: &[u8]) -> Result<Vec<u8>> {
         } else {
             image.to_rgba8()
         };
-        let mut png = Vec::new();
-        PngEncoder::new(&mut png).write_image(
-            &pixels,
-            pixels.width(),
-            pixels.height(),
-            image::ExtendedColorType::Rgba8,
-        )?;
+        let png = encode_png(&pixels)?;
         if png.len() <= MAX_PROFILE_IMAGE_BYTES {
             return Ok(png);
         }

@@ -159,6 +159,11 @@ svg { vertical-align: middle; }
 .signin-server-help { margin: 8px 0 0; font-size: 12px; line-height: 1.5; }
 .signin-submit { min-height: 44px; margin-top: 3px; }
 .signin-switch { color: var(--muted); margin-top: 17px; }
+.signin-saved { display: grid; justify-items: start; gap: 16px; }
+.signin-saved .signin-account { width: 100%; justify-content: flex-start; gap: 12px; padding: 12px; text-align: left; }
+.signin-account > span:nth-child(2) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.signin-account small { display: block; margin-top: 4px; color: var(--muted); }
+.signin-account > svg { flex: none; color: var(--accent); }
 .inline-error { overflow-wrap: anywhere; padding: 9px 11px; border-radius: 8px; background: var(--danger-bg); color: var(--danger); line-height: 1.45; }
 
 .shell { display: grid; grid-template-columns: 78px minmax(0, 1fr); height: 100dvh; overflow: hidden; }

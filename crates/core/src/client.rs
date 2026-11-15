@@ -121,10 +121,46 @@ impl Client {
             .json(api.request(Method::POST, route).json(&credentials))
             .await?;
         api.token = Some(session.token);
-        let profile_id = format!(
-            "{:x}",
-            Sha256::digest(format!("{}\n{}", api.base, session.user.id))
+        Self::open(data_dir, api, session.user).await
+    }
+
+    pub async fn restore(
+        data_dir: &Path,
+        address: &str,
+        account_id: Uuid,
+        token: &str,
+    ) -> Result<Arc<Self>> {
+        let invalid = || {
+            OnlineError::Rejected {
+            status: StatusCode::UNAUTHORIZED,
+            message: "The saved sign-in has expired or is no longer valid. Enter your password to sign in.".into(),
+        }
+        };
+        ensure!(
+            token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            invalid()
         );
+        let mut api = Api::new(address)?;
+        api.token = Some(token.to_owned());
+        let profile = match api.profile(account_id).await {
+            Ok(profile) => profile,
+            Err(OnlineError::Rejected {
+                status: StatusCode::UNAUTHORIZED | StatusCode::NOT_FOUND,
+                ..
+            }) => {
+                return Err(invalid().into());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        ensure!(
+            matches!(profile.relation, ProfileRelation::Own) && profile.user.id == account_id,
+            invalid()
+        );
+        Self::open(data_dir, api, profile.user).await
+    }
+
+    async fn open(data_dir: &Path, api: Api, user: User) -> Result<Arc<Self>> {
+        let profile_id = format!("{:x}", Sha256::digest(format!("{}\n{}", api.base, user.id)));
         let profile = data_dir.join("profiles").join(profile_id);
         let staging = profile.join("transfers");
         std::fs::create_dir_all(&staging).context("Could not create the local profile")?;
@@ -180,7 +216,7 @@ impl Client {
         .await
         .context("Could not initialize the local chat history")?;
         Ok(Arc::new(Self {
-            user: session.user,
+            user,
             api,
             db,
             staging,
@@ -195,6 +231,10 @@ impl Client {
 
     pub fn server(&self) -> &str {
         self.api.base.as_str()
+    }
+
+    pub fn session_token(&self) -> &str {
+        self.api.token.as_deref().expect("authenticated client")
     }
 
     pub async fn lan_credential(&self, public_key: Vec<u8>) -> Result<LanCredential> {
@@ -548,10 +588,7 @@ impl Client {
     }
 
     pub async fn profile(&self, id: Uuid) -> Result<Profile> {
-        Ok(self
-            .api
-            .json(self.api.request(Method::GET, &format!("/v1/profiles/{id}")))
-            .await?)
+        Ok(self.api.profile(id).await?)
     }
 
     pub async fn set_bio(&self, bio: String) -> Result<()> {
@@ -871,6 +908,14 @@ impl Api {
             Some(token) => request.bearer_auth(token),
             None => request,
         }
+    }
+
+    async fn profile(&self, id: Uuid) -> std::result::Result<Profile, OnlineError> {
+        self.json(
+            self.request(Method::GET, &format!("/v1/profiles/{id}"))
+                .header(reqwest::header::CACHE_CONTROL, "no-cache"),
+        )
+        .await
     }
 
     async fn send(&self, request: RequestBuilder) -> std::result::Result<Response, OnlineError> {

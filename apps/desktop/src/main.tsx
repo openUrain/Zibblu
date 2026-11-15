@@ -1,11 +1,11 @@
 import { ArrowRight, Eye, EyeOff, Globe2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, errorMessage } from "./api";
-import type { CloseAction, Preferences, Session } from "./api";
-import { Brand } from "./common";
+import { api, errorMessage, isExpired } from "./api";
+import type { CloseAction, Preferences, SavedAccount, Session } from "./api";
+import { Avatar, Brand } from "./common";
 import { DesktopMenus } from "./context-menu";
 import { Workspace } from "./workspace";
 import { PrivateInvitationWindow } from "./private-chat";
@@ -25,6 +25,10 @@ function App() {
     await api.setCloseAction(action);
     setPreferences(current => current && { ...current, close_action: action });
   }
+  const signedOut = useCallback((message?: string) => {
+    setNotice(message ?? "");
+    setSession(undefined);
+  }, []);
 
   return <>
     {windows && !session && <header className="auth-titlebar">
@@ -36,35 +40,57 @@ function App() {
       privateQuiet={preferences.private_quiet} setPrivateQuiet={async quiet => {
         await api.setPrivateQuiet(quiet);
         setPreferences(current => current && { ...current, private_quiet: quiet });
-      }} signedOut={message => {
-      setNotice(message ?? "");
-      setSession(undefined);
-    }} />
-    : <SignIn initialServer={preferences.server} officialServer={preferences.official_server} notice={notice} signedIn={result => {
-      setPreferences(current => current && { ...current, server: result.server });
+      }} signedOut={signedOut} />
+    : <SignIn initialServer={preferences.server} officialServer={preferences.official_server}
+      initialAccount={preferences.saved_account} notice={notice} signedIn={result => {
+      setPreferences(current => current && { ...current, server: result.server, saved_account: undefined });
       setSession(result);
     }} />}
     {windows && <WindowClosePrompt save={setCloseAction} />}
   </>;
 }
 
-function SignIn({ initialServer, officialServer, notice, signedIn }: {
-  initialServer: string; officialServer: string; notice: string; signedIn: (session: Session) => void;
+function SignIn({ initialServer, officialServer, initialAccount, notice, signedIn }: {
+  initialServer: string; officialServer: string; initialAccount?: SavedAccount; notice: string; signedIn: (session: Session) => void;
 }) {
+  const [saved, setSaved] = useState(initialAccount);
+  const [useSaved, setUseSaved] = useState(true);
+  const [avatarUrl, setAvatarUrl] = useState<string>();
   const [register, setRegister] = useState(false);
   const [server, setServer] = useState(initialServer);
   const [advanced, setAdvanced] = useState(false);
   const [handle, setHandle] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
+  const savedButton = useRef<HTMLButtonElement>(null);
+  const usernameInput = useRef<HTMLInputElement>(null);
+  const passwordInput = useRef<HTMLInputElement>(null);
   const confirmationInput = useRef<HTMLInputElement>(null);
+  const nextFocus = useRef<"username" | "password">(undefined);
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [checkConfirmation, setCheckConfirmation] = useState(false);
   const [failure, setFailure] = useState(notice);
   const [busy, setBusy] = useState(false);
+  const account = useSaved ? saved : undefined;
   const official = server.trim().replace(/\/$/, "") === officialServer;
   const mismatch = register && confirmation !== password;
   const showMismatch = mismatch && checkConfirmation;
+
+  useEffect(() => {
+    if (!account?.avatar) return;
+    const url = URL.createObjectURL(new Blob([new Uint8Array(account.avatar)], { type: "image/png" }));
+    setAvatarUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [account]);
+
+  useEffect(() => {
+    if (busy) return;
+    if (account) savedButton.current?.focus();
+    else if (nextFocus.current) {
+      (nextFocus.current === "password" ? passwordInput : usernameInput).current?.focus();
+      nextFocus.current = undefined;
+    }
+  }, [account, busy]);
 
   function chooseServer(address: string) {
     setServer(address);
@@ -77,6 +103,21 @@ function SignIn({ initialServer, officialServer, notice, signedIn }: {
     setPasswordVisible(false);
     setCheckConfirmation(false);
     setFailure("");
+  }
+
+  async function restore() {
+    if (busy || !account) return;
+    setBusy(true);
+    setFailure("");
+    try { signedIn(await api.restoreSession(account)); }
+    catch (error) {
+      if (isExpired(error)) {
+        setSaved(undefined);
+        setHandle(account.user.handle);
+        nextFocus.current = "password";
+      }
+      setFailure(errorMessage(error));
+    } finally { setBusy(false); }
   }
 
   async function submit(event: FormEvent) {
@@ -108,7 +149,26 @@ function SignIn({ initialServer, officialServer, notice, signedIn }: {
       <div className="signin-connection"><Globe2 size={17} /> Normal online chat</div>
     </section>
     <section className="signin-form">
-      <div>
+      {account ? <div className="signin-saved">
+        <h2>Continue to Zibblu</h2>
+        <button className="button signin-account" type="button" ref={savedButton} disabled={busy}
+          aria-label={`Continue as ${account.user.handle}`} aria-describedby="saved-account-server"
+          onClick={() => void restore()}>
+          <Avatar name={account.user.handle} large src={avatarUrl} />
+          <span><strong>{account.user.handle}</strong>
+            <small id="saved-account-server">{official ? "Zibblu Online" : account.server}</small>
+          </span>
+          <ArrowRight size={19} aria-hidden />
+        </button>
+        {busy && <p className="muted" role="status">Connecting…</p>}
+        {failure && <p className="inline-error" role="alert">{failure}</p>}
+        <button className="text-button" disabled={busy} onClick={() => {
+          nextFocus.current = "username";
+          setUseSaved(false);
+          setHandle("");
+          resetPassword();
+        }}>Use another account</button>
+      </div> : <div>
         <h2>{register ? "Create an account" : "Sign in to Zibblu"}</h2>
         <p className="muted">{register ? "Choose a username friends can use to find you." : "Use your Zibblu username and password."}</p>
         <form onSubmit={submit}>
@@ -136,12 +196,12 @@ function SignIn({ initialServer, officialServer, notice, signedIn }: {
             </>}
           </div>
           <fieldset className="floating-field"><legend><label htmlFor="username">Username</label></legend>
-            <input id="username" value={handle} onChange={event => setHandle(event.target.value)} required
+            <input id="username" ref={usernameInput} value={handle} onChange={event => setHandle(event.target.value)} required
               autoComplete="username" maxLength={32} />
           </fieldset>
           <fieldset className="floating-field"><legend><label htmlFor="password">Password</label></legend>
             <div className="password-field">
-              <input id="password" data-password type={passwordVisible ? "text" : "password"} value={password}
+              <input id="password" ref={passwordInput} data-password type={passwordVisible ? "text" : "password"} value={password}
                 onChange={event => setPassword(event.target.value)} required
                 autoComplete={register ? "new-password" : "current-password"} minLength={register ? 12 : undefined}
                 maxLength={256} />
@@ -168,7 +228,13 @@ function SignIn({ initialServer, officialServer, notice, signedIn }: {
             {register ? "Sign in" : "Create an account"}
           </button>
         </div>
-      </div>
+        {saved && <div className="signin-switch"><button className="text-button" disabled={busy} onClick={() => {
+          chooseServer(saved.server);
+          setRegister(false);
+          setAdvanced(false);
+          setUseSaved(true);
+        }}>Back to saved account</button></div>}
+      </div>}
     </section>
   </main>;
 }

@@ -9,73 +9,28 @@ use std::{
         io::AsRawHandle,
     },
     path::{Component, Path, Prefix},
-    ptr::{null, null_mut},
 };
-use windows_sys::Win32::{
-    Foundation::LocalFree,
-    Security::Cryptography::{
-        CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
-    },
-    Storage::FileSystem::{
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
-        GetFinalPathNameByHandleW,
-    },
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+    GetFinalPathNameByHandleW,
 };
-use zeroize::Zeroize;
 use zibblu_core::assistant::{AiFile, AiProvider};
 
 const MAX_FILE_BYTES: u64 = 32 * 1024;
 
 pub(super) fn protect_key(provider: AiProvider, key: &[u8], encrypt: bool) -> Result<Vec<u8>> {
-    let blob = |bytes: &[u8]| CRYPT_INTEGER_BLOB {
-        cbData: bytes.len() as u32,
-        pbData: bytes.as_ptr().cast_mut(),
-    };
-    let input = blob(key);
     // Keep the original DPAPI entropy so existing credentials still decrypt.
-    let entropy = blob(match provider {
+    let entropy = match provider {
         AiProvider::OpenAi => b"https://api.openai.com/v1/responses".as_slice(),
         AiProvider::DeepSeek => b"https://api.deepseek.com/responses".as_slice(),
         AiProvider::Grok => b"https://api.x.ai/v1/responses".as_slice(),
-    });
-    let mut output = CRYPT_INTEGER_BLOB {
-        cbData: 0,
-        pbData: null_mut(),
     };
-    // DPAPI reads the input blobs and allocates the output with LocalAlloc.
-    let success = unsafe {
-        if encrypt {
-            CryptProtectData(
-                &input,
-                null(),
-                &entropy,
-                null(),
-                null(),
-                CRYPTPROTECT_UI_FORBIDDEN,
-                &mut output,
-            )
-        } else {
-            CryptUnprotectData(
-                &input,
-                null_mut(),
-                &entropy,
-                null(),
-                null(),
-                CRYPTPROTECT_UI_FORBIDDEN,
-                &mut output,
-            )
-        }
-    };
-    ensure!(
-        success != 0,
-        "Windows could not {} the API key. Check the key in Settings.",
-        if encrypt { "protect" } else { "unlock" }
-    );
-    let bytes = unsafe { std::slice::from_raw_parts_mut(output.pbData, output.cbData as usize) };
-    let key = bytes.to_vec();
-    bytes.zeroize();
-    unsafe { LocalFree(output.pbData.cast()) };
-    Ok(key)
+    crate::dpapi::transform(key, entropy, encrypt).with_context(|| {
+        format!(
+            "Windows could not {} the API key. Check the key in Settings.",
+            if encrypt { "protect" } else { "unlock" }
+        )
+    })
 }
 
 pub(super) fn read_text_file(path: &Path) -> Result<AiFile> {

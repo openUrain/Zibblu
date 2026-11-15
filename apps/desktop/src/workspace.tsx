@@ -60,13 +60,14 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const privateOpen = privateId !== undefined;
   const [revision, setRevision] = useState(0);
   const [latestAiSeq, setLatestAiSeq] = useState(0);
-  const [connection, setConnection] = useState<"Connecting" | "Connected" | "Reconnecting" | "Session expired">("Connecting");
+  const [connection, setConnection] = useState<"Connecting" | "Connected" | "Reconnecting">("Connecting");
   const [transfers, setTransfers] = useState<Transfer[]>([]);
-  const [failure, setFailure] = useState("");
+  const [failure, setFailure] = useState(session.notice ?? "");
   const [newChat, setNewChat] = useState(false);
   const [offer, setOffer] = useState<DropOffer & { conversation: string }>();
   const [sharing, setSharing] = useState(false);
   const [leaving, setLeaving] = useState(false);
+  const signingOut = useRef(false);
 
   useEffect(() => {
     if (!profileNotice) return;
@@ -116,14 +117,19 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
         setRevision(update.last_seq);
         setLatestAiSeq(update.latest_ai_seq);
       } catch (error) {
-        setConnection(isExpired(error) ? "Session expired" : "Reconnecting");
+        if (isExpired(error)) {
+          if (!signingOut.current) {
+            signingOut.current = true;
+            signedOut(errorMessage(error));
+          }
+        } else setConnection("Reconnecting");
       } finally {
         refreshInFlight.current = null;
       }
     };
     refreshInFlight.current = sync();
     return refreshInFlight.current;
-  }, []);
+  }, [signedOut]);
 
   const changed = useCallback(() => {
     void api.transfers().then(setTransfers).catch(error => setFailure(errorMessage(error)));
@@ -286,10 +292,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }
 
   async function signOut() {
-    if (leaving) return;
+    if (signingOut.current) return;
+    signingOut.current = true;
     setLeaving(true);
     try { await api.logout(); signedOut(); }
-    catch (error) { signedOut(isExpired(error) ? undefined : "Signed out locally. The service could not revoke this session."); }
+    catch (error) { signedOut(errorMessage(error)); }
   }
 
   const people = [...new Map([session.user, ...directory.conversations.flatMap(chat => chat.members)]
@@ -337,7 +344,6 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           onClick={() => setScanning(true)}><ScanLine size={20} /></button>
         <div className={"connection " + (connected ? "connected" : "disconnected")} role="status">
           <span className="connection-dot" />{connection}
-          {connection === "Session expired" && <button className="text-button" disabled={leaving} onClick={() => void signOut()}>Sign in again</button>}
         </div></div>
         {windows && <WindowControls />}
       </header>
