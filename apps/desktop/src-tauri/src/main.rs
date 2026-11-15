@@ -2,9 +2,12 @@
 
 mod ai;
 mod commands;
+#[cfg(windows)]
+mod dpapi;
 mod images;
 mod media;
 mod private_runtime;
+mod saved_session;
 #[cfg(windows)]
 mod windows_shell;
 
@@ -112,6 +115,7 @@ fn main() {
             commands::preferences,
             commands::set_close_action,
             commands::login,
+            commands::restore_session,
             commands::logout,
             commands::sync,
             commands::directory,

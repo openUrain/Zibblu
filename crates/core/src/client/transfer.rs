@@ -279,6 +279,14 @@ impl Client {
     }
 
     pub async fn logout(&self) -> Result<()> {
+        self.close().await;
+        self.api
+            .send(self.api.request(Method::DELETE, "/v1/session"))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
         let active = std::mem::take(&mut *self.workers.lock().await);
         for worker in active.values() {
@@ -288,10 +296,6 @@ impl Client {
             let _ = worker.task.await;
         }
         let _prepare = self.prepare_gate.lock().await;
-        self.api
-            .send(self.api.request(Method::DELETE, "/v1/session"))
-            .await?;
-        Ok(())
     }
 
     fn ensure_open(&self) -> Result<()> {

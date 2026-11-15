@@ -1,9 +1,11 @@
-use anyhow::{Context, anyhow};
+use crate::saved_session::{self, SavedAccount, SavedSession};
+use anyhow::{Context, anyhow, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex},
+    time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
@@ -16,7 +18,7 @@ use zibblu_core::private_chat::{
 use zibblu_core::{
     Client, ContactNotes, ConversationRequest, Credentials, Direction, Directory, FileFilter,
     GroupInvite, GroupInvitePreview, Message, MessageReceipt, OnlineError, Page, Profile,
-    PublishAiReply, ReadUpdate, SendMessage, SyncUpdate, Transfer, User,
+    ProfileRelation, PublishAiReply, ReadUpdate, SendMessage, SyncUpdate, Transfer, User,
 };
 
 const OFFICIAL_SERVER: &str = "https://zibblu-api.openurain.com";
@@ -118,6 +120,79 @@ impl Desktop {
     pub(crate) fn webview_directory(&self) -> PathBuf {
         self.data.join("webview")
     }
+
+    fn remember(&self, client: &Client, avatar: Option<Vec<u8>>) -> anyhow::Result<()> {
+        saved_session::save(
+            &self.data,
+            &SavedSession {
+                account: SavedAccount {
+                    user: client.user.clone(),
+                    server: client.server().into(),
+                    avatar,
+                },
+                token: client.session_token().into(),
+            },
+        )
+    }
+
+    pub(crate) async fn remember_avatar(&self, client: &Arc<Client>, avatar: Vec<u8>) {
+        let session = self.session.lock().await;
+        if session
+            .as_ref()
+            .is_some_and(|active| Arc::ptr_eq(active, client))
+            && self.remember(client, Some(avatar)).is_err()
+        {
+            eprintln!("Could not update the saved account avatar.");
+        }
+    }
+
+    async fn start_session(
+        &self,
+        app: AppHandle,
+        session: &mut Option<Arc<Client>>,
+        client: Arc<Client>,
+        notice: Option<&'static str>,
+    ) -> SignedIn {
+        let result = SignedIn {
+            user: client.user.clone(),
+            server: client.server().into(),
+            notice,
+        };
+        *session = Some(client.clone());
+        *self.private_worker.lock().await = Some(tauri::async_runtime::spawn(
+            crate::private_runtime::run(app, client),
+        ));
+        result
+    }
+
+    async fn end_session(
+        &self,
+        app: &AppHandle,
+        session: &mut Option<Arc<Client>>,
+        revoke: bool,
+    ) -> anyhow::Result<()> {
+        let cleared = saved_session::clear(&self.data)
+            .context("Could not remove the saved sign-in from this device.");
+        self.ai.lock().expect("AI state").clear();
+        self.close_private(app).await;
+        *self.drop.lock().expect("drop state") = None;
+        let revoked = match session.take() {
+            Some(client) if revoke => client.logout().await,
+            Some(client) => {
+                client.close().await;
+                Ok(())
+            }
+            None => Ok(()),
+        };
+        cleared?;
+        if let Err(error) = revoked {
+            ensure!(
+                is_unauthorized(&error),
+                "Signed out on this device. The service could not confirm revocation."
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -200,6 +275,8 @@ pub(crate) struct SignInPreferences {
     #[serde(flatten)]
     saved: Preferences,
     official_server: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    saved_account: Option<SavedAccount>,
 }
 
 #[derive(Serialize)]
@@ -210,12 +287,22 @@ pub(crate) struct CommandError {
 
 impl From<anyhow::Error> for CommandError {
     fn from(error: anyhow::Error) -> Self {
-        let expired = matches!(error.downcast_ref::<OnlineError>(),
-            Some(OnlineError::Rejected { status, .. }) if status.as_u16() == 401);
         Self {
             message: error.to_string(),
-            expired,
+            expired: is_unauthorized(&error),
         }
+    }
+}
+
+fn is_unauthorized(error: &anyhow::Error) -> bool {
+    matches!(error.downcast_ref::<OnlineError>(),
+        Some(OnlineError::Rejected { status, .. }) if status.as_u16() == 401)
+}
+
+fn invalid_saved_session() -> CommandError {
+    CommandError {
+        message: "The saved sign-in is unavailable. Enter your password to sign in.".into(),
+        expired: true,
     }
 }
 
@@ -225,6 +312,8 @@ pub(crate) type Result<T> = std::result::Result<T, CommandError>;
 pub(crate) struct SignedIn {
     user: User,
     server: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notice: Option<&'static str>,
 }
 
 #[derive(Clone, Serialize)]
@@ -242,14 +331,27 @@ pub(crate) enum ShareSource {
 }
 
 #[tauri::command]
-pub(crate) fn preferences(state: State<'_, Desktop>) -> Result<SignInPreferences> {
-    let current = state.preferences.lock().expect("preferences");
+pub(crate) fn preferences(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+) -> Result<SignInPreferences> {
+    let saved = state
+        .preferences
+        .lock()
+        .expect("preferences")
+        .as_ref()
+        .map_err(|error| anyhow!("{error}"))?
+        .clone();
+    let saved_account = (window.label() == "main")
+        .then(|| {
+            let session = saved_session::load(&state.data).ok().flatten()?;
+            (session.account.server == saved.server).then(|| session.account.clone())
+        })
+        .flatten();
     Ok(SignInPreferences {
-        saved: current
-            .as_ref()
-            .map_err(|error| anyhow!("{error}"))?
-            .clone(),
+        saved,
         official_server: OFFICIAL_SERVER,
+        saved_account,
     })
 }
 
@@ -279,46 +381,121 @@ pub(crate) async fn login(
         register,
     )
     .await?;
-    let server = client.server().to_owned();
-    if state
-        .update_preferences(|value| value.server.clone_from(&server))
-        .is_err()
-    {
-        eprintln!("Could not remember the server address.");
-    }
-    let result = SignedIn {
-        user: client.user.clone(),
-        server,
+    let address_saved = state
+        .update_preferences(|value| value.server = client.server().into())
+        .is_ok();
+    let notice = if cfg!(windows) {
+        let avatar = tokio::time::timeout(Duration::from_secs(2), async {
+            let profile = client.profile(client.user.id).await.ok()?;
+            if profile.user.id != client.user.id
+                || !matches!(profile.relation, ProfileRelation::Own)
+            {
+                return None;
+            }
+            let version = profile.avatar?;
+            let bytes = client.profile_image(client.user.id, version).await.ok()?;
+            crate::images::saved_avatar(&bytes).ok()
+        })
+        .await
+        .ok()
+        .flatten();
+        if address_saved && state.remember(&client, avatar).is_ok() {
+            None
+        } else if saved_session::clear(&state.data).is_ok() {
+            Some("This sign-in could not be saved for next time.")
+        } else {
+            Some("The saved sign-in could not be replaced or removed.")
+        }
+    } else {
+        (!address_saved).then_some("The server address could not be saved.")
     };
-    *session = Some(client.clone());
-    *state.private_worker.lock().await = Some(tauri::async_runtime::spawn(
-        crate::private_runtime::run(app, client),
-    ));
-    Ok(result)
+    Ok(state.start_session(app, &mut session, client, notice).await)
+}
+
+#[tauri::command]
+pub(crate) async fn restore_session(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    account_id: Uuid,
+    server: String,
+) -> Result<SignedIn> {
+    if window.label() != "main" {
+        return Err(invalid_saved_session());
+    }
+    let mut session = state.session.lock().await;
+    if session.is_some() {
+        return Err(anyhow!("Sign out before changing accounts").into());
+    }
+    let saved = saved_session::load(&state.data)
+        .ok()
+        .flatten()
+        .ok_or_else(invalid_saved_session)?;
+    let selected = state
+        .preferences
+        .lock()
+        .expect("preferences")
+        .as_ref()
+        .map_err(|error| anyhow!("{error}"))?
+        .server
+        .clone();
+    if selected != saved.account.server
+        || server != saved.account.server
+        || account_id != saved.account.user.id
+    {
+        return Err(invalid_saved_session());
+    }
+    let client = match Client::restore(
+        &state.data,
+        &saved.account.server,
+        saved.account.user.id,
+        &saved.token,
+    )
+    .await
+    {
+        Ok(client) => client,
+        Err(error) if is_unauthorized(&error) => {
+            if saved_session::clear(&state.data).is_err() {
+                return Err(CommandError { message: "The saved sign-in was rejected and could not be removed. Enter your password to sign in.".into(), expired: true });
+            }
+            return Err(error.into());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    Ok(state.start_session(app, &mut session, client, None).await)
 }
 
 #[tauri::command]
 pub(crate) async fn logout(app: AppHandle, state: State<'_, Desktop>) -> Result<()> {
     let mut session = state.session.lock().await;
-    state.ai.lock().expect("AI state").clear();
-    state.close_private(&app).await;
-    *state.drop.lock().expect("drop state") = None;
-    if let Some(client) = session.take() {
-        client.logout().await?;
-    }
-    Ok(())
+    Ok(state.end_session(&app, &mut session, true).await?)
 }
 
 #[tauri::command]
-pub(crate) async fn sync(state: State<'_, Desktop>) -> Result<SyncUpdate> {
+pub(crate) async fn sync(app: AppHandle, state: State<'_, Desktop>) -> Result<SyncUpdate> {
     let client = state.client().await?;
-    let update = client.sync_updates().await?;
-    let session = state.session.lock().await;
-    if session
+    let result = client.sync_updates().await;
+    let mut session = state.session.lock().await;
+    if !session
         .as_ref()
         .is_some_and(|current| Arc::ptr_eq(current, &client))
-        && let Some(lobby) = state.private.lock().await.as_ref()
     {
+        return Err(anyhow!("The session has ended").into());
+    }
+    let update = match result {
+        Err(error) if is_unauthorized(&error) => {
+            let cleanup = state.end_session(&app, &mut session, false).await;
+            return Err(CommandError {
+                expired: true,
+                message: match cleanup {
+                    Ok(()) => "Your session has expired. Sign in again.".into(),
+                    Err(error) => error.to_string(),
+                },
+            });
+        }
+        result => result?,
+    };
+    if let Some(lobby) = state.private.lock().await.as_ref() {
         lobby.set_memberships(crate::private_runtime::memberships(&update.directory));
     }
     Ok(update)

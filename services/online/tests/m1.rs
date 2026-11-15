@@ -1045,6 +1045,91 @@ async fn sign_in(
     .await
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn session_restore_validates_account_before_opening_the_local_profile() -> Result<()> {
+    let db = PgPoolOptions::new()
+        .max_connections(6)
+        .connect(&std::env::var("ZIBBLU_TEST_DATABASE_URL")?)
+        .await?;
+    let app = zibblu_online::router(db.clone()).await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let server = format!("http://{}", listener.local_addr()?);
+    let task = tokio::spawn(async move { axum::serve(listener, app).await });
+    let data = tempfile::tempdir()?;
+    let rejected = tempfile::tempdir()?;
+    let suffix = &Uuid::new_v4().simple().to_string()[..10];
+    let password = format!("acceptance-{suffix}");
+    let alice = sign_in(
+        data.path(),
+        &server,
+        &format!("resume_{suffix}"),
+        &password,
+        true,
+    )
+    .await?;
+    let bob = sign_in(
+        data.path(),
+        &server,
+        &format!("peer_{suffix}"),
+        &password,
+        true,
+    )
+    .await?;
+    let alice_id = alice.user.id;
+    assert!(
+        Client::restore(rejected.path(), &server, alice_id, bob.session_token())
+            .await
+            .is_err()
+    );
+    assert!(
+        Client::restore(rejected.path(), &server, alice_id, "invalid")
+            .await
+            .is_err()
+    );
+    assert!(!rejected.path().join("profiles").exists());
+
+    alice.add_contact(bob.user.id).await?;
+    bob.respond_contact(alice_id, true).await?;
+    let conversation = alice
+        .create_conversation(ConversationRequest::Direct {
+            contact_id: bob.user.id,
+        })
+        .await?;
+    send(&alice, conversation, "History before app exit").await?;
+    alice.sync().await?;
+    let token = alice.session_token().to_owned();
+    drop(alice);
+    let restored = Client::restore(data.path(), &server, alice_id, &token).await?;
+    assert_eq!(restored.user.id, alice_id);
+    assert_eq!(
+        restored.messages(conversation, None).await?.items[0]
+            .text
+            .as_deref(),
+        Some("History before app exit")
+    );
+    restored.logout().await?;
+    assert!(
+        Client::restore(rejected.path(), &server, alice_id, &token)
+            .await
+            .is_err()
+    );
+
+    sqlx::query(
+        "UPDATE sessions SET expires_at = now() - interval '1 second' WHERE token_hash = $1",
+    )
+    .bind(Sha256::digest(bob.session_token().as_bytes()).as_slice())
+    .execute(&db)
+    .await?;
+    assert!(
+        Client::restore(rejected.path(), &server, bob.user.id, bob.session_token())
+            .await
+            .is_err()
+    );
+    assert!(!rejected.path().join("profiles").exists());
+    task.abort();
+    Ok(())
+}
+
 async fn send(client: &Client, chat: Uuid, text: &str) -> Result<()> {
     client
         .send_message(

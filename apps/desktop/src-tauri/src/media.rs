@@ -53,8 +53,21 @@ pub(crate) async fn set_profile_image(
         _ => return Err(anyhow::anyhow!("Choose an avatar or cover image").into()),
     };
     let client = state.client().await?;
-    let png = process_upload(request.body(), |bytes| images::profile_png(&bytes)).await?;
-    Ok(client.set_profile_image(kind, png).await?)
+    let (png, thumbnail) = process_upload(request.body(), move |bytes| {
+        let png = images::profile_png(&bytes)?;
+        let thumbnail = if cfg!(windows) && matches!(kind, ProfileImage::Avatar) {
+            images::saved_avatar(&png).ok()
+        } else {
+            None
+        };
+        Ok((png, thumbnail))
+    })
+    .await?;
+    client.set_profile_image(kind, png).await?;
+    if let Some(thumbnail) = thumbnail {
+        state.remember_avatar(&client, thumbnail).await;
+    }
+    Ok(())
 }
 
 #[tauri::command]
