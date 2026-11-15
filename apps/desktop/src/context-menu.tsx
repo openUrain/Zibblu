@@ -6,13 +6,16 @@ import { ClipboardPaste, Copy, TextCursorInput } from "lucide-react";
 export type MenuItem = { label: string; action: () => void; disabled?: boolean; icon?: ReactNode };
 type Menu = { x: number; y: number; anchor: HTMLElement; items: MenuItem[]; restoreFocus: HTMLElement | null };
 const OpenMenu = createContext<(anchor: HTMLElement, items: MenuItem[], point?: { x: number; y: number }) => void>(() => {});
+const MenuAnchor = createContext<HTMLElement | undefined>(undefined);
 export const useMenu = () => useContext(OpenMenu);
+export const useMenuAnchor = () => useContext(MenuAnchor);
 
 export function DesktopMenus({ children }: { children: ReactNode }) {
   const [menu, setMenu] = useState<Menu>();
   const panel = useRef<HTMLDivElement>(null);
 
   function open(anchor: HTMLElement, items: MenuItem[], point?: { x: number; y: number }) {
+    if (menu?.anchor === anchor && !point) { close(true); return; }
     if (!items.some(item => !item.disabled)) { setMenu(undefined); return; }
     const rect = anchor.getBoundingClientRect();
     setMenu({
@@ -38,7 +41,10 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!menu) return;
     const outside = (event: PointerEvent) => {
-      if (!(event.target instanceof Node) || !panel.current?.contains(event.target)) setMenu(undefined);
+      if (!(event.target instanceof Node) || (!panel.current?.contains(event.target) && !menu.anchor.contains(event.target))) {
+        if (panel.current?.contains(document.activeElement)) menu.restoreFocus?.focus({ preventScroll: true });
+        setMenu(undefined);
+      }
     };
     const reposition = () => {
       const anchor = menu.anchor.getBoundingClientRect();
@@ -63,7 +69,7 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     const field = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ? target : undefined;
     const editable = field && !field.readOnly && !field.disabled
       && (field instanceof HTMLTextAreaElement || /^(text|search|url|tel|email|password)$/.test(field.type));
-    const password = field instanceof HTMLInputElement && field.type === "password";
+    const password = field instanceof HTMLInputElement && (field.type === "password" || field.hasAttribute("data-password"));
     const start = field?.selectionStart ?? null;
     const end = field?.selectionEnd ?? null;
     const items: MenuItem[] = [];
@@ -89,7 +95,7 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
       event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : undefined);
   }
 
-  return <OpenMenu.Provider value={open}><div onContextMenu={context}>
+  return <OpenMenu.Provider value={open}><MenuAnchor.Provider value={menu?.anchor}><div onContextMenu={context}>
     {children}
     {menu && createPortal(<div className="app-menu" ref={panel} role="menu" aria-label="Actions" tabIndex={-1}
       onContextMenu={event => { event.preventDefault(); event.stopPropagation(); }}
@@ -111,5 +117,5 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
       {menu.items.map(item => <button type="button" role="menuitem" key={item.label} disabled={item.disabled}
         onClick={() => { close(true); item.action(); }}>{item.icon}{item.label}</button>)}
     </div>, menu.anchor.closest("dialog, .private-chat") ?? document.body)}
-  </div></OpenMenu.Provider>;
+  </div></MenuAnchor.Provider></OpenMenu.Provider>;
 }

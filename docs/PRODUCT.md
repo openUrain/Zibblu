@@ -10,7 +10,7 @@
 **Authoritative cross-platform UI/UX design:** [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) (Owner-approved, 2026-11-14). The following are **target design rules**, not a claim that all v0.1.1 screens already comply.
 
 - Chat behavior, chat-list hierarchy, profile and settings organization follow **WeChat**. File operation capabilities and media viewer follow **QQ**. Visual polish is **iMessage-first** with subtle **Snapchat** playfulness; overall presentation is Apple-like restraint.
-- Main desktop navigation: **Chats · Contacts · Files · Settings**, with three panes (nav / conversation list / content). Phone: four bottom tabs **Chats · Contacts · Files · Me**. Tablet: two-pane adaptive layout; preserve platform-native gestures and typography.
+- Main desktop navigation has three panes (nav / conversation list / content). **Chats · Contacts · Files** are direct entries. The top-left logo opens your profile. The bottom-left menu contains Settings, About, Feedback availability and Sign out. Phone uses four bottom tabs **Chats · Contacts · Files · Me**. Tablet uses a two-pane adaptive layout.
 - Chat: retain **current message bubble visuals unchanged**. Use WeChat-style chat list and contextual operations (desktop right-click; mobile long-press). Composer uses WeChat functionality and iMessage visual treatment. Show only necessary message states.
 - Files: the **Files view only lists ordinary attachments that cannot be directly previewed inside chat and must be downloaded**. Pictures and videos stay in **per-conversation chat/media history and media search**, with in-chat previews when supported. Ordinary file messages use **WeChat-style cards** with **progress directly in chat**. File actions and batch management follow QQ; the media viewer supports QQ-style navigation and save operations where available.
 - Profile: concise WeChat-like summary, extended info at a second level. Settings: desktop split-panel, phone hierarchical lists.
@@ -23,17 +23,19 @@
 
 On Windows, the standalone client defaults to **Zibblu Online** on a fresh profile. Sign in or create an account directly. **Advanced** allows a custom server, and upgrades keep the previously saved server and local profile. The client uses local SQLite. PostgreSQL runs with the server.
 
+Registration asks for the new password twice. On Windows, the main window starts centered in the work area of its initial display. The first close asks whether to exit or hide to the system tray. Settings lets you change this local preference. Minimize still uses the taskbar. The tray can show the same window or exit the app. Launching again with the same data directory restores its window. Separate directories can run independent clients.
+
 **User flow:** sign in → find a username → send a contact request → wait for approval → send messages or start a group → share files and find them in Files.
 
 Initial functional scope:
 - Direct and basic group chat, local message history and offline delivery through the online service.
 - Usernames keep their registered capitalization. Sign-in and contact lookup are case-insensitive.
-- Contact requests can include a greeting that becomes a normal message upon approval. Profiles show a handle and avatar to signed-in accounts, with the cover and bio available to approved contacts. Open your own profile from the rail avatar. Private address-book remarks take precedence across the app.
+- Contact requests can include a greeting that becomes a normal message upon approval. Profiles show a handle and avatar to signed-in accounts, with the cover and bio available to approved contacts. Private address-book remarks take precedence across the app.
 - The chat list shows unread counts. Optional account-level read receipts require both people to opt in. A message can be copied, quoted or hidden on this device. Drafts are kept per conversation in memory for the current sign-in.
 - The sender can recall an ordinary message or shared attachment within five minutes. Participants receive a recall notice in the timeline.
 - Sending files/folders; clear transfer state, file metadata, pause/resume and integrity verification. Folders are shared as ZIP downloads.
 - Paste a clipboard image into the composer and send it as an attachment. Open inline images and videos in the chat's media viewer to browse and save them. If a format cannot be previewed or decoded, download it from the chat or viewer.
-- The conversation menu provides text and media search plus a separate list of shared files. The sidebar Files view searches ordinary attachments across chats, with newest first as the default and Transfers available for maintenance.
+- The conversation drawer opens the peer's profile in a direct chat or shows members and the invite QR code in a group. It also opens text search, media history and the separate list of shared files for that conversation. The sidebar Files view searches ordinary attachments across chats, with newest first as the default and Transfers available for maintenance.
 - Standard online routing is **separate** from private mode; ordinary messages can involve the server.
 
 Avoid in v1: voice/video, social feeds, bots, automatic cloud-drive sync, complex admin dashboards, mobile before desktop stabilization.
@@ -46,7 +48,7 @@ Rules:
 - Devices need direct UDP on the same subnet or between explicitly approved subnets inside a managed site. The app verifies account-bound device certificates before showing an invitation.
 - **Nearby devices** in the top bar lists discoverable Zibblu instances after sign-in. A selected device can receive a private invitation without a shared conversation or contact relationship. The selected device must authenticate and accept before chatting. In an active session, open a participant's profile to send a separate contact request.
 - A direct invitation shows the sender and **Accept** and **Decline**. A group invitation also shows the invitees. Accepted accounts can join as they respond, and a late account or device sees new text only.
-- Invitations cover the app window. Windows shows a compact lower-right prompt while the main window is minimized. Accepting brings the private chat forward. Declining keeps the main window minimized.
+- Invitations cover the app window. Windows shows a compact lower-right prompt while the main window is minimized to the taskbar. Accepting brings the private chat forward. Declining keeps the main window minimized. While hidden to the tray, pending invitations stay in the app.
 - No server relay, online forwarding or unnoticed switch back to normal mode. Connection failure means private mode is unavailable.
 - No private messages or attachments written to normal chat history. MVP private mode supports **text**; private file transfer requires a separate later decision.
 - Switching views keeps the private session available alongside ordinary chats. Ending the session or quitting the host closes the channel and clears the in-memory conversation.

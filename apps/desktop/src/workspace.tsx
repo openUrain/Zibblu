@@ -1,6 +1,7 @@
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import {
-  ArrowRight, CircleUserRound, FolderOpen, LogOut, MessageCircle, MessageSquare,
+  ArrowRight, CircleUserRound, FolderOpen, Info, LogOut, Menu, MessageCircle, MessageSquare,
   Radar, ScanLine, Search, Settings, UserRoundMinus, UsersRound, X,
 } from "lucide-react";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
@@ -9,7 +10,7 @@ import { ai } from "./ai-api";
 import type { AiReply, Assistant } from "./ai-api";
 import { AssistantSettings } from "./ai";
 import { api, errorMessage, isExpired } from "./api";
-import type { Conversation, ConversationRequest, Directory, Draft, DropOffer, Session, ShareSource, Transfer, User } from "./api";
+import type { CloseAction, Conversation, ConversationRequest, Directory, Draft, DropOffer, Session, ShareSource, Transfer, User } from "./api";
 import { Blank, Brand, Choice, Dialog, People, PersonAvatar, chatName, displayName } from "./common";
 import { ChatList, ChatView } from "./chat";
 import { FilesView } from "./files";
@@ -17,18 +18,25 @@ import { NearbyDevices, PrivateChatView, PrivateInvitationOverlay, PrivateTarget
 import { ScanQr, ShareQr } from "./qr";
 import type { SharedCode } from "./qr";
 import { ProfileView } from "./profile";
+import { useMenu, useMenuAnchor } from "./context-menu";
+import { CloseActionChoices, WindowControls, windows } from "./window-chrome";
 
 const pages = [
   { name: "Chats", Icon: MessageSquare }, { name: "Contacts", Icon: UsersRound },
-  { name: "Files", Icon: FolderOpen }, { name: "Settings", Icon: Settings },
+  { name: "Files", Icon: FolderOpen },
 ] as const;
-type Navigation = typeof pages[number]["name"];
+type Navigation = typeof pages[number]["name"] | "Settings";
 
-export function Workspace({ session, privateQuiet, setPrivateQuiet, signedOut }: {
+export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction, setCloseAction, signedOut }: {
   session: Session; signedOut: (notice?: string) => void;
   privateQuiet: boolean; setPrivateQuiet: (quiet: boolean) => Promise<void>;
+  closeAction?: CloseAction; setCloseAction: (action: CloseAction) => Promise<void>;
 }) {
   const [nav, setNav] = useState<Navigation>("Chats");
+  const openMenu = useMenu();
+  const menuAnchor = useMenuAnchor();
+  const railMenu = useRef<HTMLButtonElement>(null);
+  const [about, setAbout] = useState(false);
   const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [assistantFailure, setAssistantFailure] = useState("");
   const [aiReplies, setAiReplies] = useState<AiReply[]>([]);
@@ -297,24 +305,32 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, signedOut }:
 
   return <People.Provider value={{ remarks: directory.remarks, avatars: directory.avatars, open: setProfile }}><main className="shell">
     <nav className="rail" aria-label="Main navigation">
-      <div className="rail-brand"><Brand /></div>
+      <button className="rail-brand icon-button" aria-label="Your profile" aria-haspopup="dialog" title="Your profile"
+        onClick={() => setProfile(session.user)}><Brand /></button>
       <div className="rail-links">{pages.map(({ name, Icon }) =>
-        <button key={name} className={nav === name ? "nav-active" : ""} aria-label={name}
+        <button key={name} aria-label={name}
           aria-describedby={attention[name] ? `rail-status-${name}` : undefined}
           aria-current={nav === name ? "page" : undefined} onClick={() => navigate(name)}>
-          <span className="rail-icon"><Icon size={22} strokeWidth={1.9} />
+          <span className="rail-icon">{nav === name ? <ActiveRailIcon name={name} /> : <Icon size={22} strokeWidth={1.9} />}
             {attention[name] && <span className="rail-dot" aria-hidden="true" />}
           </span><span>{name}</span>
         </button>)}</div>
       <div className="sr-only" aria-live="polite" aria-atomic="true">
         {pages.map(({ name }) => <span key={name} id={`rail-status-${name}`}>{attention[name] && `${attention[name]}. `}</span>)}
       </div>
-      <button className="rail-account" title={"@" + session.user.handle} aria-label="Your profile" onClick={() => setProfile(session.user)}>
-        <PersonAvatar user={session.user} />
-      </button>
+      <button className="rail-menu icon-button" ref={railMenu} title="Menu" aria-label="Menu" aria-haspopup="menu"
+        aria-expanded={menuAnchor !== undefined && menuAnchor === railMenu.current}
+        onClick={event => openMenu(event.currentTarget, [
+          { label: "Settings", icon: <Settings size={17} />, action: () => navigate("Settings") },
+          { label: "About Zibblu", icon: <Info size={17} />, action: () => setAbout(true) },
+          { label: "Feedback (unavailable)", icon: <MessageSquare size={17} />, action: () => {}, disabled: true },
+          { label: "Sign out", icon: <LogOut size={17} />, action: () => void signOut(), disabled: leaving },
+        ])}><Menu size={23} /></button>
     </nav>
     <div className="shell-main">
-      <header className="topbar"><span className="app-name">Zibblu</span><div className="chat-actions">
+      <header className={"topbar" + (windows ? " windows-topbar" : "")}>
+        <div className="app-name window-drag" data-tauri-drag-region={windows ? "" : undefined}>Zibblu</div>
+        <div className="chat-actions">
         <button className="icon-button" aria-label="Nearby devices" title="Nearby devices"
           onClick={() => setNearby(true)}><Radar size={20} /></button>
         <button className="icon-button" aria-label="Scan QR code" title="Scan QR code"
@@ -323,6 +339,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, signedOut }:
           <span className="connection-dot" />{connection}
           {connection === "Session expired" && <button className="text-button" disabled={leaving} onClick={() => void signOut()}>Sign in again</button>}
         </div></div>
+        {windows && <WindowControls />}
       </header>
       {failure && <div className="workspace-error" role="alert">{failure}
         <button className="icon-button" aria-label="Dismiss error" onClick={() => setFailure("")}><X size={17} /></button>
@@ -352,15 +369,16 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, signedOut }:
             <button className="button primary" onClick={() => setNewChat(true)}>New conversation <ArrowRight size={16} /></button>
           </Blank></section>}
       </div>}
-      {nav === "Contacts" && <Contacts own={session.user} directory={directory} refresh={refresh} create={create} />}
+      {nav === "Contacts" && <Contacts own={session.user} directory={directory} selected={profile?.id} refresh={refresh} create={create} />}
       {nav === "Files" && <FilesView people={people} revision={revision} recalled={recalled} hidden={hidden} transfers={transfers} onChanged={changed} />}
-      {nav === "Settings" && <SettingsView {...{ session, leaving, signOut, privateQuiet, setPrivateQuiet }}
+      {nav === "Settings" && <SettingsView {...{ session, privateQuiet, setPrivateQuiet, closeAction, setCloseAction }}
         readReceipts={directory.read_receipts} setReadReceipts={async enabled => { await api.setReadReceipts(enabled); await refresh(); }}
         assistantSettings={<AssistantSettings assistants={assistants} failure={assistantFailure} changed={next => {
           setAssistants(next);
           setAssistantFailure("");
         }} />} />}
     </div>
+    {about && <About close={() => setAbout(false)} />}
     {privateTargets && <PrivateTargets people={privateTargets.members.filter(user => user.id !== session.user.id)}
       close={() => setPrivateTargets(undefined)} start={invited => startPrivate(privateTargets, invited)} />}
     {nearby && <NearbyDevices own={session.user.id} close={() => setNearby(false)} invited={id => {
@@ -401,8 +419,25 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, signedOut }:
   </main></People.Provider>;
 }
 
-function Contacts({ own, directory, refresh, create }: {
-  own: User; directory: Directory; refresh: () => Promise<void>; create: (request: ConversationRequest) => Promise<void>;
+function ActiveRailIcon({ name }: { name: typeof pages[number]["name"] }) {
+  const paths = {
+    Chats: "M5 3h14a3 3 0 0 1 3 3v11a3 3 0 0 1-3 3H8l-5 2V6a3 3 0 0 1 2-3Z",
+    Contacts: "M10 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm0 2a8 8 0 0 0-8 7h16a8 8 0 0 0-8-7Zm7-9a3.5 3.5 0 0 1 0 7h-1a6 6 0 0 0 0-7h1Zm1 9a7 7 0 0 1 5 7h-3a10 10 0 0 0-3-7h1Z",
+    Files: "M2 6a2 2 0 0 1 2-2h5l3 3h7a2 2 0 0 1 2 2v1H7a3 3 0 0 0-3 2l-2 5V6Zm5 6h14a1.5 1.5 0 0 1 1.4 2l-2.2 5a2 2 0 0 1-1.8 1H4l2.4-7a.7.7 0 0 1 .6-1Z",
+  };
+  return <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d={paths[name]} /></svg>;
+}
+
+function About({ close }: { close: () => void }) {
+  const [version, setVersion] = useState("");
+  useEffect(() => { void getVersion().then(setVersion).catch(() => {}); }, []);
+  return <Dialog title="About Zibblu" close={close}>
+    <div className="about-app"><Brand /><div><strong>Zibblu {version}</strong><p className="muted">Chat freely. Share privately.</p></div></div>
+  </Dialog>;
+}
+
+function Contacts({ own, directory, selected, refresh, create }: {
+  own: User; directory: Directory; selected?: string; refresh: () => Promise<void>; create: (request: ConversationRequest) => Promise<void>;
 }) {
   const { contacts, pending_contacts } = directory;
   const { remarks, open } = useContext(People);
@@ -434,7 +469,7 @@ function Contacts({ own, directory, refresh, create }: {
         <button className="button primary" disabled={busy || !handle.trim()} type="submit">Find contact</button>
       </form>
       {found && <div className="contact-row search-result">
-        <button className="person-link contact-name" onClick={() => open?.(found)}>
+        <button className="person-link contact-name" aria-current={selected === found.id || undefined} onClick={() => open?.(found)}>
           <PersonAvatar user={found} /><strong>{displayName(found, remarks)}</strong>
         </button>
         <span className="muted">{found.id === own.id ? "Your account" : contacts.some(user => user.id === found.id)
@@ -446,7 +481,7 @@ function Contacts({ own, directory, refresh, create }: {
       <h2 className="section-title">Contact requests</h2>
       <div className="surface contacts">
         {pending_contacts.map(({ user, incoming, greeting, request_id }) => <div className="contact-row" key={user.id}>
-          <button className="person-link contact-name" onClick={() => open?.(user)}>
+          <button className="person-link contact-name" aria-current={selected === user.id || undefined} onClick={() => open?.(user)}>
             <PersonAvatar user={user} /><span><strong>{displayName(user, remarks)}</strong>
               <small>{incoming ? "Wants to connect" : "Waiting for approval"}</small>
               {greeting && <span className="contact-greeting">{greeting}</span>}
@@ -468,7 +503,7 @@ function Contacts({ own, directory, refresh, create }: {
     <h2 className="section-title">Your contacts</h2>
     {contacts.length ? <div className="surface contacts">
       {contacts.map(user => <div className="contact-row" key={user.id}>
-        <button className="person-link contact-name" onClick={() => open?.(user)}>
+        <button className="person-link contact-name" aria-current={selected === user.id || undefined} onClick={() => open?.(user)}>
           <PersonAvatar user={user} /><strong>{displayName(user, remarks)}</strong>
         </button>
         <button className="button subtle" disabled={busy}
@@ -534,8 +569,9 @@ function NewChat({ contacts, create, close, findPeople }: {
   </Dialog>;
 }
 
-function SettingsView({ session, leaving, signOut, privateQuiet, setPrivateQuiet, readReceipts, setReadReceipts, assistantSettings }: {
-  session: Session; leaving: boolean; signOut: () => Promise<void>;
+function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, setReadReceipts, closeAction, setCloseAction, assistantSettings }: {
+  session: Session;
+  closeAction?: CloseAction; setCloseAction: (action: CloseAction) => Promise<void>;
   privateQuiet: boolean; setPrivateQuiet: (quiet: boolean) => Promise<void>;
   readReceipts: boolean; setReadReceipts: (enabled: boolean) => Promise<void>;
   assistantSettings: ReactNode;
@@ -553,11 +589,9 @@ function SettingsView({ session, leaving, signOut, privateQuiet, setPrivateQuiet
     <div className="surface settings-card">
       <h2><CircleUserRound size={20} /> Account</h2>
       <p className="muted server-address">{session.server}</p>
-      <div className="chat-actions">
-        <button className="button subtle" disabled={leaving} onClick={() => void signOut()}><LogOut size={16} />{leaving ? "Signing out…" : "Sign out"}</button>
-      </div>
     </div>
     <div className="surface settings-card">
+      {windows && <CloseActionChoices action={closeAction} choose={action => void save(() => setCloseAction(action))} disabled={saving} />}
       <label className="choice setting-switch">
         <span>Read receipts<small>Both people must enable receipts to share read status.</small></span>
         <input type="checkbox" role="switch" checked={readReceipts} disabled={saving}

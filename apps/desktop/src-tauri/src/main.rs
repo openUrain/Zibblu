@@ -4,17 +4,29 @@ mod ai;
 mod commands;
 mod media;
 mod private_runtime;
+#[cfg(windows)]
+mod windows_shell;
 
 use commands::{Desktop, DropOffer};
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
 };
-use tauri::{DragDropEvent, Emitter, Manager, WebviewWindowBuilder, WindowEvent};
+use tauri::{AppHandle, DragDropEvent, Emitter, Manager, WebviewWindowBuilder, WindowEvent};
 use uuid::Uuid;
 
+fn quit(app: &AppHandle) {
+    static EXITING: AtomicBool = AtomicBool::new(false);
+    if !EXITING.swap(true, Ordering::Relaxed) {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            app.state::<Desktop>().close_private(&app).await;
+            app.exit(0);
+        });
+    }
+}
+
 fn main() {
-    let closing = AtomicBool::new(false);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("zibblu-media", media::preview)
@@ -24,9 +36,20 @@ fn main() {
                 None => app.path().app_local_data_dir()?,
             };
             std::fs::create_dir_all(&data)?;
+            #[cfg(windows)]
+            let window_class = match windows_shell::claim_profile(&data)? {
+                Some((lock, window_class)) => {
+                    app.manage(lock);
+                    window_class
+                }
+                None => {
+                    app.handle().exit(0);
+                    return Ok(());
+                }
+            };
             app.manage(Desktop::new(data.clone()));
             let config = &app.config().app.windows[0];
-            WebviewWindowBuilder::from_config(app, config)?
+            let builder = WebviewWindowBuilder::from_config(app, config)?
                 .data_directory(data.join("webview"))
                 .on_navigation(|url| {
                     matches!(url.scheme(), "tauri") && url.host_str() == Some("localhost")
@@ -36,23 +59,32 @@ fn main() {
                             && url.scheme() == "http"
                             && url.host_str() == Some("127.0.0.1")
                             && url.port() == Some(1420)
-                })
-                .build()?;
+                });
+            #[cfg(windows)]
+            {
+                let window = builder
+                    .window_classname(window_class)
+                    .visible(false)
+                    .decorations(false)
+                    .build()?;
+                windows_shell::center_on_startup(&window, config)?;
+                windows_shell::create_tray(app.handle())?;
+                window.show()?;
+            }
+            #[cfg(not(windows))]
+            builder.build()?;
             Ok(())
         })
-        .on_window_event(move |window, event| {
+        .on_window_event(|window, event| {
             if window.label() != "main" {
                 return;
             }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                if !closing.swap(true, Ordering::Relaxed) {
-                    let app = window.app_handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        app.state::<Desktop>().close_private(&app).await;
-                        app.exit(0);
-                    });
-                }
+                #[cfg(windows)]
+                windows_shell::request_close(window);
+                #[cfg(not(windows))]
+                quit(window.app_handle());
                 return;
             }
             let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event else {
@@ -77,6 +109,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::preferences,
+            commands::set_close_action,
             commands::login,
             commands::logout,
             commands::sync,

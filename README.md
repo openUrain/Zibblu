@@ -61,9 +61,9 @@ npm run tauri dev
 
 Open **Advanced**, enter `http://127.0.0.1:7841`, and create a test account. For remote users, terminate HTTPS at a reverse proxy in front of the loopback service and give both clients the same HTTPS origin. Configure rate limiting for login and registration before public access and keep the database reachable only by trusted services.
 
-Use the paperclip, folder button, drag and drop, or paste an image into the composer. Folders arrive as ZIP archives. Use the conversation's **…** menu for **Search chat** and **Shared files**. The sidebar **Files** workspace shows all shared files by time, with filename search and transfer controls. Save a download to an unused filename. If a transfer pauses or fails, choose **Resume** or **Retry** to continue.
+Use the paperclip, folder button, drag and drop, or paste an image into the composer. Folders arrive as ZIP archives. Use the conversation's **…** drawer for **Search chat** and **Shared files**. The sidebar **Files** workspace shows all shared files by time, with filename search and transfer controls. Save a download to an unused filename. If a transfer pauses or fails, choose **Resume** or **Retry** to continue.
 
-For two independent local profiles, launch the Windows executable with a different `ZIBBLU_DATA_DIR` in each process. By default, the app uses its Windows local app data directory.
+For two independent local profiles, launch the Windows executable with a different `ZIBBLU_DATA_DIR` in each process. By default, the app uses its Windows local app data directory. Launching again with the same directory brings back its existing window.
 
 ### Build and check the Windows client installer
 
