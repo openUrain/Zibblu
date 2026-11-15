@@ -27,13 +27,7 @@ fn quit(app: &AppHandle) {
 }
 
 fn main() {
-    let builder = tauri::Builder::default();
-    #[cfg(windows)]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _, _| {
-        windows_shell::restore_main(app);
-    }));
-
-    builder
+    tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("zibblu-media", media::preview)
         .setup(|app| {
@@ -42,6 +36,17 @@ fn main() {
                 None => app.path().app_local_data_dir()?,
             };
             std::fs::create_dir_all(&data)?;
+            #[cfg(windows)]
+            let window_class = match windows_shell::claim_profile(&data)? {
+                Some((lock, window_class)) => {
+                    app.manage(lock);
+                    window_class
+                }
+                None => {
+                    app.handle().exit(0);
+                    return Ok(());
+                }
+            };
             app.manage(Desktop::new(data.clone()));
             let config = &app.config().app.windows[0];
             let builder = WebviewWindowBuilder::from_config(app, config)?
@@ -57,7 +62,11 @@ fn main() {
                 });
             #[cfg(windows)]
             {
-                let window = builder.visible(false).decorations(false).build()?;
+                let window = builder
+                    .window_classname(window_class)
+                    .visible(false)
+                    .decorations(false)
+                    .build()?;
                 windows_shell::center_on_startup(&window, config)?;
                 windows_shell::create_tray(app.handle())?;
                 window.show()?;

@@ -2,12 +2,57 @@ use crate::{
     commands::{CloseAction, Desktop},
     quit,
 };
+use sha2::{Digest, Sha256};
+use std::{
+    fs::{File, TryLockError},
+    path::Path,
+    thread,
+    time::Duration,
+};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::utils::config::WindowConfig;
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, Window,
 };
+use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    FindWindowW, IsIconic, SW_HIDE, SW_RESTORE, SW_SHOW, SetForegroundWindow, ShowWindowAsync,
+};
+
+pub(crate) fn claim_profile(data: &Path) -> anyhow::Result<Option<(File, String)>> {
+    let data = data.canonicalize()?;
+    let window_class = format!(
+        "Zibblu.Main.{:x}",
+        Sha256::digest(data.as_os_str().as_encoded_bytes())
+    );
+    let wide_class: Vec<_> = window_class
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(data.join("instance.lock"))?;
+
+    for _ in 0..40 {
+        match file.try_lock() {
+            Ok(()) => return Ok(Some((file, window_class))),
+            Err(TryLockError::Error(error)) => return Err(error.into()),
+            Err(TryLockError::WouldBlock) => {}
+        }
+        // A simultaneous launch can observe the lock before the main HWND exists.
+        let window = unsafe { FindWindowW(wide_class.as_ptr(), std::ptr::null()) };
+        if !window.is_null() {
+            show_main(window);
+            return Ok(None);
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    anyhow::bail!("Another Zibblu instance is already using this data directory.");
+}
 
 pub(crate) fn center_on_startup(
     window: &WebviewWindow,
@@ -49,13 +94,23 @@ pub(crate) fn center_on_startup(
     ))
 }
 
-pub(crate) fn restore_main(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        if window.is_minimized().unwrap_or(false) {
-            let _ = window.unminimize();
-        }
-        let _ = window.set_focus();
+fn show_main(window: HWND) {
+    unsafe {
+        let action = if IsIconic(window) != 0 {
+            SW_RESTORE
+        } else {
+            SW_SHOW
+        };
+        ShowWindowAsync(window, action);
+        SetForegroundWindow(window);
+    }
+}
+
+fn restore_main(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main")
+        && let Ok(handle) = window.hwnd()
+    {
+        show_main(handle.0);
     }
 }
 
@@ -92,7 +147,10 @@ pub(crate) fn request_close(window: &Window) {
     match window.state::<Desktop>().close_action() {
         Some(CloseAction::Exit) => quit(window.app_handle()),
         Some(CloseAction::Tray) => {
-            let _ = window.hide();
+            // Relaunch can show this HWND from another process, outside Tauri's cached visibility.
+            if let Ok(handle) = window.hwnd() {
+                unsafe { ShowWindowAsync(handle.0, SW_HIDE) };
+            }
         }
         None => {
             let _ = window.emit_to("main", "choose-close-action", ());
