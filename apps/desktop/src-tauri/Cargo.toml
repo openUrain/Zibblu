@@ -10,8 +10,11 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 anyhow.workspace = true
+gif = "0.14"
+image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tauri = { version = "~2.12.0", features = [] }
 tauri-plugin-dialog = "2"
 tempfile = "3"
@@ -21,7 +24,6 @@ zibblu-core = { workspace = true, features = ["client", "private-chat"] }
 zeroize = "1"
 
 [target.'cfg(windows)'.dependencies]
-sha2.workspace = true
 tauri = { version = "~2.12.0", features = ["tray-icon"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging"] }
 

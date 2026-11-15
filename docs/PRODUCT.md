@@ -40,6 +40,16 @@ Initial functional scope:
 
 Avoid in v1: voice/video, social feeds, bots, automatic cloud-drive sync, complex admin dashboards, mobile before desktop stabilization.
 
+### Desktop image formats
+
+| Format | Avatar and cover | Chat attachment |
+| --- | --- | --- |
+| PNG, JPEG/JPG, BMP | Confirm to save a static PNG | Preview and save the original |
+| GIF, WebP, animated PNG (APNG) | Confirm to save the first frame as a static PNG | Preview with animation where present and save the original |
+| AVIF, HEIC/HEIF and other unsupported images | Choose a supported format | Download the original without an inline preview |
+
+Image inputs for profiles, clipboard pastes and inline previews are capped at 16 MiB, 8192 pixels per side and 16 million pixels total. Animation preview also has frame and decoded pixel limits. Profile images are resized proportionally to fit 1024 × 1024 pixels and 2 MiB. Images that cannot be previewed stay in chat media history when their file type is recognized. Chat attachments can still be sent and saved under the ordinary file size limit.
+
 ## 02 — Private Chat (opt-in LAN-only mode)
 
 **User flow:** open a direct conversation or select members from a shared group → send a private invitation → each receiving account accepts on any device → exchange text in a separate temporary view. An open private QR session provides a 15-minute join window for signed-in devices on the LAN.

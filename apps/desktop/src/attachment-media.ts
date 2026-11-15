@@ -1,8 +1,10 @@
 import type { Attachment, Page } from "./api";
 
-const inlineImages = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
+export const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
+
+const inlineImages = /\.(a?png|jpe?g|gif|webp|bmp)$/i;
 const inlineVideos = /\.(mp4|m4v|webm|mov)$/i;
-const otherImages = /\.(heic|heif|tiff?|svg|ico)$/i;
+const otherImages = /\.(avif|heic|heif|tiff?|svg|ico)$/i;
 const otherVideos = /\.(avi|mkv|wmv|flv|mpg|mpeg|3gp|ogv)$/i;
 
 export function mediaKind(file: Attachment) {
@@ -14,7 +16,7 @@ export function mediaKind(file: Attachment) {
 
 export function canPreview(file: Attachment) {
   return file.kind === "file" && file.size > 0 && (inlineVideos.test(file.name)
-    || (inlineImages.test(file.name) && file.size <= 16 * 1024 * 1024));
+    || (inlineImages.test(file.name) && file.size <= MAX_IMAGE_BYTES));
 }
 
 export async function readAttachmentPage(read: (before?: number) => Promise<Page>,

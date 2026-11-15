@@ -2,7 +2,11 @@ import { Camera, ImagePlus, MessageSquare, QrCode, UserPlus, UserRound } from "l
 import { useContext, useEffect, useState } from "react";
 import { api, errorMessage } from "./api";
 import type { Profile, User } from "./api";
+import { MAX_IMAGE_BYTES } from "./attachment-media";
 import { Blank, Dialog, People, PersonAvatar, displayName } from "./common";
+
+const imageTypes = "image/png,image/apng,image/jpeg,image/webp,image/gif,image/bmp,.apng";
+const imageHelp = "PNG, JPEG, WebP, GIF or BMP up to 16 MiB";
 
 export function ProfileView({ user, relationVersion, close, refresh, saved, message, code }: {
   user: User; relationVersion: string; close: () => void; refresh: () => Promise<void>;
@@ -14,6 +18,7 @@ export function ProfileView({ user, relationVersion, close, refresh, saved, mess
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
   const [asking, setAsking] = useState(false);
+  const [pendingImage, setPendingImage] = useState<{ kind: "avatar" | "cover"; file: File }>();
 
   useEffect(() => {
     let current = true;
@@ -40,12 +45,13 @@ export function ProfileView({ user, relationVersion, close, refresh, saved, mess
 
   function choose(kind: "avatar" | "cover", file?: File) {
     if (!file) return;
-    void save(async () => {
-      if (file.size > 2 * 1024 * 1024 || file.type !== "image/png") {
-        throw new Error("Choose a PNG image up to 2 MiB and 1024 × 1024 pixels.");
-      }
-      await api.setProfileImage(kind, await file.arrayBuffer());
-    });
+    if (file.size > MAX_IMAGE_BYTES) {
+      setPendingImage(undefined);
+      setFailure(`Choose a ${imageHelp}.`);
+      return;
+    }
+    setFailure("");
+    setPendingImage({ kind, file });
   }
 
   const name = profile?.notes?.remark || displayName(user, remarks);
@@ -58,16 +64,16 @@ export function ProfileView({ user, relationVersion, close, refresh, saved, mess
     {profile && <>
       <div className={"profile-banner" + (!own && !contact ? " profile-banner-basic" : "")}>
         {profile.cover && <img src={api.profileImageUrl(user.id, profile.cover)} alt="" />}
-        {own && <label className="button profile-image-control" title="PNG · up to 2 MiB and 1024 × 1024 pixels"><ImagePlus size={16} /> Change cover
-          <input type="file" accept="image/png" disabled={busy} onChange={event => {
+        {own && <label className="button profile-image-control" title={imageHelp}><ImagePlus size={16} /> Change cover
+          <input type="file" accept={imageTypes} disabled={busy} onChange={event => {
             choose("cover", event.currentTarget.files?.[0]); event.currentTarget.value = "";
           }} />
         </label>}
       </div>
       <div className="profile-identity">
         <div className="profile-avatar"><PersonAvatar user={profile.user} version={profile.avatar} large />
-          {own && <label className="icon-button profile-image-control" title="Change avatar · PNG up to 2 MiB and 1024 × 1024 pixels"><Camera size={16} />
-            <input type="file" aria-label="Change avatar" accept="image/png" disabled={busy} onChange={event => {
+          {own && <label className="icon-button profile-image-control" title={`Change avatar · ${imageHelp}`}><Camera size={16} />
+            <input type="file" aria-label="Change avatar" accept={imageTypes} disabled={busy} onChange={event => {
               choose("avatar", event.currentTarget.files?.[0]); event.currentTarget.value = "";
             }} />
           </label>}
@@ -82,6 +88,17 @@ export function ProfileView({ user, relationVersion, close, refresh, saved, mess
         }}><MessageSquare size={17} /> Message</button>}
         {profile.relation === "stranger" && !asking && <button className="button primary" onClick={() => setAsking(true)}><UserPlus size={17} /> Add contact</button>}
       </div>
+      {own && pendingImage && <div className="profile-image-approval">
+        <p role="status"><strong>{pendingImage.file.name}</strong></p>
+        <p className="muted">The image is resized to fit. Animations use the first frame.</p>
+        <div className="dialog-actions">
+          <button className="button subtle" disabled={busy} onClick={() => { setPendingImage(undefined); setFailure(""); }}>Cancel</button>
+          <button className="button primary" disabled={busy} onClick={() => void save(async () => {
+            await api.setProfileImage(pendingImage.kind, await pendingImage.file.arrayBuffer());
+            setPendingImage(undefined);
+          })}>{busy ? "Saving…" : pendingImage.kind === "avatar" ? "Use as avatar" : "Use as cover"}</button>
+        </div>
+      </div>}
       {own && <form className="profile-fields" key={profile.bio} onSubmit={event => {
         event.preventDefault();
         const bio = String(new FormData(event.currentTarget).get("bio") ?? "");
