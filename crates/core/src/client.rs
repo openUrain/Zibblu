@@ -166,6 +166,9 @@ impl Client {
              CREATE TABLE IF NOT EXISTS recall_cursor (
                 id INTEGER PRIMARY KEY CHECK (id = 1), seq INTEGER NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS pending_delivery_ack (
+                batch TEXT PRIMARY KEY NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS transfers (
                 id TEXT NOT NULL, direction TEXT NOT NULL, payload TEXT NOT NULL,
                 PRIMARY KEY (id, direction)
@@ -211,6 +214,7 @@ impl Client {
 
     pub async fn sync_updates(&self) -> Result<SyncUpdate> {
         let _sync = self.sync_gate.lock().await;
+        let mut can_ack = self.flush_delivery_acks().await?;
         let mut after: i64 = sqlx::query_scalar("SELECT coalesce(max(seq), 0) FROM inbox")
             .fetch_one(&self.db)
             .await?;
@@ -226,7 +230,8 @@ impl Client {
                 .json(
                     self.api
                         .request(Method::GET, "/v1/sync")
-                        .query(&[("after", after), ("recall_after", recall_after)]),
+                        .query(&[("after", after), ("recall_after", recall_after)])
+                        .query(&[("delivery_acks", true)]),
                 )
                 .await?;
             if let Some(server_time) = page.server_time {
@@ -281,7 +286,23 @@ impl Client {
             .bind(serde_json::to_string(&page.directory)?)
             .execute(&mut *tx)
             .await?;
+            if let Some(batch) = page.delivery_batch {
+                sqlx::query("INSERT OR IGNORE INTO pending_delivery_ack (batch) VALUES (?)")
+                    .bind(batch.to_string())
+                    .execute(&mut *tx)
+                    .await?;
+                sqlx::query(
+                    "DELETE FROM pending_delivery_ack WHERE rowid IN (
+                    SELECT rowid FROM pending_delivery_ack ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
+                )
+                .bind(MAX_PENDING_DELIVERY_BATCHES as i64)
+                .execute(&mut *tx)
+                .await?;
+            }
             tx.commit().await?;
+            if can_ack && page.delivery_batch.is_some() {
+                can_ack = self.flush_delivery_acks().await?;
+            }
             if count < SYNC_PAGE_SIZE && recall_count < SYNC_PAGE_SIZE {
                 let recalled = sqlx::query_scalar(
                     "SELECT seq FROM inbox WHERE json_extract(payload, '$.recalled') = 1 ORDER BY seq",
@@ -299,6 +320,38 @@ impl Client {
                     latest_ai_seq,
                 });
             }
+        }
+    }
+
+    async fn flush_delivery_acks(&self) -> Result<bool> {
+        let pending: Vec<String> = sqlx::query_scalar("SELECT batch FROM pending_delivery_ack")
+            .fetch_all(&self.db)
+            .await?;
+        if pending.is_empty() {
+            return Ok(true);
+        }
+        let batches = pending
+            .iter()
+            .map(|id| Uuid::parse_str(id))
+            .collect::<std::result::Result<_, _>>()?;
+        let request = self
+            .api
+            .request(Method::POST, "/v1/sync/ack")
+            .timeout(Duration::from_secs(3))
+            .json(&DeliveryAck { batches });
+        match self.api.send(request).await {
+            Ok(_)
+            | Err(OnlineError::Rejected {
+                status: StatusCode::NOT_FOUND,
+                ..
+            }) => {
+                sqlx::query("DELETE FROM pending_delivery_ack")
+                    .execute(&self.db)
+                    .await?;
+                Ok(true)
+            }
+            // Keep the proof for the next sync even if the optional receipt path is down.
+            Err(_) => Ok(false),
         }
     }
 
@@ -572,6 +625,29 @@ impl Client {
     }
 
     pub async fn read_update(&self, conversation: Uuid, update: ReadUpdate) -> Result<Vec<i64>> {
+        match self.update_read(conversation, update, false).await? {
+            ReadResult::Legacy(seen) => Ok(seen),
+            ReadResult::Latest { .. } => Err(OnlineError::InvalidResponse.into()),
+        }
+    }
+
+    pub async fn update_receipt(
+        &self,
+        conversation: Uuid,
+        update: ReadUpdate,
+    ) -> Result<Option<MessageReceipt>> {
+        match self.update_read(conversation, update, true).await? {
+            ReadResult::Latest { receipt } => Ok(receipt),
+            ReadResult::Legacy(_) => Ok(None),
+        }
+    }
+
+    async fn update_read(
+        &self,
+        conversation: Uuid,
+        update: ReadUpdate,
+        latest: bool,
+    ) -> Result<ReadResult> {
         if let Some(through) = update.through {
             let arrived: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM inbox WHERE seq = ? AND conversation_id = ?)",
@@ -582,6 +658,18 @@ impl Client {
             .await?;
             ensure!(arrived, "Wait for the conversation to finish syncing");
         }
+        if let Some(viewed) = update.viewed {
+            let visible: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM inbox i WHERE i.seq = ? AND i.conversation_id = ?
+                 AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h.seq = i.seq)
+                 AND coalesce(json_extract(i.payload, '$.recalled'), 0) = 0)",
+            )
+            .bind(viewed)
+            .bind(conversation.to_string())
+            .fetch_one(&self.db)
+            .await?;
+            ensure!(visible, "This message is unavailable");
+        }
         Ok(self
             .api
             .json(
@@ -590,6 +678,7 @@ impl Client {
                         Method::POST,
                         &format!("/v1/conversations/{conversation}/read"),
                     )
+                    .query(&[("latest", latest)])
                     .json(&update),
             )
             .await?)

@@ -31,7 +31,7 @@ Initial functional scope:
 - Direct and basic group chat, local message history and offline delivery through the online service.
 - Usernames keep their registered capitalization. Sign-in and contact lookup are case-insensitive.
 - Contact requests can include a greeting that becomes a normal message upon approval. Profiles show a handle and avatar to signed-in accounts, with the cover and bio available to approved contacts. Private address-book remarks take precedence across the app.
-- The chat list shows unread counts. Optional account-level read receipts require both people to opt in. A message can be copied, quoted or hidden on this device. Drafts are kept per conversation in memory for the current sign-in.
+- The chat list shows unread counts. With receipts enabled by both accounts, the latest outgoing message in an open direct chat shows one check after a recipient device saves it, then two checks after the recipient views it in the foreground. Changing either preference clears eligibility for messages sent before that change. Group chats and earlier messages have no checkmarks. A message can be copied, quoted or hidden on this device. Drafts are kept per conversation in memory for the current sign-in.
 - The sender can recall an ordinary message or shared attachment within five minutes. Participants receive a recall notice in the timeline.
 - Sending files/folders; clear transfer state, file metadata, pause/resume and integrity verification. Folders are shared as ZIP downloads.
 - Paste a clipboard image into the composer and send it as an attachment. Open inline images and videos in the chat's media viewer to browse and save them. If a format cannot be previewed or decoded, download it from the chat or viewer.

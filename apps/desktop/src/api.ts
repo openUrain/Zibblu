@@ -7,8 +7,9 @@ export type CloseAction = "exit" | "tray";
 export type Preferences = { server: string; official_server: string; private_quiet: boolean; close_action?: CloseAction };
 export type Conversation = {
   id: string; title: string | null; members: User[]; activity_at: number; preview: string | null;
-  latest_seq: number; unread: number; read_through: number;
+  preview_seq: number | null; latest_seq: number; unread: number; read_through: number;
 };
+export type MessageReceipt = { seq: number; status: "delivered" | "read" };
 export type PendingContact = { user: User; incoming: boolean; request_id: string | null; greeting: string };
 export type Directory = {
   contacts: User[]; conversations: Conversation[]; pending_contacts: PendingContact[];
@@ -76,8 +77,8 @@ export const api = {
   setProfileImage: (kind: "avatar" | "cover", bytes: ArrayBuffer) =>
     invoke<void>("set_profile_image", bytes, { headers: { "zibblu-profile-image": kind } }),
   profileImageUrl: (id: string, version: string) => convertFileSrc(`profile_${id}_${version}`, "zibblu-media"),
-  readUpdate: (conversation: string, through: number | undefined, sent: number[]) =>
-    invoke<number[]>("read_update", { conversation, update: { through, sent } }),
+  readUpdate: (conversation: string, through?: number, sent?: number, viewed?: number) =>
+    invoke<MessageReceipt | null>("read_update", { conversation, update: { through, sent: sent === undefined ? [] : [sent], viewed } }),
   setReadReceipts: (enabled: boolean) => invoke<void>("set_read_receipts", { enabled }),
   hideMessage: (conversation: string, seq: number) => invoke<void>("hide_message", { conversation, seq }),
   quotedMessage: (conversation: string, seq: number) => invoke<Message | null>("quoted_message", { conversation, seq }),

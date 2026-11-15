@@ -1,12 +1,14 @@
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::{path::Path, process::Command, sync::Arc, time::Duration};
 use uuid::Uuid;
 use zibblu_core::{
     AiProvider, AiScope, CHUNK_SIZE, Client, ContactNotes, ConversationRequest, Credentials,
-    Direction, FileFilter, MAX_PROFILE_IMAGE_BYTES, ProfileImage, ProfileRelation, PublishAiReply,
-    ReadUpdate, SendMessage, Session, Transfer, TransferStatus,
+    DeliveryAck, Direction, FileFilter, MAX_PROFILE_IMAGE_BYTES, MessageReceipt, ProfileImage,
+    ProfileRelation, PublishAiReply, ReadUpdate, ReceiptStatus, SendMessage, Session, SyncPage,
+    Transfer, TransferStatus,
 };
 
 #[test]
@@ -821,10 +823,12 @@ async fn desktop_experience_permissions_and_sync() -> Result<()> {
     let send_receipt = |through| ReadUpdate {
         through: Some(through),
         sent: vec![],
+        viewed: None,
     };
     let query = |seq| ReadUpdate {
         through: None,
         sent: vec![seq],
+        viewed: None,
     };
     bob.read_update(chat, send_receipt(greeting)).await?;
     assert_eq!(bob.sync().await?.conversations[0].unread, 0);
@@ -832,11 +836,123 @@ async fn desktop_experience_permissions_and_sync() -> Result<()> {
     bob.set_read_receipts(true).await?;
     assert!(alice.read_update(chat, query(greeting)).await?.is_empty());
     send(&alice, chat, "Read by both accounts").await?;
+    let http = reqwest::Client::builder().no_proxy().build()?;
+    let bob_session: Session = http
+        .post(format!("{server}/v1/login"))
+        .json(&Credentials {
+            handle: bob_handle.clone(),
+            password: password.clone(),
+        })
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let url = format!("{server}/v1/sync?after={greeting}");
+    let legacy: SyncPage = http
+        .get(&url)
+        .bearer_auth(&bob_session.token)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert!(legacy.delivery_batch.is_none());
+    let page: SyncPage = http
+        .get(format!("{url}&delivery_acks=true"))
+        .bearer_auth(&bob_session.token)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let sent = page.messages[0].seq;
+    let proof = page
+        .delivery_batch
+        .context("Expected a delivery batch for the recipient")?;
+    assert_eq!(alice.update_receipt(chat, query(sent)).await?, None);
+    let alice_session: Session = http
+        .post(format!("{server}/v1/login"))
+        .json(&Credentials {
+            handle: alice_handle.clone(),
+            password: password.clone(),
+        })
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    http.post(format!("{server}/v1/sync/ack"))
+        .bearer_auth(&alice_session.token)
+        .json(&DeliveryAck {
+            batches: vec![proof],
+        })
+        .send()
+        .await?
+        .error_for_status()?;
+    http.post(format!("{server}/v1/conversations/{chat}/read?latest=true"))
+        .bearer_auth(&bob_session.token)
+        .json(&ReadUpdate {
+            through: None,
+            sent: vec![],
+            viewed: Some(sent),
+        })
+        .send()
+        .await?
+        .error_for_status()?;
+    assert_eq!(alice.update_receipt(chat, query(sent)).await?, None);
+
+    let bob_profile = format!(
+        "{:x}",
+        Sha256::digest(format!("{server}/\n{}", bob.user.id))
+    );
+    let sqlite = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new().filename(
+                data.path()
+                    .join("profiles")
+                    .join(bob_profile)
+                    .join("chat.sqlite3"),
+            ),
+        )
+        .await?;
+    sqlx::raw_sql(
+        "CREATE TRIGGER reject_fixture_insert BEFORE INSERT ON inbox
+        BEGIN SELECT RAISE(ABORT, 'fixture commit failed'); END;",
+    )
+    .execute(&sqlite)
+    .await?;
+    assert!(bob.sync().await.is_err());
+    assert_eq!(alice.update_receipt(chat, query(sent)).await?, None);
+    sqlx::query("DROP TRIGGER reject_fixture_insert")
+        .execute(&sqlite)
+        .await?;
     bob.sync().await?;
-    let sent = bob.messages(chat, None).await?.items[0].seq;
+    let delivered = Some(MessageReceipt {
+        seq: sent,
+        status: ReceiptStatus::Delivered,
+    });
+    assert_eq!(alice.update_receipt(chat, query(sent)).await?, delivered);
     assert!(outsider.read_update(chat, query(sent)).await.is_err());
     assert!(bob.read_update(chat, send_receipt(sent + 1)).await.is_err());
     bob.read_update(chat, send_receipt(sent)).await?;
+    assert_eq!(alice.update_receipt(chat, query(sent)).await?, delivered);
+    bob.update_receipt(
+        chat,
+        ReadUpdate {
+            viewed: Some(sent),
+            ..send_receipt(sent)
+        },
+    )
+    .await?;
+    assert_eq!(
+        alice.update_receipt(chat, query(sent)).await?,
+        Some(MessageReceipt {
+            seq: sent,
+            status: ReceiptStatus::Read
+        })
+    );
     assert!(bob.read_update(chat, query(sent)).await?.is_empty());
     assert_eq!(alice.read_update(chat, query(sent)).await?, [sent]);
     let other_device = tempfile::tempdir()?;
@@ -846,8 +962,10 @@ async fn desktop_experience_permissions_and_sync() -> Result<()> {
     assert_eq!(second_sync.conversations[0].unread, 0);
     assert!(second_sync.read_receipts);
     bob.set_read_receipts(false).await?;
+    assert_eq!(alice.update_receipt(chat, query(sent)).await?, None);
     assert!(alice.read_update(chat, query(sent)).await?.is_empty());
     bob.set_read_receipts(true).await?;
+    assert_eq!(alice.update_receipt(chat, query(sent)).await?, None);
     assert!(alice.read_update(chat, query(sent)).await?.is_empty());
 
     bob.send_message(
@@ -860,6 +978,7 @@ async fn desktop_experience_permissions_and_sync() -> Result<()> {
     )
     .await?;
     alice.sync().await?;
+    assert_eq!(alice.update_receipt(chat, query(sent)).await?, None);
     assert_eq!(
         alice.messages(chat, None).await?.items[0].reply_to,
         Some(sent)
