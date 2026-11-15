@@ -1,9 +1,9 @@
 import {
   ArrowDown, ArrowLeft, ArrowRight, AtSign, CheckCheck, Copy, Download, FilePlus2, FolderOpen, Ghost, LockKeyhole,
-  MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Reply, Search, Send, Trash2, Undo2, UsersRound, X,
+  Image, MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Reply, Search, Send, Trash2, Undo2, UsersRound, X,
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, KeyboardEvent } from "react";
 import { ai } from "./ai-api";
 import type { AiReply, Assistant } from "./ai-api";
 import { AiRequest, AssistantMenu, ProviderLogo, ShareAiReply } from "./ai";
@@ -75,45 +75,76 @@ export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffs
   groupCode: () => void; aiChat: ChatAssistants; hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean;
 } & ChatDraft) {
   const [showFiles, setShowFiles] = useState(false);
-  const [search, setSearch] = useState(false);
+  const [drawer, setDrawer] = useState(false);
+  const [search, setSearch] = useState<"text" | "media">();
   const [media, setMedia] = useState<Message>();
-  const openMenu = useMenu();
   const { remarks, open } = useContext(People);
   const name = chatName(chat, own.id, remarks);
   const peer = chat.title ? undefined : chat.members.find(user => user.id !== own.id);
+
+  function keepDrawerFocus(event: KeyboardEvent<HTMLDialogElement>) {
+    if (event.key !== "Tab") return;
+    const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)");
+    const first = buttons[0];
+    const last = buttons[buttons.length - 1];
+    if (document.activeElement === (event.shiftKey ? first : last)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    }
+  }
+
   return <section className="chat-view" aria-label={name}>
     <header className="chat-header">
       <button className="icon-button mobile-back" onClick={back} aria-label="Back to chats"><ArrowLeft size={20} /></button>
       <div className="chat-heading"><h2>{peer ? <button className="person-link" onClick={() => open?.(peer)}>{name}</button> : name}</h2></div>
       {showFiles && <button className="button subtle small" onClick={() => setShowFiles(false)}><ArrowLeft size={15} /> Messages</button>}
-      {chat.title && <button className="icon-button" aria-label="Group invite QR code" title="Group invite QR code"
-        onClick={groupCode}><QrCode size={20} /></button>}
       <button className="icon-button" aria-label="Open private chat" title="Open private chat"
         onClick={openPrivate}><Ghost size={20} /></button>
-      <button className="icon-button" aria-label="Conversation actions" title="Conversation actions" aria-haspopup="menu"
-        onClick={event => openMenu(event.currentTarget, [
-          { label: "Search chat", icon: <Search size={15} />, action: () => setSearch(true) },
-          { label: "Shared files", icon: <FolderOpen size={15} />, action: () => setShowFiles(true), disabled: showFiles },
-        ])}><MoreHorizontal size={22} /></button>
+      <button className="icon-button" aria-label={chat.title ? "Group details" : "Conversation details"}
+        title={chat.title ? "Group details" : "Conversation details"} aria-haspopup="dialog" aria-expanded={drawer}
+        onClick={event => { event.currentTarget.focus(); setDrawer(true); }}><MoreHorizontal size={22} /></button>
     </header>
     {showFiles
       ? <FilesView conversation={chat.id} people={chat.members} transfers={transfers} revision={revision} recalled={recalled} hidden={hidden} onChanged={changed} />
       : <ChatMessages chat={chat} own={own} revision={revision} latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset} transfers={transfers}
         changed={changed} refresh={refresh} share={share} aiChat={aiChat} openMedia={setMedia} {...{ hidden, hide, readReceipts, draft, setDraft }} />}
-    {search && <ChatSearch conversation={chat.id} {...{ revision, latestAiSeq, recalled, hidden }}
-      openMedia={setMedia} close={() => setSearch(false)} />}
+    {drawer && <Dialog title={chat.title ? "Group details" : "Conversation details"} className="conversation-drawer"
+      close={() => setDrawer(false)} onKeyDown={keepDrawerFocus}>
+      {chat.title ? <div className="drawer-identity"><Avatar name={name} group large /><strong>{name}</strong></div>
+        : peer && <button className="drawer-identity drawer-action" onClick={() => { setDrawer(false); open?.(peer); }}>
+          <PersonAvatar user={peer} large />
+          <span><strong>{name}</strong><small>View profile</small></span>
+          <ArrowRight size={17} />
+        </button>}
+      {chat.title && <section className="drawer-members">
+        <h3>Members <small>{chat.members.length}</small></h3>
+        <ul>{chat.members.map(member => <li key={member.id}>
+          <button className="drawer-action" onClick={() => { setDrawer(false); open?.(member); }}>
+            <PersonAvatar user={member} /><span>{displayName(member, remarks)}</span>
+          </button>
+        </li>)}</ul>
+        <button className="drawer-action" onClick={() => { setDrawer(false); groupCode(); }}><QrCode size={19} /> Group invite QR code</button>
+      </section>}
+      <div className="drawer-actions">
+        <button className="drawer-action" onClick={() => { setDrawer(false); setSearch("text"); }}><Search size={19} /> Search chat</button>
+        <button className="drawer-action" onClick={() => { setDrawer(false); setShowFiles(true); }} disabled={showFiles}><FolderOpen size={19} /> Shared files</button>
+        <button className="drawer-action" onClick={() => { setDrawer(false); setSearch("media"); }}><Image size={19} /> Photos and videos</button>
+      </div>
+    </Dialog>}
+    {search && <ChatSearch conversation={chat.id} initialTab={search} {...{ revision, latestAiSeq, recalled, hidden }}
+      openMedia={setMedia} close={() => setSearch(undefined)} />}
     {media && <MediaViewer message={media} conversation={chat.id} {...{ revision, recalled, hidden, transfers }}
       open={setMedia} close={() => setMedia(undefined)} onChanged={changed} />}
   </section>;
 }
 
-function ChatSearch({ conversation, revision, latestAiSeq, recalled, hidden, openMedia, close }: {
+function ChatSearch({ conversation, initialTab, revision, latestAiSeq, recalled, hidden, openMedia, close }: {
   conversation: string; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; hidden: ReadonlySet<number>; close: () => void;
-  openMedia: (message: Message) => void;
+  openMedia: (message: Message) => void; initialTab: "text" | "media";
 }) {
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
-  const [tab, setTab] = useState<"text" | "media">("text");
+  const [tab, setTab] = useState(initialTab);
   return <Dialog title="Search chat" close={close}>
     <fieldset className="tabs">
       <legend className="sr-only">Search chat by</legend>

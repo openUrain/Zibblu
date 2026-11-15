@@ -3,7 +3,8 @@ import type { AiProvider } from "./ai-api";
 
 export type User = { id: string; handle: string };
 export type Session = { user: User; server: string };
-export type Preferences = { server: string; official_server: string; private_quiet: boolean };
+export type CloseAction = "exit" | "tray";
+export type Preferences = { server: string; official_server: string; private_quiet: boolean; close_action?: CloseAction };
 export type Conversation = {
   id: string; title: string | null; members: User[]; activity_at: number; preview: string | null;
   latest_seq: number; unread: number; read_through: number;
@@ -55,6 +56,7 @@ type PrivateView = PrivateSummary & { connection: string; messages: PrivateMessa
 
 export const api = {
   preferences: () => invoke<Preferences>("preferences"),
+  setCloseAction: (action: CloseAction) => invoke<void>("set_close_action", { action }),
   login: (server: string, handle: string, password: string, register: boolean) =>
     invoke<Session>("login", { server, handle, password, register }),
   logout: () => invoke<void>("logout"),

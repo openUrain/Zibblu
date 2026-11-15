@@ -1,5 +1,5 @@
 import { Circle, CircleCheck, UsersRound, X } from "lucide-react";
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ComponentPropsWithoutRef, KeyboardEventHandler, ReactNode } from "react";
 import { api, errorMessage } from "./api";
 import type { Conversation, Directory, Message, Page, User } from "./api";
@@ -68,7 +68,7 @@ export function Dialog({ title, close, children, className, onKeyDown, closeDisa
   onKeyDown?: KeyboardEventHandler<HTMLDialogElement>; closeDisabled?: boolean;
 }) {
   const element = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const dialog = element.current;
     dialog?.showModal();
     return () => dialog?.close();

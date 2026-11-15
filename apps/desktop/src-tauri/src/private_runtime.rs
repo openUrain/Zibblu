@@ -29,6 +29,9 @@ pub(crate) fn prompt_window(app: &AppHandle, desktop: &Desktop) -> Option<&'stat
         return None;
     }
     let main = app.get_webview_window("main")?;
+    if cfg!(windows) && !main.is_visible().ok()? {
+        return None;
+    }
     Some(if cfg!(windows) && main.is_minimized().ok()? {
         INVITATION
     } else {

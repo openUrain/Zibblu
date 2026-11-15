@@ -1,14 +1,15 @@
-import { ArrowRight, Globe2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ArrowRight, Eye, EyeOff, Globe2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, errorMessage } from "./api";
-import type { Preferences, Session } from "./api";
+import type { CloseAction, Preferences, Session } from "./api";
 import { Brand } from "./common";
 import { DesktopMenus } from "./context-menu";
 import { Workspace } from "./workspace";
 import { PrivateInvitationWindow } from "./private-chat";
+import { WindowControls, WindowClosePrompt, windows } from "./window-chrome";
 import "./style.css";
 
 function App() {
@@ -20,23 +21,31 @@ function App() {
   useEffect(() => {
     api.preferences().then(setPreferences).catch(error => setSettingsError(errorMessage(error)));
   }, []);
-  if (settingsError) return <main className="boot"><Brand /><p className="inline-error" role="alert">{settingsError}</p></main>;
-  if (!preferences) return <main className="boot"><Brand /><span role="status">Opening Zibblu…</span></main>;
+  async function setCloseAction(action: CloseAction) {
+    await api.setCloseAction(action);
+    setPreferences(current => current && { ...current, close_action: action });
+  }
 
-  if (session) {
-    return <Workspace session={session}
+  return <>
+    {windows && !session && <header className="auth-titlebar">
+      <div className="window-drag" data-tauri-drag-region /><WindowControls />
+    </header>}
+    {settingsError ? <main className="boot"><Brand /><p className="inline-error" role="alert">{settingsError}</p></main>
+    : !preferences ? <main className="boot"><Brand /><span role="status">Opening Zibblu…</span></main>
+    : session ? <Workspace session={session} closeAction={preferences.close_action} setCloseAction={setCloseAction}
       privateQuiet={preferences.private_quiet} setPrivateQuiet={async quiet => {
         await api.setPrivateQuiet(quiet);
         setPreferences(current => current && { ...current, private_quiet: quiet });
       }} signedOut={message => {
       setNotice(message ?? "");
       setSession(undefined);
-    }} />;
-  }
-  return <SignIn initialServer={preferences.server} officialServer={preferences.official_server} notice={notice} signedIn={result => {
-    setPreferences({ ...preferences, server: result.server });
-    setSession(result);
-  }} />;
+    }} />
+    : <SignIn initialServer={preferences.server} officialServer={preferences.official_server} notice={notice} signedIn={result => {
+      setPreferences(current => current && { ...current, server: result.server });
+      setSession(result);
+    }} />}
+    {windows && <WindowClosePrompt save={setCloseAction} />}
+  </>;
 }
 
 function SignIn({ initialServer, officialServer, notice, signedIn }: {
@@ -47,19 +56,37 @@ function SignIn({ initialServer, officialServer, notice, signedIn }: {
   const [advanced, setAdvanced] = useState(false);
   const [handle, setHandle] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const confirmationInput = useRef<HTMLInputElement>(null);
+  const [passwordVisible, setPasswordVisible] = useState(false);
+  const [checkConfirmation, setCheckConfirmation] = useState(false);
   const [failure, setFailure] = useState(notice);
   const [busy, setBusy] = useState(false);
   const official = server.trim().replace(/\/$/, "") === officialServer;
+  const mismatch = register && confirmation !== password;
+  const showMismatch = mismatch && checkConfirmation;
 
   function chooseServer(address: string) {
     setServer(address);
+    resetPassword();
+  }
+
+  function resetPassword() {
     setPassword("");
+    setConfirmation("");
+    setPasswordVisible(false);
+    setCheckConfirmation(false);
     setFailure("");
   }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (busy) return;
+    if (mismatch) {
+      setCheckConfirmation(true);
+      confirmationInput.current?.focus();
+      return;
+    }
     setBusy(true);
     setFailure("");
     try {
@@ -113,17 +140,31 @@ function SignIn({ initialServer, officialServer, notice, signedIn }: {
               autoComplete="username" maxLength={32} />
           </fieldset>
           <fieldset className="floating-field"><legend><label htmlFor="password">Password</label></legend>
-            <input id="password" type="password" value={password} onChange={event => setPassword(event.target.value)} required
-              autoComplete={register ? "new-password" : "current-password"} minLength={register ? 12 : undefined}
-              maxLength={256} />
+            <div className="password-field">
+              <input id="password" data-password type={passwordVisible ? "text" : "password"} value={password}
+                onChange={event => setPassword(event.target.value)} required
+                autoComplete={register ? "new-password" : "current-password"} minLength={register ? 12 : undefined}
+                maxLength={256} />
+              <button className="icon-button" type="button" aria-label={`${passwordVisible ? "Hide" : "Show"} ${register ? "passwords" : "password"}`}
+                aria-controls={register ? "password confirm-password" : "password"} onClick={() => setPasswordVisible(!passwordVisible)}>
+                {passwordVisible ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
           </fieldset>
+          {register && <fieldset className="floating-field"><legend><label htmlFor="confirm-password">Confirm password</label></legend>
+            <input id="confirm-password" ref={confirmationInput} data-password type={passwordVisible ? "text" : "password"} value={confirmation}
+              onChange={event => setConfirmation(event.target.value)}
+              required autoComplete="new-password" maxLength={256} aria-invalid={showMismatch || undefined}
+              aria-describedby={showMismatch ? "password-mismatch" : undefined} />
+          </fieldset>}
+          {showMismatch && <p id="password-mismatch" className="inline-error" role="alert">Passwords don’t match.</p>}
           {failure && <div className="inline-error" role="alert">{failure}</div>}
           <button className="button primary signin-submit" disabled={busy} type="submit">
             {busy ? "Connecting…" : register ? "Create account" : "Sign in"} <ArrowRight size={17} />
           </button>
         </form>
         <div className="signin-switch">{register ? "Already have an account?" : "New to Zibblu?"}{" "}
-          <button className="text-button" onClick={() => { setRegister(!register); setFailure(""); }} disabled={busy}>
+          <button className="text-button" onClick={() => { setRegister(!register); resetPassword(); }} disabled={busy}>
             {register ? "Sign in" : "Create an account"}
           </button>
         </div>

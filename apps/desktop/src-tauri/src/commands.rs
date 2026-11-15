@@ -106,6 +106,15 @@ impl Desktop {
             .is_ok_and(|preferences| preferences.private_quiet)
     }
 
+    #[cfg(windows)]
+    pub(crate) fn close_action(&self) -> Option<CloseAction> {
+        self.preferences
+            .lock()
+            .expect("preferences")
+            .as_ref()
+            .map_or(Some(CloseAction::Exit), |preferences| preferences.close_action)
+    }
+
     pub(crate) fn webview_directory(&self) -> PathBuf {
         self.data.join("webview")
     }
@@ -116,6 +125,15 @@ struct Preferences {
     server: String,
     #[serde(default)]
     private_quiet: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    close_action: Option<CloseAction>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CloseAction {
+    Exit,
+    Tray,
 }
 
 impl Preferences {
@@ -125,6 +143,7 @@ impl Preferences {
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(Self {
                 server: OFFICIAL_SERVER.into(),
                 private_quiet: false,
+                close_action: None,
             }),
             Err(error) => Err(error.into()),
         }
@@ -153,6 +172,25 @@ mod tests {
         }
         std::fs::write(file, b"{broken")?;
         assert!(Preferences::load(data.path()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn close_action_persists_without_replacing_existing_preferences() -> anyhow::Result<()> {
+        let data = tempfile::tempdir()?;
+        std::fs::write(
+            data.path().join("preferences.json"),
+            br#"{"server":"https://chat.example.com","private_quiet":true}"#,
+        )?;
+        assert_eq!(Preferences::load(data.path())?.close_action, None);
+        let desktop = Desktop::new(data.path().to_owned());
+        for action in [CloseAction::Tray, CloseAction::Exit] {
+            desktop.update_preferences(|settings| settings.close_action = Some(action))?;
+            let saved = Preferences::load(data.path())?;
+            assert_eq!(saved.close_action, Some(action));
+            assert_eq!(saved.server, "https://chat.example.com");
+            assert!(saved.private_quiet);
+        }
         Ok(())
     }
 }
@@ -213,6 +251,12 @@ pub(crate) fn preferences(state: State<'_, Desktop>) -> Result<SignInPreferences
             .clone(),
         official_server: OFFICIAL_SERVER,
     })
+}
+
+#[tauri::command]
+pub(crate) fn set_close_action(state: State<'_, Desktop>, action: CloseAction) -> Result<()> {
+    state.update_preferences(|settings| settings.close_action = Some(action))?;
+    Ok(())
 }
 
 #[tauri::command]
