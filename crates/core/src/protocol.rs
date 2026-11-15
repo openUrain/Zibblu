@@ -12,6 +12,7 @@ pub const RECALL_WINDOW_MS: i64 = 5 * 60 * 1000;
 pub const MAX_GROUP_MEMBERS: usize = 16;
 pub const MAX_PROFILE_IMAGE_BYTES: usize = 2 * CHUNK_SIZE as usize;
 pub const MAX_RECEIPT_QUERY: usize = 200;
+pub const MAX_PENDING_DELIVERY_BATCHES: usize = 64;
 pub const LAN_NEARBY_NAME: &str = "nearby.zibblu.invalid";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +129,28 @@ pub struct ReadPreference {
 pub struct ReadUpdate {
     pub through: Option<i64>,
     pub sent: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewed: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptStatus {
+    Delivered,
+    Read,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageReceipt {
+    pub seq: i64,
+    pub status: ReceiptStatus,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ReadResult {
+    Latest { receipt: Option<MessageReceipt> },
+    Legacy(Vec<i64>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -351,6 +374,13 @@ pub struct SyncPage {
     pub recalls: Vec<MessageRecall>,
     #[serde(default)]
     pub server_time: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_batch: Option<Uuid>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DeliveryAck {
+    pub batches: Vec<Uuid>,
 }
 
 pub fn valid_handle(handle: &str) -> bool {

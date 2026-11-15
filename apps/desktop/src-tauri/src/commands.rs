@@ -15,8 +15,8 @@ use zibblu_core::private_chat::{
 };
 use zibblu_core::{
     Client, ContactNotes, ConversationRequest, Credentials, Direction, Directory, FileFilter,
-    GroupInvite, GroupInvitePreview, Message, OnlineError, Page, Profile, PublishAiReply,
-    ReadUpdate, SendMessage, SyncUpdate, Transfer, User,
+    GroupInvite, GroupInvitePreview, Message, MessageReceipt, OnlineError, Page, Profile,
+    PublishAiReply, ReadUpdate, SendMessage, SyncUpdate, Transfer, User,
 };
 
 const OFFICIAL_SERVER: &str = "https://zibblu-api.openurain.com";
@@ -413,11 +413,11 @@ pub(crate) async fn read_update(
     state: State<'_, Desktop>,
     conversation: Uuid,
     update: ReadUpdate,
-) -> Result<Vec<i64>> {
+) -> Result<Option<MessageReceipt>> {
     Ok(state
         .client()
         .await?
-        .read_update(conversation, update)
+        .update_receipt(conversation, update)
         .await?)
 }
 

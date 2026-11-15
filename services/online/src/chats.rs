@@ -8,16 +8,19 @@ use serde::Deserialize;
 use sqlx::{FromRow, PgConnection, types::Json as DbJson};
 use uuid::Uuid;
 use zibblu_core::{
-    AiProvider, Attachment, Conversation, ConversationCreated, ConversationRequest, Directory,
-    MAX_AI_REPLY_BYTES, MAX_GROUP_MEMBERS, MAX_MESSAGE_BYTES, MAX_RECEIPT_QUERY, Message,
-    MessageRecall, PendingContact, PublishAiReply, RECALL_WINDOW_MS, ReadPreference, ReadUpdate,
-    SYNC_PAGE_SIZE, SendMessage, SyncPage, User,
+    AiProvider, Attachment, Conversation, ConversationCreated, ConversationRequest, DeliveryAck,
+    Directory, MAX_AI_REPLY_BYTES, MAX_GROUP_MEMBERS, MAX_MESSAGE_BYTES,
+    MAX_PENDING_DELIVERY_BATCHES, MAX_RECEIPT_QUERY, Message, MessageRecall, MessageReceipt,
+    PendingContact, PublishAiReply, RECALL_WINDOW_MS, ReadPreference, ReadResult, ReadUpdate,
+    ReceiptStatus, SYNC_PAGE_SIZE, SendMessage, SyncPage, User,
 };
 
 #[derive(Deserialize)]
 pub(crate) struct Cursor {
     after: i64,
     recall_after: Option<i64>,
+    #[serde(default)]
+    delivery_acks: bool,
 }
 
 #[derive(FromRow)]
@@ -177,6 +180,24 @@ pub(crate) async fn sync(
             .fetch_one(&mut *tx)
             .await?;
     tx.commit().await?;
+    let delivery_batch = if cursor.delivery_acks {
+        let sequences = messages
+            .iter()
+            .filter(|message| {
+                message.sender_id != auth.user_id
+                    && !message.recalled
+                    && message.ai_provider.is_none()
+            })
+            .map(|message| message.seq)
+            .collect::<Vec<_>>();
+        if sequences.is_empty() {
+            None
+        } else {
+            Some(offer_delivery(&app, &auth, cursor.after, &sequences).await?)
+        }
+    } else {
+        None
+    };
     Ok(Json(SyncPage {
         directory: Directory {
             contacts: contacts
@@ -237,7 +258,68 @@ pub(crate) async fn sync(
             .collect(),
         recalls,
         server_time: Some(server_time),
+        delivery_batch,
     }))
+}
+
+async fn offer_delivery(app: &App, auth: &Auth, after: i64, sequences: &[i64]) -> Result<Uuid> {
+    let batch = Uuid::new_v4();
+    let mut tx = app.db.begin().await?;
+    sqlx::query("DELETE FROM pending_delivery_batches WHERE expires_at <= now()")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query_scalar::<_, i32>(
+        "SELECT 1 FROM sessions WHERE token_hash = $1 AND expires_at > now() FOR UPDATE",
+    )
+    .bind(&auth.token_hash)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(Error::unauthorized)?;
+    sqlx::query(
+        "INSERT INTO pending_delivery_batches (session_hash, served_after, id, recipient_id, sequences)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (session_hash, served_after) DO UPDATE SET id = excluded.id, sequences = excluded.sequences,
+             expires_at = excluded.expires_at",
+    ).bind(&auth.token_hash).bind(after).bind(batch).bind(auth.user_id).bind(sequences)
+        .execute(&mut *tx).await?;
+    sqlx::query(
+        "DELETE FROM pending_delivery_batches WHERE session_hash = $1 AND id IN (
+            SELECT id FROM pending_delivery_batches WHERE session_hash = $1
+            ORDER BY expires_at DESC, served_after DESC OFFSET $2
+         )",
+    )
+    .bind(&auth.token_hash)
+    .bind(MAX_PENDING_DELIVERY_BATCHES as i64)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(batch)
+}
+
+pub(crate) async fn ack_delivery(
+    State(app): State<App>,
+    auth: Auth,
+    Json(ack): Json<DeliveryAck>,
+) -> Result<StatusCode> {
+    if ack.batches.is_empty() || ack.batches.len() > MAX_PENDING_DELIVERY_BATCHES {
+        return Err(Error::bad("Invalid delivery confirmation."));
+    }
+    sqlx::query(
+        "WITH acknowledged AS (
+           DELETE FROM pending_delivery_batches WHERE id = ANY($2) AND recipient_id = $1 AND expires_at > now()
+           RETURNING sequences
+         ), delivered AS (
+           SELECT m.conversation_id, max(m.seq) AS seq
+           FROM acknowledged batch CROSS JOIN LATERAL unnest(batch.sequences) AS msg(seq)
+           JOIN messages m ON m.seq = msg.seq
+           WHERE m.sender_id <> $1 AND m.recall_seq IS NULL AND m.ai_provider IS NULL
+           GROUP BY m.conversation_id
+         )
+         UPDATE members own SET delivered_through = delivered.seq FROM delivered
+         WHERE own.account_id = $1 AND own.conversation_id = delivered.conversation_id
+           AND delivered.seq > greatest(own.delivered_through, own.joined_after)",
+    ).bind(auth.user_id).bind(ack.batches).execute(&app.db).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn create(
@@ -412,7 +494,11 @@ pub(crate) async fn set_read_receipts(
     Json(input): Json<ReadPreference>,
 ) -> Result<StatusCode> {
     let mut tx = app.db.begin().await?;
-    sqlx::query("UPDATE accounts SET read_receipts = $2 WHERE id = $1")
+    lock_message_feed(&mut tx).await?;
+    sqlx::query(
+        "UPDATE accounts SET read_receipts = $2, receipts_after = coalesce((SELECT max(seq) FROM messages), 0)
+         WHERE id = $1 AND read_receipts <> $2",
+    )
         .bind(auth.user_id)
         .bind(input.enabled)
         .execute(&mut *tx)
@@ -427,13 +513,25 @@ pub(crate) async fn set_read_receipts(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+pub(crate) struct ReceiptFormat {
+    #[serde(default)]
+    latest: bool,
+}
+
 pub(crate) async fn read(
     State(app): State<App>,
     auth: Auth,
     Path(id): Path<Uuid>,
+    Query(format): Query<ReceiptFormat>,
     Json(input): Json<ReadUpdate>,
-) -> Result<Json<Vec<i64>>> {
-    if input.sent.len() > MAX_RECEIPT_QUERY || input.through.is_some_and(|seq| seq <= 0) {
+) -> Result<Json<ReadResult>> {
+    if input.sent.len() > MAX_RECEIPT_QUERY
+        || [input.through, input.viewed]
+            .into_iter()
+            .flatten()
+            .any(|seq| seq <= 0)
+    {
         return Err(Error::bad("Invalid read position or receipt query."));
     }
     let mut tx = app.db.begin().await?;
@@ -469,38 +567,65 @@ pub(crate) async fn read(
             }
             sqlx::query("UPDATE members SET read_through = $3 WHERE conversation_id = $1 AND account_id = $2")
             .bind(id).bind(auth.user_id).bind(through).execute(&mut *tx).await?;
-            if enabled {
-                sqlx::query(
-                "INSERT INTO message_receipts (message_seq, account_id)
-                 SELECT m.seq, $2 FROM messages m JOIN accounts sender ON sender.id = m.sender_id
-                 WHERE m.conversation_id = $1 AND m.seq > $3 AND m.seq <= $4 AND m.sender_id <> $2
-                   AND m.recall_seq IS NULL AND sender.read_receipts
-                   AND (m.ai_provider IS NULL OR EXISTS (
-                       SELECT 1 FROM ai_reply_readers WHERE message_seq = m.seq AND account_id = $2))
-                 ON CONFLICT DO NOTHING",
-            ).bind(id).bind(auth.user_id).bind(joined_after.max(read_through)).bind(through)
-            .execute(&mut *tx).await?;
-            }
         }
     }
-    let seen = if enabled && !input.sent.is_empty() {
-        sqlx::query_scalar(
-            "SELECT m.seq FROM messages m WHERE m.conversation_id = $1 AND m.sender_id = $2
-               AND m.recall_seq IS NULL AND m.seq = ANY($3) AND EXISTS (
-                   SELECT 1 FROM message_receipts r JOIN accounts reader ON reader.id = r.account_id
-                   WHERE r.message_seq = m.seq AND reader.read_receipts
-               ) ORDER BY m.seq",
+    if enabled
+        && format.latest
+        && let Some(viewed) = input.viewed
+    {
+        sqlx::query(
+            "UPDATE members viewer SET viewed_through = $3
+             FROM messages m JOIN conversations c ON c.id = m.conversation_id
+             JOIN accounts sender ON sender.id = m.sender_id
+             JOIN accounts reader ON reader.id = $2
+             WHERE viewer.conversation_id = $1 AND viewer.account_id = $2
+               AND m.seq = $3 AND m.conversation_id = $1 AND m.sender_id <> $2
+               AND c.direct_key IS NOT NULL AND m.ai_provider IS NULL AND m.recall_seq IS NULL
+               AND sender.read_receipts AND m.seq > greatest(sender.receipts_after, reader.receipts_after,
+                                                            viewer.joined_after, viewer.viewed_through)
+               AND viewer.delivered_through >= m.seq",
+        ).bind(id).bind(auth.user_id).bind(viewed).execute(&mut *tx).await?;
+    }
+    let receipt = if enabled && !input.sent.is_empty() {
+        sqlx::query_as::<_, (i64, bool)>(
+            "SELECT latest.seq, peer.viewed_through >= latest.seq FROM members own
+             JOIN accounts sender ON sender.id = own.account_id
+             JOIN conversations c ON c.id = own.conversation_id AND c.direct_key IS NOT NULL
+             JOIN members peer ON peer.conversation_id = c.id AND peer.account_id <> own.account_id
+             JOIN accounts reader ON reader.id = peer.account_id
+             JOIN LATERAL (
+                SELECT m.seq, m.sender_id, m.recall_seq, m.ai_provider FROM messages m
+                WHERE m.conversation_id = c.id AND m.seq > own.joined_after
+                  AND (m.ai_provider IS NULL OR EXISTS (
+                    SELECT 1 FROM ai_reply_readers WHERE message_seq = m.seq AND account_id = own.account_id))
+                ORDER BY m.created_at DESC, m.seq DESC LIMIT 1
+             ) latest ON true
+             WHERE c.id = $1 AND own.account_id = $2 AND latest.seq = ANY($3)
+               AND latest.sender_id = own.account_id AND latest.recall_seq IS NULL AND latest.ai_provider IS NULL
+               AND reader.read_receipts AND peer.delivered_through >= latest.seq
+               AND latest.seq > greatest(peer.joined_after, sender.receipts_after, reader.receipts_after)",
         )
         .bind(id)
         .bind(auth.user_id)
         .bind(&input.sent)
-        .fetch_all(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await?
+        .map(|(seq, viewed)| MessageReceipt { seq, status: if viewed { ReceiptStatus::Read } else { ReceiptStatus::Delivered } })
     } else {
-        Vec::new()
+        None
     };
     tx.commit().await?;
-    Ok(Json(seen))
+    Ok(Json(if format.latest {
+        ReadResult::Latest { receipt }
+    } else {
+        ReadResult::Legacy(
+            receipt
+                .filter(|value| value.status == ReceiptStatus::Read)
+                .map(|value| value.seq)
+                .into_iter()
+                .collect(),
+        )
+    }))
 }
 
 pub(crate) async fn recall(

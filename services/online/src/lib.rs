@@ -49,6 +49,7 @@ pub async fn router(db: PgPool) -> anyhow::Result<Router> {
             post(accounts::respond_contact),
         )
         .route("/v1/sync", get(chats::sync))
+        .route("/v1/sync/ack", post(chats::ack_delivery))
         .route("/v1/conversations", post(chats::create))
         .route("/v1/conversations/{id}/invite", post(group_invites::issue))
         .route("/v1/group-invites/preview", post(group_invites::preview))

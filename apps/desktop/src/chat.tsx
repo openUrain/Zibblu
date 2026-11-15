@@ -1,5 +1,5 @@
 import {
-  ArrowDown, ArrowLeft, ArrowRight, AtSign, CheckCheck, Copy, Download, FilePlus2, FolderOpen, Ghost, LockKeyhole,
+  ArrowDown, ArrowLeft, ArrowRight, AtSign, Check, CheckCheck, Copy, Download, FilePlus2, FolderOpen, Ghost, LockKeyhole,
   Image, MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Reply, Search, Send, Trash2, Undo2, UsersRound, X,
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
@@ -8,7 +8,7 @@ import { ai } from "./ai-api";
 import type { AiReply, Assistant } from "./ai-api";
 import { AiRequest, AssistantMenu, ProviderLogo, ShareAiReply } from "./ai";
 import { api, errorMessage } from "./api";
-import type { Conversation, Draft, Message, Page, PrivateSummary, ShareSource, Transfer, User } from "./api";
+import type { Conversation, Draft, Message, MessageReceipt, Page, PrivateSummary, ShareSource, Transfer, User } from "./api";
 import { MAX_IMAGE_BYTES } from "./attachment-media";
 import { Avatar, Blank, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName, messageTimeLabel, startsTimeGroup, usePage } from "./common";
 import { useMenu } from "./context-menu";
@@ -198,7 +198,8 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
   const [recallError, setRecallError] = useState("");
   const [recalling, setRecalling] = useState<number>();
   const [sharingReply, setSharingReply] = useState<AiReply>();
-  const [seen, setSeen] = useState<ReadonlySet<number>>(new Set());
+  const [receipt, setReceipt] = useState<MessageReceipt | null>(null);
+  const viewedBody = useRef<HTMLDivElement>(null);
   const openMenu = useMenu();
   const { save, saving, failure: saveFailure } = useAttachmentSave(changed);
   const press = useRef<{ anchor: HTMLElement; x: number; y: number; timer: number; opened: boolean; released?: number }>(undefined);
@@ -210,8 +211,12 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
     ...aiChat.replies.map(reply => ({ message: undefined, reply, time: reply.createdAt, key: reply.id })),
   ].sort((a, b) => a.time - b.time || (a.message?.seq ?? Infinity) - (b.message?.seq ?? Infinity));
   const bySequence = new Map(page?.items.map(message => [message.seq, message]));
-  const sent = JSON.stringify(readReceipts ? page?.items.filter(message => message.sender.id === own.id && !message.recalled)
-    .map(message => message.seq) ?? [] : []);
+  const lastMessage = history.at(-1)?.message;
+  const receiptMessage = readReceipts && !chat.title && lastMessage
+    && lastMessage.seq === chat.preview_seq && !lastMessage.recalled && !lastMessage.ai_provider ? lastMessage : undefined;
+  const sent = receiptMessage?.sender.id === own.id ? receiptMessage.seq : undefined;
+  const viewed = !away && receiptMessage?.sender.id !== own.id ? receiptMessage?.seq : undefined;
+  const receiptLabel = receipt && receipt.seq === sent ? (receipt.status === "read" ? "Read" : "Delivered") : undefined;
   const readThrough = !away && loadedRevision === revision && chat.latest_seq <= revision && chat.latest_seq > chat.read_through
     ? chat.latest_seq : undefined;
   let previousTime: number | undefined;
@@ -219,38 +224,41 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
   useEffect(() => () => window.clearTimeout(press.current?.timer), []);
 
   useEffect(() => {
-    const sequences: number[] = JSON.parse(sent);
-    if (!sequences.length) setSeen(new Set());
-    if (!readThrough && !sequences.length) return;
+    if (!sent) setReceipt(null);
+    if (!readThrough && !sent && !viewed) return;
     let disposed = false;
     let timer: number | undefined;
     let marking = readThrough;
     async function update() {
       try {
         const element = viewport.current;
-        const through = element?.getClientRects().length && document.visibilityState === "visible" && document.hasFocus()
-          && !document.querySelector("dialog[open]")
-          ? marking : undefined;
-        if (!through && !sequences.length) return;
-        const requests = [];
-        for (let offset = 0; offset < sequences.length || offset === 0; offset += 200) {
-          requests.push(api.readUpdate(chat.id, offset === 0 ? through : undefined, sequences.slice(offset, offset + 200)));
+        const active = element?.getClientRects().length && document.visibilityState === "visible" && document.hasFocus()
+          && !document.querySelector("dialog[open]");
+        const through = active ? marking : undefined;
+        let shown: number | undefined;
+        if (active && viewed && element) {
+          const view = element.getBoundingClientRect();
+          const content = viewedBody.current?.querySelector(".bubble, .chat-media, .chat-file-card")?.getBoundingClientRect();
+          if (content && Math.min(content.bottom, view.bottom, window.innerHeight) > Math.max(content.top, view.top, 0)) {
+            shown = viewed;
+          }
         }
-        const results = await Promise.all(requests);
+        if (!through && !sent && !shown) return;
+        const result = await api.readUpdate(chat.id, through, sent, shown);
         if (disposed) return;
-        setSeen(new Set(results.flat()));
+        setReceipt(result);
         if (through) {
           marking = undefined;
           void refresh();
         }
-      } catch { if (!disposed) setSeen(new Set()); }
+      } catch { if (!disposed) setReceipt(null); }
       finally {
-        if (!disposed && (marking || sequences.length)) timer = window.setTimeout(update, 1700);
+        if (!disposed && (marking || viewed || sent)) timer = window.setTimeout(update, 1700);
       }
     }
     void update();
     return () => { disposed = true; window.clearTimeout(timer); };
-  }, [chat.id, readThrough, sent, refresh]);
+  }, [chat.id, readThrough, sent, viewed, refresh]);
 
   useLayoutEffect(() => {
     if (nearBottom.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
@@ -372,7 +380,8 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                 }
               } : undefined}>
               {!mine && avatar}
-              <div className={"message-body" + (file ? " attachment-body" : "")}>
+              <div className={"message-body" + (file ? " attachment-body" : "")}
+                ref={viewed !== undefined && message?.seq === viewed ? viewedBody : undefined}>
                 {!provider && !mine && <span className="message-author">{displayName(message!.sender, remarks)}</span>}
                 {message?.reply_to !== undefined && !message.recalled && <QuotedMessage conversation={chat.id} seq={message.reply_to}
                   known={bySequence.get(message.reply_to)} hidden={hidden.has(message.reply_to) || recalled.has(message.reply_to)} />}
@@ -381,7 +390,9 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                     onChanged={changed} open={() => openMedia(message)} />
                     : <div className="bubble">{message?.text ?? reply?.text}</div>}
                 <div className="message-meta">
-                  {message && readReceipts && seen.has(message.seq) && !message.recalled && <span className="read-mark" aria-label="Read" title="Read"><CheckCheck size={15} /></span>}
+                  {message && message.seq === sent && receiptLabel && <span className="read-mark" role="img" aria-label={receiptLabel} title={receiptLabel}>
+                    {receiptLabel === "Read" ? <CheckCheck size={15} aria-hidden /> : <Check size={15} aria-hidden />}
+                  </span>}
                   {reply && <>
                     <small><LockKeyhole size={12} /> Only you</small>
                     <button type="button" className="text-button" onClick={() => setSharingReply(reply)}><UsersRound size={13} /> Visible to</button>

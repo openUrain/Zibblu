@@ -355,7 +355,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             back={() => { setPrivateId(undefined); if (!active) setMobileChat(false); }} showCode={showPrivateCode} />
           : active ? <ChatView key={active.id} chat={active} own={session.user} revision={revision}
             latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset}
-            hidden={hidden} hide={seq => hide(active.id, seq)} readReceipts={directory.read_receipts}
+            hidden={hidden} hide={seq => hide(active.id, seq)} readReceipts={directory.read_receipts && connection === "Connected"}
             draft={drafts[active.id] ?? { text: "" }} setDraft={change => setDraft(active.id, change)}
             transfers={transfers} changed={changed} refresh={refresh} back={() => setMobileChat(false)}
             share={source => share(active.id, source)} openPrivate={() => void invitePrivate(active)}
@@ -372,7 +372,12 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       {nav === "Contacts" && <Contacts own={session.user} directory={directory} selected={profile?.id} refresh={refresh} create={create} />}
       {nav === "Files" && <FilesView people={people} revision={revision} recalled={recalled} hidden={hidden} transfers={transfers} onChanged={changed} />}
       {nav === "Settings" && <SettingsView {...{ session, privateQuiet, setPrivateQuiet, closeAction, setCloseAction }}
-        readReceipts={directory.read_receipts} setReadReceipts={async enabled => { await api.setReadReceipts(enabled); await refresh(); }}
+        readReceipts={directory.read_receipts} setReadReceipts={async enabled => {
+          await api.setReadReceipts(enabled);
+          await refreshInFlight.current;
+          setDirectory(previous => ({ ...previous, read_receipts: enabled }));
+          await refresh();
+        }}
         assistantSettings={<AssistantSettings assistants={assistants} failure={assistantFailure} changed={next => {
           setAssistants(next);
           setAssistantFailure("");
@@ -593,7 +598,7 @@ function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, se
     <div className="surface settings-card">
       {windows && <CloseActionChoices action={closeAction} choose={action => void save(() => setCloseAction(action))} disabled={saving} />}
       <label className="choice setting-switch">
-        <span>Read receipts<small>Both people must enable receipts to share read status.</small></span>
+        <span>Read receipts<small>Both people must enable receipts to share delivery and read status in direct chats.</small></span>
         <input type="checkbox" role="switch" checked={readReceipts} disabled={saving}
           onChange={event => { const enabled = event.target.checked; void save(() => setReadReceipts(enabled)); }} />
         <span className="switch-track" aria-hidden="true" />
