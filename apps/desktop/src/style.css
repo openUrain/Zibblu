@@ -11,7 +11,7 @@
   --line: rgba(0, 0, 0, 0.08);
   --scroll-thumb: rgba(0, 0, 0, 0.16);
   --ink: #1d1d1f;
-  --muted: #86868b;
+  --muted: #606782;
   --accent: #634fb4;
   --primary: #634fb4;
   --primary-hover: #53409e;
@@ -166,7 +166,7 @@ svg { vertical-align: middle; }
 .shell { display: grid; grid-template-columns: 70px minmax(0, 1fr); height: 100dvh; overflow: hidden; }
 .rail {
   display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 14px 6px;
-  background: #ebecef; color: #6e6e73; border-right: 1px solid var(--line);
+  background: #ebecef; color: var(--muted); border-right: 1px solid var(--line);
 }
 .rail .rail-brand { width: 44px; height: 44px; flex: none; border-radius: 12px; }
 .rail-links { display: grid; width: 100%; gap: 4px; }
