@@ -36,6 +36,8 @@ We **cannot** promise protection from: screenshots or cameras, recipients manual
 
 ## Ordinary chats and files
 
+Local-First 的在线副本、WAL、备份与缓存保留策略见 [M1 协议草案](ARCHITECTURE.md#m1-local-first-rfc)。以下为现有 M1 安全边界。
+
 - Authenticate users and secure transport; design eventual message E2EE with a standard, reviewed approach rather than inventing cryptography.
 - Bound file sizes/resources, validate transfers, apply integrity checks and avoid overwriting unrelated destination files.
 - Clearly distinguish privacy expectations of normal server-assisted traffic and LAN-only temporary traffic.

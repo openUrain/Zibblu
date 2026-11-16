@@ -24,10 +24,24 @@ Small, durable decisions only. Add a dated entry when an actual choice changes; 
 
 | D-017 | Interfaces should explain themselves through layout and purposeful controls, not excess instructional text; choose sliders, checkboxes, switches and selectors by actual state semantics; avoid redundant nested selection affordances (e.g. border plus checkbox for one state); express primary, secondary, tertiary and destructive importance through clear visual hierarchy. | Improve scanability, operation logic and visual clarity across devices while keeping critical security, error and AI-disclosure text explicit. | Accepted |
 
+## D-018 · M1 Local-First 与临时文件投递
+
+**2026-11-15 · Owner 已确认数据归属及附件 A 方案。** 普通聊天以按服务端和账号隔离的 SQLite 及本地已保存文件为长期数据源。服务器负责身份、权限、可靠临时投递和有期限的文件下载。设备间由用户确认迁移或从备份恢复。新设备登记覆盖后续投递及账号尚未完成接收的有效积压。此决策更新 D-007 的长期保留语义，保留 PostgreSQL 投递和分块实现。
+
+| 微信公开行为 | Zibblu 选择 |
+| --- | --- |
+| 微信隐私保护指引第 1.34–1.35 节说明聊天记录留在终端，可由用户备份、删除或迁移，群名称、群成员昵称等必要资料由服务端保存。[微信隐私保护指引](https://oper.my-qcloud.com/cgi-bin/readtemplate?lang=zh_CN&s=privacy&t=weixin_agreement) | 本地保留历史、搜索、引用和已存文件。服务端长期持有账号、目录权限和投递所需的最小无正文记录，无跨设备自动漫游。 |
+| 腾讯客服在 2024 年公开答复未接收消息可暂存约三天。图片、视频、文件、CDN 或已投递未下载的精确期限缺少同等级公开依据。[腾讯客服公开答复](https://www.ithome.com/0/787/941.htm) | 离线文字初始目标 72 小时。图片、视频和文件采用独立下载期限，元数据与核验完成分别确认。RFC 提案期限须经过验收及上线审批。 |
+| 微信个人聊天没有已读回执，腾讯于 2026 年再次说明。[腾讯公开说明](https://www.ithome.com/0/949/153.htm) | 双方主动开启时，按 #39 已决定的范围仅展示当前单聊最后一条、由自己发出的消息状态。单勾依据真实持久化，双勾依据实际查看。 |
+
+服务端在暂存期限内可读 M1 内容，HTTPS 提供传输保护。E2EE 需要独立协议审查及设备密钥生命周期设计。WAL、备份和代理缓存的实际保存期限属于上线披露的一部分。[安全边界](SECURITY.md)
+
+现阶段交付为 [Issue #41](https://github.com/openUrain/Zibblu/issues/41) 的 [M0 协议、迁移与验收草案](ARCHITECTURE.md#m1-local-first-rfc)。执行生产清理须有独立 Owner 审批。
+
 ## Open decisions
 
 1. Online-message encryption protocol and key lifecycle; do not claim E2EE until implemented.
-2. Private file transfer, mobile clients and normal-chat multi-device sync are deferred.
+2. Private file transfer, mobile clients and automatic normal-chat history roaming are deferred.
 
 ## Change format
 
