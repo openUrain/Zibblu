@@ -174,10 +174,10 @@ export function NearbyDevices({ own, close, invited }: {
     {account === own && <p className="muted">Private invitations go to a different account.</p>}
     {choice && !selected && status === "ready" && <p className="muted" role="status">The selected device is no longer listed for that account.</p>}
     {failure && <p className="inline-error" role="alert">{failure}</p>}
-    {((status === "ready" && devices.length === 0) || status === "discovery_failed" || failure) && <p className="muted">
-      On a trusted Windows network, check that Windows Defender Firewall allows Zibblu on the Private profile.
-      For managed networks, ask IT whether mDNS and direct UDP are permitted.
-    </p>}
+    {((status === "ready" && devices.length === 0) || status === "discovery_failed" || failure) && <details className="nearby-help">
+      <summary className="muted">Troubleshooting tips</summary>
+      <p className="muted">Check that Windows Defender Firewall allows Zibblu on the Private profile. For managed networks, ensure mDNS and direct UDP are permitted.</p>
+    </details>}
     <div className="dialog-actions">
       <button className="button subtle" disabled={busy} onClick={close}>Close</button>
       <button className="button primary" disabled={busy || !selected || account === own}
