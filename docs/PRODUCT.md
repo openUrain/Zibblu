@@ -1,9 +1,15 @@
 # Product specification
 
 **Product:** Zibblu — *Chat freely. Share privately.*  
-**Stage:** M1 normal chat and files, M2 private LAN text chat, and M3 scoped AI assistants on Windows.
+**Release scope:** Windows v0.1.4 includes local-first normal chat and files, private LAN text chat, and scoped AI assistants.
 
-**Goal:** Familiar everyday messaging, powerful file utilities, a truly separate LAN-only private mode and explicitly scoped AI assistance.
+**Goal:** Give organizations a choice of server for everyday chats and file sharing. Give participants a separate, consent-based mode for private text on a reachable LAN.
+
+## Enterprise Self-Hosting
+
+Organizations can [deploy the v2 online service and PostgreSQL on their own infrastructure](ONLINE_DEPLOYMENT.md#enterprise-self-hosting). Windows clients select that service’s HTTPS origin under **Advanced** at sign-in. Ordinary messages and attachments between accounts on the same self-hosted service go through that service, without routing through the official Zibblu server.
+
+The selected server handles accounts, contacts, groups, devices and delivery. It can read ordinary chat payloads during online availability because ordinary chats have no end-to-end encryption. Long-term received history is stored in the client’s per-server, per-account SQLite profile. Private LAN text uses its own direct connection. An explicitly authorized remote AI request sends the reviewed context to the selected provider. [Security boundaries](SECURITY.md)
 
 ## Interface
 
@@ -23,7 +29,7 @@
 
 普通聊天以当前 Windows 设备的本地历史为准。已登录时断网可以查阅本机历史，普通文本和已暂存的附件会排队。重连后使用原发送键继续。新设备只接收有效的账号积压及之后的投递。离线文字默认可投递 72 小时，错过期限时显示过期占位。文件下载期限由部署配置决定，保存并验证的本机文件可继续打开和另存。[D-018](DECISIONS.md#d-018--m1-local-first-与临时文件投递)
 
-On Windows, the standalone client defaults to **Zibblu Online** on a fresh profile. Sign in or create an account directly. **Advanced** allows a custom server, and the app remembers the selected server. The Local-First test release opens a separate profile from earlier versions and requires a v2 service. The client uses local SQLite. PostgreSQL runs with the server.
+On Windows, the standalone client defaults to **Zibblu Online** on a fresh profile. Sign in or create an account directly. **Advanced** allows a custom server, and the app remembers the selected server. The v0.1.4 client opens a separate profile from earlier versions and requires a v2 service. The client uses local SQLite. PostgreSQL runs with the server.
 
 On Windows, a normal app exit leaves the last successful sign-in available. On the next start, select the saved account card to ask its server to restore the session, or choose **Use another account** for password sign-in. The card uses the last locally saved avatar or an initial. A network failure allows a retry. An expired or revoked session returns to password sign-in. **Sign out** removes the saved sign-in from this device. Settings lists the account’s active devices and can retire another installation.
 
