@@ -129,7 +129,7 @@ export function usePage(read: (before?: number) => Promise<Page>, revision: numb
         const lastIndex = previous.items.findIndex(item => item.seq === last);
         return lastIndex < 0 ? next : {
           ...previous,
-          items: [...next.items, ...previous.items.slice(lastIndex + 1).filter(item => !hidden?.has(item.seq) && (showRecalled || !recalled.has(item.seq)))],
+          items: [...next.items, ...previous.items.slice(lastIndex + 1).filter(item => !item.pending && !hidden?.has(item.seq) && (showRecalled || !recalled.has(item.seq)))],
         };
       });
     }).catch(error => { if (current) setFailure(errorMessage(error)); });

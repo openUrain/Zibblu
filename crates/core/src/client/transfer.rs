@@ -1,8 +1,15 @@
-use super::{Client, OnlineError, ensure_new_destination, read_limited, staging};
-use crate::{Attachment, CHUNK_SIZE, MAX_PASTED_IMAGE_BYTES, UploadProgress, User};
+use super::{
+    Client, OnlineError, ensure_new_destination, local_sync::persist_message, read_limited,
+    staging, unix_millis,
+};
+use crate::{
+    Attachment, CHUNK_SIZE, ContentAck, MAX_PASTED_IMAGE_BYTES, Message, Publication,
+    UploadProgress, User,
+};
 use anyhow::{Context, Result, bail, ensure};
-use reqwest::Method;
+use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
+use sqlx::SqliteConnection;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -42,8 +49,10 @@ impl Direction {
 #[serde(rename_all = "snake_case")]
 pub enum TransferStatus {
     Running,
+    Queued,
     Paused,
     Failed,
+    Expired,
     Complete,
 }
 
@@ -64,6 +73,10 @@ struct Job {
     #[serde(flatten)]
     transfer: Transfer,
     destination: Option<PathBuf>,
+    #[serde(default)]
+    publishing: bool,
+    #[serde(default)]
+    retry_at: i64,
 }
 
 pub(super) type JobKey = (Uuid, Direction);
@@ -86,6 +99,8 @@ impl Job {
                 sharer: None,
             },
             destination: None,
+            publishing: false,
+            retry_at: 0,
         }
     }
 
@@ -175,6 +190,7 @@ impl Client {
     ) -> Result<Transfer> {
         let mut job = Job::new(attachment, conversation, Direction::Upload);
         job.transfer.sharer = Some(self.user.clone());
+        job.transfer.status = TransferStatus::Queued;
         if let Err(error) = self.store_job(&job).await {
             let _ = fs::remove_file(self.spool(job.key())).await;
             return Err(error);
@@ -203,15 +219,24 @@ impl Client {
             "Pause this transfer before choosing another filename"
         );
         let mut job = match self.job(key).await? {
-            Some(job) if job.transfer.status != TransferStatus::Complete => job,
+            Some(job)
+                if !matches!(
+                    job.transfer.status,
+                    TransferStatus::Complete | TransferStatus::Expired
+                ) =>
+            {
+                job
+            }
             _ => {
                 self.check_capacity().await?;
                 Job::new(file, message.conversation_id, Direction::Download)
             }
         };
         job.destination = Some(destination);
+        job.publishing = false;
+        job.retry_at = 0;
         job.transfer.sharer = Some(message.sender);
-        job.transfer.status = TransferStatus::Paused;
+        job.transfer.status = TransferStatus::Queued;
         job.transfer.error = None;
         self.store_job(&job).await?;
         self.launch(job, &mut workers).await
@@ -221,6 +246,11 @@ impl Client {
         let workers = self.workers.lock().await;
         if let Some(active) = workers.get(&(id, direction)) {
             active.stop.store(true, Ordering::Relaxed);
+        } else if let Some(mut job) = self.job((id, direction)).await?
+            && job.transfer.status == TransferStatus::Queued
+        {
+            job.transfer.status = TransferStatus::Paused;
+            self.store_job(&job).await?;
         }
         Ok(())
     }
@@ -233,7 +263,12 @@ impl Client {
             .job(key)
             .await?
             .context("This transfer is unavailable")?;
-        if workers.contains_key(&key) || job.transfer.status == TransferStatus::Complete {
+        if workers.contains_key(&key)
+            || matches!(
+                job.transfer.status,
+                TransferStatus::Complete | TransferStatus::Expired
+            )
+        {
             return Ok(job.transfer);
         }
         ensure!(
@@ -260,7 +295,7 @@ impl Client {
             job.transfer.status != TransferStatus::Complete,
             "This transfer is already complete"
         );
-        if direction == Direction::Upload {
+        if direction == Direction::Upload && job.transfer.status != TransferStatus::Expired {
             self.api
                 .send(self.api.request(Method::DELETE, &format!("/v1/files/{id}")))
                 .await?;
@@ -281,13 +316,14 @@ impl Client {
     pub async fn logout(&self) -> Result<()> {
         self.close().await;
         self.api
-            .send(self.api.request(Method::DELETE, "/v1/session"))
+            .send(self.api.request(Method::DELETE, "/v2/session"))
             .await?;
         Ok(())
     }
 
     pub async fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
+        let _sync = self.sync_gate.lock().await;
         let active = std::mem::take(&mut *self.workers.lock().await);
         for worker in active.values() {
             worker.stop.store(true, Ordering::Relaxed);
@@ -298,7 +334,7 @@ impl Client {
         let _prepare = self.prepare_gate.lock().await;
     }
 
-    fn ensure_open(&self) -> Result<()> {
+    pub(super) fn ensure_open(&self) -> Result<()> {
         ensure!(
             !self.closed.load(Ordering::Relaxed),
             "The session has ended"
@@ -343,13 +379,38 @@ impl Client {
             match result {
                 Ok(status) => job.transfer.status = status,
                 Err(error) => {
-                    job.transfer.status = TransferStatus::Failed;
                     job.transfer.error = Some(error.to_string());
+                    job.transfer.status = if signal.load(Ordering::Relaxed) {
+                        TransferStatus::Paused
+                    } else {
+                        match error.downcast_ref::<OnlineError>() {
+                            Some(OnlineError::Rejected {
+                                status: StatusCode::GONE,
+                                ..
+                            }) => TransferStatus::Expired,
+                            Some(OnlineError::Network(_)) => TransferStatus::Queued,
+                            Some(OnlineError::Rejected { status, .. })
+                                if matches!(
+                                    *status,
+                                    StatusCode::UNAUTHORIZED
+                                        | StatusCode::TOO_MANY_REQUESTS
+                                        | StatusCode::REQUEST_TIMEOUT
+                                ) || (status.is_server_error()
+                                    && *status != StatusCode::INSUFFICIENT_STORAGE) =>
+                            {
+                                TransferStatus::Queued
+                            }
+                            _ => TransferStatus::Failed,
+                        }
+                    };
+                    job.retry_at = unix_millis() + 2_000;
                 }
             }
             let mut workers = client.workers.lock().await;
-            if client.store_job(&job).await.is_ok()
-                && job.transfer.status == TransferStatus::Complete
+            let complete = job.transfer.status == TransferStatus::Complete;
+            if complete
+                || (client.store_job(&job).await.is_ok()
+                    && job.transfer.status == TransferStatus::Expired)
             {
                 let _ = fs::remove_file(client.spool(key)).await;
             }
@@ -357,6 +418,28 @@ impl Client {
         });
         workers.insert(key, Active { stop, task });
         Ok(transfer)
+    }
+
+    pub(super) async fn resume_queued(self: &Arc<Self>) -> Result<()> {
+        let mut workers = self.workers.lock().await;
+        let available = MAX_RUNNING.saturating_sub(workers.len());
+        if available > 0 {
+            let rows: Vec<String> = sqlx::query_scalar(
+                "SELECT payload FROM transfers WHERE json_extract(payload, '$.status') = 'queued'
+                 AND coalesce(json_extract(payload, '$.retry_at'), 0) <= ? ORDER BY rowid LIMIT ?",
+            )
+            .bind(unix_millis())
+            .bind(available as i64)
+            .fetch_all(&self.db)
+            .await?;
+            for row in rows {
+                let job: Job = serde_json::from_str(&row)?;
+                if !workers.contains_key(&job.key()) {
+                    self.launch(job, &mut workers).await?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn spool(&self, (id, direction): JobKey) -> PathBuf {
@@ -375,18 +458,8 @@ impl Client {
     }
 
     async fn store_job(&self, job: &Job) -> Result<()> {
-        let (id, direction) = job.key();
-        sqlx::query(
-            "INSERT INTO transfers (id, direction, payload) VALUES (?,?,?)
-             ON CONFLICT (id, direction) DO UPDATE SET payload = excluded.payload",
-        )
-        .bind(id.to_string())
-        .bind(direction.as_str())
-        .bind(serde_json::to_string(job)?)
-        .execute(&self.db)
-        .await
-        .context("Could not save transfer progress")?;
-        Ok(())
+        let mut db = self.db.acquire().await?;
+        store_job(&mut db, job).await
     }
 
     async fn upload(&self, job: &mut Job, stop: &AtomicBool) -> Result<TransferStatus> {
@@ -411,117 +484,270 @@ impl Client {
             OnlineError::InvalidResponse
         );
         job.transfer.received = progress.received;
-        if progress.complete {
-            return Ok(TransferStatus::Complete);
-        }
         self.store_job(job).await?;
-        let mut source = fs::File::open(self.spool(job.key()))
-            .await
-            .context("The staged file is unavailable. Share it again.")?;
-        source.seek(SeekFrom::Start(progress.received)).await?;
-        while job.transfer.received < attachment.size {
+        let spool = self.spool(job.key());
+        if !progress.complete {
+            let mut source = fs::File::open(&spool)
+                .await
+                .context("The staged file is unavailable. Share it again.")?;
+            source.seek(SeekFrom::Start(progress.received)).await?;
+            while job.transfer.received < attachment.size {
+                if stop.load(Ordering::Relaxed) {
+                    return Ok(TransferStatus::Paused);
+                }
+                let offset = job.transfer.received;
+                let len = (attachment.size - offset).min(CHUNK_SIZE);
+                let mut bytes = vec![0; len as usize];
+                source
+                    .read_exact(&mut bytes)
+                    .await
+                    .context("Could not read the staged attachment")?;
+                let progress: UploadProgress = self
+                    .api
+                    .json(
+                        self.api
+                            .request(Method::PUT, &format!("/v1/files/{id}/chunks/{offset}"))
+                            .body(bytes),
+                    )
+                    .await?;
+                ensure!(
+                    progress.received == offset + len && !progress.complete,
+                    OnlineError::InvalidResponse
+                );
+                job.transfer.received = progress.received;
+                self.store_job(job).await?;
+            }
             if stop.load(Ordering::Relaxed) {
                 return Ok(TransferStatus::Paused);
             }
-            let offset = job.transfer.received;
-            let len = (attachment.size - offset).min(CHUNK_SIZE);
-            let mut bytes = vec![0; len as usize];
-            source
-                .read_exact(&mut bytes)
-                .await
-                .context("Could not read the staged attachment")?;
-            let progress: UploadProgress = self
-                .api
-                .json(
-                    self.api
-                        .request(Method::PUT, &format!("/v1/files/{id}/chunks/{offset}"))
-                        .body(bytes),
-                )
-                .await?;
-            ensure!(
-                progress.received == offset + len && !progress.complete,
-                OnlineError::InvalidResponse
-            );
-            job.transfer.received = progress.received;
-            self.store_job(job).await?;
         }
-        if stop.load(Ordering::Relaxed) {
-            return Ok(TransferStatus::Paused);
-        }
-        self.api
-            .send(
+        let stamp: Publication = self
+            .api
+            .json(
                 self.api
                     .request(Method::POST, &format!("/v1/files/{id}/complete")),
             )
             .await?;
+        ensure!(stamp.seq > 0, OnlineError::InvalidResponse);
+        if !stamp.recalled {
+            self.stage_verified(&attachment, spool).await?;
+        }
+        let message = Message {
+            seq: stamp.seq,
+            conversation_id: conversation,
+            sender: self.user.clone(),
+            created_at: stamp.created_at,
+            text: None,
+            attachment: Some(attachment),
+            ai_provider: None,
+            recalled: stamp.recalled,
+            reply_to: None,
+            nonce: None,
+            expires_at: stamp.expires_at,
+            expired: None,
+            pending: None,
+            local_file: false,
+        };
+        let mut tx = self.db.begin().await?;
+        persist_message(&mut tx, message).await?;
+        let visible: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM inbox WHERE seq = ? AND attachment_id = ?)",
+        )
+        .bind(stamp.seq)
+        .bind(id.to_string())
+        .fetch_one(&mut *tx)
+        .await?;
+        if visible {
+            record_local_file(&mut tx, &job.transfer.attachment, stamp.seq, false).await?;
+        }
+        job.transfer.status = TransferStatus::Complete;
+        store_job(&mut tx, job).await?;
+        tx.commit().await?;
+        if !visible {
+            let _ = fs::remove_file(self.managed_path(id)).await;
+        }
+        self.history_changed();
         Ok(TransferStatus::Complete)
+    }
+
+    fn managed_path(&self, id: Uuid) -> PathBuf {
+        self.managed_files.join(id.to_string())
+    }
+
+    async fn stage_verified(&self, attachment: &Attachment, source: PathBuf) -> Result<PathBuf> {
+        let path = self.managed_path(attachment.id);
+        let target = path.clone();
+        let attachment = attachment.clone();
+        tokio::task::spawn_blocking(move || {
+            if target.try_exists()? {
+                verify_file(&target, &attachment)
+            } else {
+                publish_verified(&source, &target, &attachment)
+            }
+        })
+        .await??;
+        Ok(path)
+    }
+
+    pub(super) async fn flush_content_acks(&self) -> Result<()> {
+        let pending: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT id, sha256, size FROM local_files WHERE ack_pending = 1 LIMIT 8",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        for (id, sha256, size) in pending {
+            let path = self.managed_path(Uuid::parse_str(&id)?);
+            let digest = sha256.clone();
+            if tokio::task::spawn_blocking(move || check_hash(&path, size as u64, &digest))
+                .await?
+                .is_err()
+            {
+                sqlx::query("DELETE FROM local_files WHERE id = ?")
+                    .bind(&id)
+                    .execute(&self.db)
+                    .await?;
+                self.history_changed();
+                continue;
+            }
+            let request = self
+                .api
+                .request(Method::POST, &format!("/v2/files/{id}/ack"))
+                .timeout(std::time::Duration::from_secs(3))
+                .json(&ContentAck { sha256 });
+            match self.api.send(request).await {
+                Ok(_)
+                | Err(OnlineError::Rejected {
+                    status: StatusCode::NOT_FOUND | StatusCode::GONE,
+                    ..
+                }) => {
+                    sqlx::query("UPDATE local_files SET ack_pending = 0 WHERE id = ?")
+                        .bind(id)
+                        .execute(&self.db)
+                        .await?;
+                }
+                Err(
+                    error @ OnlineError::Rejected {
+                        status: StatusCode::UNAUTHORIZED,
+                        ..
+                    },
+                ) => return Err(error.into()),
+                Err(_) => break,
+            }
+        }
+        Ok(())
     }
 
     async fn download(&self, job: &mut Job, stop: &AtomicBool) -> Result<TransferStatus> {
         let attachment = job.transfer.attachment.clone();
         let id = attachment.id;
         let destination = job.destination.clone().context("Choose a save location")?;
-        ensure_new_destination(&destination)?;
+        let seq: i64 = sqlx::query_scalar("SELECT seq FROM inbox WHERE attachment_id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.db)
+            .await?
+            .context("This attachment is no longer available")?;
         let spool = self.spool(job.key());
-        let mut output = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&spool)
-            .await
-            .context("Could not open the partial download")?;
-        let length = output.metadata().await?.len();
-        let offset = if length == attachment.size {
-            length
-        } else if length > attachment.size {
-            0
-        } else {
-            length - length % CHUNK_SIZE
-        };
-        output.set_len(offset).await?;
-        output.seek(SeekFrom::Start(offset)).await?;
-        job.transfer.received = offset;
-        self.store_job(job).await?;
-        while job.transfer.received < attachment.size {
-            if stop.load(Ordering::Relaxed) {
-                return Ok(TransferStatus::Paused);
-            }
-            let offset = job.transfer.received;
-            let expected = (attachment.size - offset).min(CHUNK_SIZE) as usize;
-            let bytes = self.read_attachment_chunk(id, offset, expected).await?;
-            output
-                .write_all(&bytes)
-                .await
-                .context("Could not write the partial download")?;
-            output.flush().await?;
-            job.transfer.received += expected as u64;
-            self.store_job(job).await?;
+        let path = self.managed_path(id);
+        let has_cache: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM local_files WHERE id = ?)")
+                .bind(id.to_string())
+                .fetch_one(&self.db)
+                .await?;
+        if !job.publishing {
+            ensure_new_destination(&destination)?;
         }
-        drop(output);
+        let cached = if has_cache || path.is_file() {
+            self.stage_verified(&attachment, spool.clone()).await?
+        } else {
+            self.api
+                .send(
+                    self.api
+                        .request(Method::POST, &format!("/v2/files/{id}/download")),
+                )
+                .await?;
+            let mut output = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&spool)
+                .await
+                .context("Could not open the partial download")?;
+            let length = output.metadata().await?.len();
+            let offset = if length == attachment.size {
+                length
+            } else if length > attachment.size {
+                0
+            } else {
+                length - length % CHUNK_SIZE
+            };
+            output.set_len(offset).await?;
+            output.seek(SeekFrom::Start(offset)).await?;
+            job.transfer.received = offset;
+            self.store_job(job).await?;
+            while job.transfer.received < attachment.size {
+                if stop.load(Ordering::Relaxed) {
+                    return Ok(TransferStatus::Paused);
+                }
+                let offset = job.transfer.received;
+                let expected = (attachment.size - offset).min(CHUNK_SIZE) as usize;
+                let bytes = self.remote_chunk(id, offset, expected).await?;
+                output
+                    .write_all(&bytes)
+                    .await
+                    .context("Could not write the partial download")?;
+                output.flush().await?;
+                job.transfer.received += expected as u64;
+                self.store_job(job).await?;
+            }
+            output.sync_all().await?;
+            drop(output);
+            match self.stage_verified(&attachment, spool.clone()).await {
+                Ok(path) => path,
+                Err(error) => {
+                    let _ = fs::remove_file(&spool).await;
+                    job.transfer.received = 0;
+                    return Err(error);
+                }
+            }
+        };
         if stop.load(Ordering::Relaxed) {
             return Ok(TransferStatus::Paused);
         }
-        let source = spool.clone();
-        let verified = tokio::task::spawn_blocking(move || -> Result<bool> {
-            let parent = destination.parent().context("Choose a save folder")?;
-            let mut temp =
-                NamedTempFile::new_in(parent).context("Could not write to the save folder")?;
-            if staging::hash_copy(std::fs::File::open(source)?, temp.as_file_mut())?
-                != attachment.sha256
-            {
-                return Ok(false);
+        let recovering = job.publishing;
+        job.publishing = true;
+        self.store_job(job).await?;
+        let file = attachment.clone();
+        let saved = tokio::task::spawn_blocking(move || {
+            if recovering && destination.try_exists()? {
+                verify_file(&destination, &file)
+            } else {
+                publish_verified(&cached, &destination, &file)
             }
-            temp.as_file().sync_all()?;
-            temp.persist_noclobber(destination)
-                .context("Could not publish the download. Choose an unused filename.")?;
-            Ok(true)
         })
-        .await??;
-        if !verified {
-            fs::remove_file(spool).await?;
-            job.transfer.received = 0;
-            bail!("File verification failed. Retry the download.");
+        .await?;
+        if let Err(error) = saved {
+            job.publishing = false;
+            return Err(error);
         }
+        let mut tx = self.db.begin().await?;
+        let visible: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM inbox WHERE seq = ? AND attachment_id = ?)",
+        )
+        .bind(seq)
+        .bind(id.to_string())
+        .fetch_one(&mut *tx)
+        .await?;
+        if !visible {
+            let _ = fs::remove_file(path).await;
+            bail!("This attachment was recalled");
+        }
+        record_local_file(&mut tx, &attachment, seq, !has_cache).await?;
+        job.publishing = false;
+        job.transfer.received = attachment.size;
+        job.transfer.status = TransferStatus::Complete;
+        store_job(&mut tx, job).await?;
+        tx.commit().await?;
+        self.history_changed();
         Ok(TransferStatus::Complete)
     }
 
@@ -536,6 +762,33 @@ impl Client {
             expected <= CHUNK_SIZE as usize,
             OnlineError::InvalidResponse
         );
+        let size: Option<i64> = sqlx::query_scalar(
+            "SELECT size FROM local_files f JOIN inbox i ON i.attachment_id = f.id
+             WHERE f.id = ? AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h.seq = i.seq)",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.db)
+        .await?;
+        if let Some(size) = size {
+            ensure!(
+                offset <= size as u64 && expected as u64 <= size as u64 - offset,
+                OnlineError::InvalidResponse
+            );
+            let mut file = fs::File::open(self.managed_path(id)).await?;
+            ensure!(
+                file.metadata().await?.len() == size as u64,
+                "The local file is incomplete"
+            );
+            file.seek(SeekFrom::Start(offset)).await?;
+            let mut bytes = vec![0; expected];
+            file.read_exact(&mut bytes).await?;
+            return Ok(bytes);
+        }
+        self.remote_chunk(id, offset, expected).await
+    }
+
+    async fn remote_chunk(&self, id: Uuid, offset: u64, expected: usize) -> Result<Vec<u8>> {
+        self.ensure_open()?;
         let response = self
             .api
             .send(
@@ -547,4 +800,79 @@ impl Client {
         ensure!(bytes.len() == expected, OnlineError::InvalidResponse);
         Ok(bytes)
     }
+}
+
+async fn store_job(db: &mut SqliteConnection, job: &Job) -> Result<()> {
+    let (id, direction) = job.key();
+    sqlx::query(
+        "INSERT INTO transfers (id, direction, payload) VALUES (?,?,?)
+             ON CONFLICT (id, direction) DO UPDATE SET payload = excluded.payload",
+    )
+    .bind(id.to_string())
+    .bind(direction.as_str())
+    .bind(serde_json::to_string(job)?)
+    .execute(db)
+    .await
+    .context("Could not save transfer progress")?;
+    Ok(())
+}
+
+async fn record_local_file(
+    db: &mut SqliteConnection,
+    file: &Attachment,
+    seq: i64,
+    ack_pending: bool,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO local_files (id, message_seq, sha256, size, ack_pending) VALUES (?,?,?,?,?)
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(file.id.to_string())
+    .bind(seq)
+    .bind(&file.sha256)
+    .bind(file.size as i64)
+    .bind(ack_pending)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+fn open_verified_input(path: &std::path::Path, size: u64) -> Result<std::fs::File> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_file() && !staging::is_link(&metadata) && metadata.len() == size,
+        "File length or type verification failed. Retry the download."
+    );
+    Ok(std::fs::File::open(path)?)
+}
+
+fn check_hash(path: &std::path::Path, size: u64, sha256: &str) -> Result<()> {
+    let input = open_verified_input(path, size)?;
+    ensure!(
+        staging::hash_copy(input, std::io::sink())? == sha256,
+        "File verification failed. Retry the download."
+    );
+    Ok(())
+}
+
+fn verify_file(path: &std::path::Path, attachment: &Attachment) -> Result<()> {
+    check_hash(path, attachment.size, &attachment.sha256)
+}
+
+fn publish_verified(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+    attachment: &Attachment,
+) -> Result<()> {
+    let parent = destination.parent().context("Choose a save folder")?;
+    let input = open_verified_input(source, attachment.size)?;
+    let mut temp = NamedTempFile::new_in(parent).context("Could not write to the save folder")?;
+    ensure!(
+        staging::hash_copy(input, temp.as_file_mut())? == attachment.sha256,
+        "File verification failed. Retry the download."
+    );
+    temp.as_file().sync_all()?;
+    temp.persist_noclobber(destination)
+        .context("Could not publish the download. Choose an unused filename.")?;
+    Ok(())
 }

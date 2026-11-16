@@ -36,7 +36,7 @@ Small, durable decisions only. Add a dated entry when an actual choice changes; 
 
 服务端在暂存期限内可读 M1 内容，HTTPS 提供传输保护。E2EE 需要独立协议审查及设备密钥生命周期设计。WAL、备份和代理缓存的实际保存期限属于上线披露的一部分。[安全边界](SECURITY.md)
 
-现阶段交付为 [Issue #41](https://github.com/openUrain/Zibblu/issues/41) 的 [M0 协议、迁移与验收草案](ARCHITECTURE.md#m1-local-first-rfc)。执行生产清理须有独立 Owner 审批。
+[Issue #46](https://github.com/openUrain/Zibblu/issues/46) 在隔离的 Windows 和 Docker 环境实现 [v2 投递协议](ARCHITECTURE.md#m1-local-first-rfc)，采用新库和新本地资料结构。离线文字默认可投递 72 小时，文件、上传、设备和清理任务由各自的部署参数控制。候选生产期限、生产清理及任何旧数据重置须由 Owner 单独批准。
 
 ## Open decisions
 

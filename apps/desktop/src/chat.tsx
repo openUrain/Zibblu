@@ -1,13 +1,13 @@
 import {
   ArrowDown, ArrowLeft, ArrowRight, AtSign, Check, CheckCheck, Copy, Download, FilePlus2, FolderOpen, Ghost, LockKeyhole,
-  Image, MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Reply, Search, Send, Trash2, Undo2, UsersRound, X,
+  Image, LogOut, MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Reply, RotateCcw, Search, Send, Trash2, Undo2, UsersRound, X,
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
 import { ai } from "./ai-api";
 import type { AiReply, Assistant } from "./ai-api";
 import { AiRequest, AssistantMenu, ProviderLogo, ShareAiReply } from "./ai";
-import { api, errorMessage } from "./api";
+import { api, errorMessage, fileExpired } from "./api";
 import type { Conversation, Draft, Message, MessageReceipt, Page, PrivateSummary, ShareSource, Transfer, User } from "./api";
 import { MAX_IMAGE_BYTES } from "./attachment-media";
 import { Avatar, Blank, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName, messageTimeLabel, startsTimeGroup, usePage } from "./common";
@@ -79,6 +79,9 @@ export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffs
   const [drawer, setDrawer] = useState(false);
   const [search, setSearch] = useState<"text" | "media">();
   const [media, setMedia] = useState<Message>();
+  const [leave, setLeave] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const [leaveError, setLeaveError] = useState("");
   const { remarks, open } = useContext(People);
   const name = chatName(chat, own.id, remarks);
   const peer = chat.title ? undefined : chat.members.find(user => user.id !== own.id);
@@ -130,6 +133,22 @@ export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffs
         <button className="drawer-action" onClick={() => { setDrawer(false); setSearch("text"); }}><Search size={19} /> Search chat</button>
         <button className="drawer-action" onClick={() => { setDrawer(false); setShowFiles(true); }} disabled={showFiles}><FolderOpen size={19} /> Shared files</button>
         <button className="drawer-action" onClick={() => { setDrawer(false); setSearch("media"); }}><Image size={19} /> Photos and videos</button>
+        {chat.title && <button className="drawer-action danger" onClick={() => {
+          setDrawer(false); setLeaveError(""); setLeave(true);
+        }}><LogOut size={19} /> Leave group</button>}
+      </div>
+    </Dialog>}
+    {leave && <Dialog title="Leave group" close={() => setLeave(false)} closeDisabled={leaving}>
+      <p>You will stop receiving messages from {name}.</p>
+      {leaveError && <p className="inline-error" role="alert">{leaveError}</p>}
+      <div className="dialog-actions">
+        <button className="button subtle" disabled={leaving} onClick={() => setLeave(false)}>Cancel</button>
+        <button className="button danger" disabled={leaving} onClick={async () => {
+          setLeaving(true);
+          try { await api.leaveGroup(chat.id); await refresh(); setLeave(false); back(); }
+          catch (error) { setLeaveError(errorMessage(error)); }
+          finally { setLeaving(false); }
+        }}>Leave group</button>
       </div>
     </Dialog>}
     {search && <ChatSearch conversation={chat.id} initialTab={search} {...{ revision, latestAiSeq, recalled, hidden }}
@@ -213,11 +232,12 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
   const bySequence = new Map(page?.items.map(message => [message.seq, message]));
   const lastMessage = history.at(-1)?.message;
   const receiptMessage = readReceipts && !chat.title && lastMessage
-    && lastMessage.seq === chat.preview_seq && !lastMessage.recalled && !lastMessage.ai_provider ? lastMessage : undefined;
+    && lastMessage.seq > 0 && lastMessage.seq === chat.preview_seq && !lastMessage.recalled
+    && !lastMessage.expired && !lastMessage.ai_provider ? lastMessage : undefined;
   const sent = receiptMessage?.sender.id === own.id ? receiptMessage.seq : undefined;
   const viewed = !away && receiptMessage?.sender.id !== own.id ? receiptMessage?.seq : undefined;
   const receiptLabel = receipt && receipt.seq === sent ? (receipt.status === "read" ? "Read" : "Delivered") : undefined;
-  const readThrough = !away && loadedRevision === revision && chat.latest_seq <= revision && chat.latest_seq > chat.read_through
+  const readThrough = !away && loadedRevision === revision && chat.latest_seq > chat.read_through
     ? chat.latest_seq : undefined;
   let previousTime: number | undefined;
 
@@ -278,6 +298,12 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
     try { await hide(seq); } catch (error) { setRecallError(errorMessage(error)); }
   }
 
+  async function retry(nonce: string) {
+    setRecallError("");
+    try { await api.retryMessage(nonce); } catch (error) { setRecallError(errorMessage(error)); }
+    finally { void refresh(); }
+  }
+
   function checkScroll() {
     const element = viewport.current;
     if (!element) return;
@@ -308,7 +334,8 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
           const newGroup = startsTimeGroup(time, previousTime);
           previousTime = time;
           const animated = !!reply || (!!message && newestAtOpen !== undefined && message.seq > newestAtOpen);
-          const canRecall = !!message && mine && !provider && !message.recalled && Date.now() + clockOffset - time <= 5 * 60_000;
+          const now = Date.now() + clockOffset;
+          const canRecall = !!message && message.seq > 0 && mine && !provider && !message.recalled && now - time <= 5 * 60_000;
           const avatar = provider ? <ProviderLogo provider={provider} /> : <button className="person-link message-avatar"
             aria-label={`View ${displayName(message!.sender, remarks)}'s profile`} onClick={() => open?.(message!.sender)}>
             <PersonAvatar user={message!.sender} />
@@ -316,21 +343,22 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
           const text = message?.text ?? reply?.text;
           const file = message?.attachment;
           const download = file ? downloads.get(file.id) : undefined;
+          const expiredFile = !!message && (fileExpired(message, now) || download?.status === "expired");
           function actions(selection?: string) {
             const copy = selection || text;
             return [
-              ...(file && (!download || download.status === "complete") ? [{ label: "Save attachment", icon: <Download size={15} />,
+              ...(file && !expiredFile && (!download || download.status === "complete") ? [{ label: "Save attachment", icon: <Download size={15} />,
                 disabled: saving, action: () => void save(file.id) }] : []),
               ...(copy ? [{ label: "Copy", icon: <Copy size={15} />, action: () => {
                 void navigator.clipboard.writeText(copy).catch(error => setRecallError(errorMessage(error)));
               } }] : []),
-              ...(message && !message.recalled ? [{ label: "Quote", icon: <Reply size={15} />, action: () => {
+              ...(message && message.seq > 0 && !message.recalled && !message.expired && !expiredFile ? [{ label: "Quote", icon: <Reply size={15} />, action: () => {
                 setDraft(previous => ({ ...previous, quote: message, nonce: undefined }));
                 viewport.current?.closest(".chat-view")?.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus();
               } }] : []),
               ...(canRecall ? [{ label: "Recall message", icon: <Undo2 size={15} />, disabled: recalling !== undefined,
                 action: () => void recall(message.seq) }] : []),
-              ...(message ? [{ label: "Delete for me", icon: <Trash2 size={15} />, action: () => void deleteForMe(message.seq) }] : []),
+              ...(message && message.seq > 0 ? [{ label: "Delete for me", icon: <Trash2 size={15} />, action: () => void deleteForMe(message.seq) }] : []),
             ];
           }
           return <Fragment key={key}>
@@ -386,10 +414,21 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                 {message?.reply_to !== undefined && !message.recalled && <QuotedMessage conversation={chat.id} seq={message.reply_to}
                   known={bySequence.get(message.reply_to)} hidden={hidden.has(message.reply_to) || recalled.has(message.reply_to)} />}
                 {message?.recalled ? <div className="bubble recalled-message">Message recalled</div>
-                  : message && file ? <ChatAttachment key={file.id} message={message} transfer={download}
+                  : message && file ? <ChatAttachment key={file.id} message={message} transfer={download} expired={expiredFile}
                     onChanged={changed} open={() => openMedia(message)} />
+                    : message?.expired ? <div className="bubble recalled-message">
+                      {message.expired === "file" ? "This file expired. Ask the sender to share it again." : "This message expired before delivery."}
+                    </div>
                     : <div className="bubble">{message?.text ?? reply?.text}</div>}
                 <div className="message-meta">
+                  {message?.pending && <>
+                    <small role="status">{message.pending.error ?? "Queued"}</small>
+                    {message.pending.blocked && message.nonce && <button className="text-button" type="button"
+                      onClick={() => void retry(message.nonce!)}><RotateCcw size={13} /> Retry</button>}
+                  </>}
+                  {message === lastMessage && mine && !message?.recalled && !message?.pending && !file
+                    && message?.expires_at !== undefined && message.expires_at <= now && !receiptLabel
+                    && <small>Online delivery window ended</small>}
                   {message && message.seq === sent && receiptLabel && <span className="read-mark" role="img" aria-label={receiptLabel} title={receiptLabel}>
                     {receiptLabel === "Read" ? <CheckCheck size={15} aria-hidden /> : <Check size={15} aria-hidden />}
                   </span>}
@@ -398,8 +437,8 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                     <button type="button" className="text-button" onClick={() => setSharingReply(reply)}><UsersRound size={13} /> Visible to</button>
                     <button className="icon-button" aria-label="Dismiss AI reply" onClick={() => aiChat.dismiss(reply.id)}><X size={14} /></button>
                   </>}
-                  <button className="icon-button message-menu" aria-label="Message actions" aria-haspopup="menu"
-                    onClick={event => openMenu(event.currentTarget, actions())}><MoreHorizontal size={16} /></button>
+                  {actions().length > 0 && <button className="icon-button message-menu" aria-label="Message actions" aria-haspopup="menu"
+                    onClick={event => openMenu(event.currentTarget, actions())}><MoreHorizontal size={16} /></button>}
                 </div>
               </div>
               {mine && avatar}
@@ -437,7 +476,7 @@ function QuotedMessage({ conversation, seq, known, hidden }: { conversation: str
     return () => { current = false; };
   }, [conversation, seq, known, hidden]);
   const quote = known ?? loaded;
-  return <div className="message-quote"><Reply size={14} />{quote && !hidden && !quote.recalled
+  return <div className="message-quote"><Reply size={14} />{quote && !hidden && !quote.recalled && !quote.expired
     ? <span><strong>{displayName(quote.sender, remarks)}</strong> {quote.text ?? quote.attachment?.name}</span>
     : <span>Message unavailable</span>}</div>;
 }
@@ -539,7 +578,7 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
     try {
       await api.send(conversation, text, nonce, quote?.seq);
       setDraft(previous => previous.nonce === nonce ? { ...previous, text: "", quote: undefined, nonce: undefined } : previous);
-      await refresh();
+      void refresh();
     } catch (error) { setFailure(errorMessage(error)); }
     finally { setSending(false); }
   }

@@ -160,6 +160,11 @@ mod tests {
                 ai_provider: None,
                 recalled: false,
                 reply_to: None,
+                nonce: None,
+                expires_at: None,
+                expired: None,
+                pending: None,
+                local_file: false,
             })?;
             sqlx::query("INSERT INTO inbox VALUES (?, ?, ?, ?)")
                 .bind(seq)

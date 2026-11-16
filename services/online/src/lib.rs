@@ -1,20 +1,24 @@
 mod accounts;
 mod chats;
+mod devices;
 mod files;
 mod group_invites;
 mod lan_credentials;
 mod profiles;
+pub mod retention;
+mod sync;
 
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, FromRequestParts, State},
     http::{StatusCode, header, request::Parts},
+    middleware,
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -25,15 +29,31 @@ struct App {
     db: PgPool,
     password_work: Arc<Semaphore>,
     lan_authority: Arc<lan_credentials::Authority>,
+    retention: retention::Retention,
 }
 
 pub async fn router(db: PgPool) -> anyhow::Result<Router> {
+    router_with_retention(db, retention::Retention::default()).await
+}
+
+pub async fn router_with_retention(
+    db: PgPool,
+    retention: retention::Retention,
+) -> anyhow::Result<Router> {
     sqlx::migrate!().run(&db).await?;
     let lan_authority = Arc::new(lan_credentials::Authority::load(&db).await?);
     let json_routes = Router::new()
-        .route("/v1/register", post(accounts::register))
-        .route("/v1/login", post(accounts::login))
-        .route("/v1/session", delete(accounts::logout))
+        .route("/v1/register", post(upgrade_required))
+        .route("/v1/login", post(upgrade_required))
+        .route("/v1/sync", get(upgrade_required))
+        .route("/v2/register", post(accounts::register))
+        .route("/v2/login", post(accounts::login))
+        .route(
+            "/v2/session",
+            get(devices::identity).delete(accounts::logout),
+        )
+        .route("/v2/devices", get(devices::list))
+        .route("/v2/devices/{id}", delete(devices::retire))
         .route("/v1/lan/credential", post(lan_credentials::issue))
         .route("/v1/users/{handle}", get(accounts::find_user))
         .route("/v1/contacts", post(accounts::add_contact))
@@ -48,9 +68,11 @@ pub async fn router(db: PgPool) -> anyhow::Result<Router> {
             "/v1/contacts/{id}/decision",
             post(accounts::respond_contact),
         )
-        .route("/v1/sync", get(chats::sync))
-        .route("/v1/sync/ack", post(chats::ack_delivery))
+        .route("/v2/sync", get(sync::page))
+        .route("/v2/sync/ack", post(sync::ack))
+        .route("/v2/history/status", post(sync::history_status))
         .route("/v1/conversations", post(chats::create))
+        .route("/v1/conversations/{id}/membership", delete(chats::leave))
         .route("/v1/conversations/{id}/invite", post(group_invites::issue))
         .route("/v1/group-invites/preview", post(group_invites::preview))
         .route("/v1/group-invites/join", post(group_invites::join))
@@ -68,6 +90,8 @@ pub async fn router(db: PgPool) -> anyhow::Result<Router> {
         .route("/v1/conversations/{id}/uploads", post(files::begin))
         .route("/v1/files/{id}", delete(files::discard))
         .route("/v1/files/{id}/complete", post(files::complete))
+        .route("/v2/files/{id}/download", post(files::start_download))
+        .route("/v2/files/{id}/ack", post(files::ack_content))
         .layer(DefaultBodyLimit::max(64 * 1024));
     let chunks = Router::new()
         .route(
@@ -82,11 +106,28 @@ pub async fn router(db: PgPool) -> anyhow::Result<Router> {
         .merge(chunks)
         .merge(profile_upload)
         .route("/healthz", get(health))
+        .layer(middleware::map_response(
+            |mut response: Response| async move {
+                response.headers_mut().insert(
+                    header::CACHE_CONTROL,
+                    header::HeaderValue::from_static("private, no-store"),
+                );
+                response
+            },
+        ))
         .with_state(App {
             db,
             password_work: Arc::new(Semaphore::new(4)),
             lan_authority,
+            retention,
         }))
+}
+
+async fn upgrade_required() -> Error {
+    Error(
+        StatusCode::UPGRADE_REQUIRED,
+        "Update Zibblu to sign in and sync with this service.",
+    )
 }
 
 async fn health(State(app): State<App>) -> impl IntoResponse {
@@ -102,6 +143,25 @@ struct Auth {
     user_id: Uuid,
     token_hash: Vec<u8>,
     expires_at: i64,
+    device_id: Uuid,
+}
+
+const ACTIVE_SESSION: &str =
+    "SELECT s.account_id, floor(extract(epoch FROM s.expires_at))::BIGINT, s.device_id
+     FROM sessions s JOIN accounts a ON a.id = s.account_id
+     JOIN m1_devices d ON d.id = s.device_id JOIN m1_feed f ON f.epoch = d.epoch
+     WHERE s.token_hash = $1 AND s.expires_at > clock_timestamp()
+       AND a.revoked_at IS NULL AND d.retired_at IS NULL AND coalesce(d.active_until > clock_timestamp(), true)";
+
+impl Auth {
+    async fn require(&self, db: &mut PgConnection) -> Result<()> {
+        sqlx::query_as::<_, (Uuid, i64, Uuid)>(ACTIVE_SESSION)
+            .bind(&self.token_hash)
+            .fetch_optional(db)
+            .await?
+            .ok_or_else(Error::unauthorized)?;
+        Ok(())
+    }
 }
 
 impl FromRequestParts<App> for Auth {
@@ -116,18 +176,16 @@ impl FromRequestParts<App> for Auth {
             .filter(|token| token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()))
             .ok_or_else(Error::unauthorized)?;
         let token_hash = Sha256::digest(token.as_bytes()).to_vec();
-        let (user_id, expires_at) = sqlx::query_as(
-            "SELECT account_id, floor(extract(epoch FROM expires_at))::BIGINT
-             FROM sessions WHERE token_hash = $1 AND expires_at > now()",
-        )
-        .bind(&token_hash)
-        .fetch_optional(&app.db)
-        .await?
-        .ok_or_else(Error::unauthorized)?;
+        let (user_id, expires_at, device_id) = sqlx::query_as(ACTIVE_SESSION)
+            .bind(&token_hash)
+            .fetch_optional(&app.db)
+            .await?
+            .ok_or_else(Error::unauthorized)?;
         Ok(Self {
             user_id,
             token_hash,
             expires_at,
+            device_id,
         })
     }
 }

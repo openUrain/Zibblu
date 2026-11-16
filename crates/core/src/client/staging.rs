@@ -143,7 +143,7 @@ fn copy_bounded(input: File, output: &mut impl Write, limit: u64) -> Result<u64>
     Ok(copied)
 }
 
-fn is_link(metadata: &Metadata) -> bool {
+pub(super) fn is_link(metadata: &Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;

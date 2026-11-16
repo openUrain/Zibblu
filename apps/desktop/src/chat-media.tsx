@@ -1,6 +1,6 @@
 import { ChevronLeft, ChevronRight, Image, Play, RotateCcw, Search, Video } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, errorMessage } from "./api";
+import { api, errorMessage, fileExpired } from "./api";
 import type { Attachment, Message, Transfer } from "./api";
 import { canPreview, mediaKind, readAttachmentPage } from "./attachment-media";
 import { Blank, Dialog, usePage } from "./common";
@@ -50,14 +50,14 @@ function MediaTile({ file, open, failed }: { file: Attachment; open: () => void;
   </button>;
 }
 
-export function ChatAttachment({ message, transfer, onChanged, open }: {
-  message: Message; transfer?: Transfer; onChanged: () => void; open: () => void;
+export function ChatAttachment({ message, transfer, onChanged, open, expired }: {
+  message: Message; transfer?: Transfer; onChanged: () => void; open: () => void; expired: boolean;
 }) {
   const file = message.attachment!;
   const [failed, setFailed] = useState(false);
-  if (!mediaKind(file) || !canPreview(file) || failed) {
+  if (expired || !mediaKind(file) || !canPreview(file) || failed) {
     const previewStatus = failed ? "Preview unavailable" : mediaKind(file) ? "Download to open" : undefined;
-    return <SharedFile inChat {...{ message, transfer, onChanged, previewStatus }} />;
+    return <SharedFile inChat {...{ message, transfer, onChanged, previewStatus, expired }} />;
   }
   return <div className="chat-media">
     <MediaTile file={file} open={open} failed={() => setFailed(true)} />
@@ -90,7 +90,9 @@ function MediaResults({ conversation, revision, recalled, hidden, name, open }: 
     {!page && !failure && <p className="muted" role="status">Loading photos and videos…</p>}
     {page?.items.length === 0 && <Blank icon={<Image size={25} />} title="No matching photos or videos" />}
     {page && page.items.length > 0 && <div className="media-grid">{page.items.map(message =>
-      <MediaTile key={message.seq} file={message.attachment!} open={() => open(message)} />)}</div>}
+      fileExpired(message)
+        ? <span className="media-tile-fallback" key={message.seq}>{message.attachment!.name}<small>File expired</small></span>
+        : <MediaTile key={message.seq} file={message.attachment!} open={() => open(message)} />)}</div>}
     {page?.has_more && <button className="button subtle more" disabled={loading} onClick={() => void older()}>
       {loading ? "Loading…" : "Load older media"}
     </button>}
@@ -124,13 +126,15 @@ export function MediaViewer({ message, conversation, revision, recalled, hidden,
   const previous = stillVisible(current?.previous);
   const next = stillVisible(current?.next);
   const transfer = transfers.find(job => job.direction === "download" && job.attachment.id === file.id);
+  const expired = transfer?.status === "expired" || (transfer?.status !== "complete" && fileExpired(message));
 
   return <Dialog title="Media viewer" className="media-viewer" close={close} onKeyDown={event => {
     if (event.defaultPrevented || (event.target instanceof Element && event.target.closest("video, input, .media-viewer-stage"))) return;
     const item = event.key === "ArrowLeft" ? previous : event.key === "ArrowRight" ? next : undefined;
     if (item && !unavailable) { event.preventDefault(); open(item); }
   }}>
-    {unavailable ? <p className="inline-error" role="alert">This attachment is no longer available.</p> : <>
+    {unavailable ? <p className="inline-error" role="alert">This attachment is no longer available.</p> :
+      expired ? <p className="inline-error" role="alert">This file expired. Ask the sender to share it again.</p> : <>
       <ViewerMedia key={"preview:" + file.id} file={file} />
       <div className="media-viewer-footer">
         <strong title={file.name}>{file.name}</strong>

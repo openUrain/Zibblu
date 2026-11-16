@@ -21,11 +21,11 @@
 
 ## 01 — Chat & Files (normal mode)
 
-下一阶段的本地历史、手动备份与有期限的离线文件投递见 [D-018](DECISIONS.md#d-018--m1-local-first-与临时文件投递)。
+普通聊天以当前 Windows 设备的本地历史为准。已登录时断网可以查阅本机历史，普通文本和已暂存的附件会排队。重连后使用原发送键继续。新设备只接收有效的账号积压及之后的投递。离线文字默认可投递 72 小时，错过期限时显示过期占位。文件下载期限由部署配置决定，保存并验证的本机文件可继续打开和另存。[D-018](DECISIONS.md#d-018--m1-local-first-与临时文件投递)
 
-On Windows, the standalone client defaults to **Zibblu Online** on a fresh profile. Sign in or create an account directly. **Advanced** allows a custom server, and upgrades keep the previously saved server and local profile. The client uses local SQLite. PostgreSQL runs with the server.
+On Windows, the standalone client defaults to **Zibblu Online** on a fresh profile. Sign in or create an account directly. **Advanced** allows a custom server, and the app remembers the selected server. The Local-First test release opens a separate profile from earlier versions and requires a v2 service. The client uses local SQLite. PostgreSQL runs with the server.
 
-On Windows, a normal app exit leaves the last successful sign-in available. On the next start, select the saved account card to ask its server to restore the session, or choose **Use another account** for password sign-in. The card uses the last locally saved avatar or an initial. A network failure allows a retry. An expired or revoked session returns to password sign-in. **Sign out** removes the saved sign-in from this device.
+On Windows, a normal app exit leaves the last successful sign-in available. On the next start, select the saved account card to ask its server to restore the session, or choose **Use another account** for password sign-in. The card uses the last locally saved avatar or an initial. A network failure allows a retry. An expired or revoked session returns to password sign-in. **Sign out** removes the saved sign-in from this device. Settings lists the account’s active devices and can retire another installation.
 
 Registration asks for the new password twice. On Windows, the main window starts centered in the work area of its initial display. The first close asks whether to exit or hide to the system tray. Settings lets you change this local preference. Minimize still uses the taskbar. The tray can show the same window or exit the app. Launching again with the same data directory restores its window. Separate directories can run independent clients.
 
@@ -37,7 +37,7 @@ Initial functional scope:
 - Contact requests can include a greeting that becomes a normal message upon approval. Profiles show a handle and avatar to signed-in accounts, with the cover and bio available to approved contacts. Private address-book remarks take precedence across the app.
 - The chat list shows unread counts. With receipts enabled by both accounts, the latest outgoing message in an open direct chat shows one check after a recipient device saves it, then two checks after the recipient views it in the foreground. Changing either preference clears eligibility for messages sent before that change. Group chats and earlier messages have no checkmarks. A message can be copied, quoted or hidden on this device. Drafts are kept per conversation in memory for the current sign-in.
 - The sender can recall an ordinary message or shared attachment within five minutes. Participants receive a recall notice in the timeline.
-- Sending files/folders; clear transfer state, file metadata, pause/resume and integrity verification. Folders are shared as ZIP downloads.
+- Sending files/folders with persistent transfer progress, pause/resume and SHA-256 verification. Folders are shared as ZIP downloads. An expired online copy shows a resend prompt when the device has no verified copy.
 - Paste a clipboard image into the composer and send it as an attachment. Open inline images and videos in the chat's media viewer to browse and save them. If a format cannot be previewed or decoded, download it from the chat or viewer.
 - The conversation drawer opens the peer's profile in a direct chat or shows members and the invite QR code in a group. It also opens text search, media history and the separate list of shared files for that conversation. The sidebar Files view searches ordinary attachments across chats, with newest first as the default and Transfers available for maintenance.
 - Standard online routing is **separate** from private mode; ordinary messages can involve the server.

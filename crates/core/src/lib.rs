@@ -6,6 +6,9 @@ mod client;
 #[cfg(feature = "client")]
 pub use client::*;
 
+#[cfg(all(windows, feature = "client"))]
+pub mod dpapi;
+
 #[cfg(feature = "private-chat")]
 pub mod private_chat;
 

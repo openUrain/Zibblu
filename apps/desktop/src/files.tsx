@@ -1,6 +1,6 @@
 import { Archive, ArrowDown, ArrowUp, Check, Download, File, FolderOpen, Pause, Play, RotateCcw, Search, Trash2 } from "lucide-react";
 import { useCallback, useContext, useState } from "react";
-import { api, errorMessage } from "./api";
+import { api, errorMessage, fileExpired } from "./api";
 import type { Attachment, FileFilter, Message, Transfer, User } from "./api";
 import { mediaKind, readAttachmentPage } from "./attachment-media";
 import { Blank, Choice, People, PersonAvatar, bytes, dateTimeLabel, displayName, usePage } from "./common";
@@ -10,8 +10,8 @@ export function FileIcon({ file }: { file: Attachment }) {
   return <span className={"file-icon" + (file.kind === "folder" ? " folder-icon" : "")}><Icon size={21} /></span>;
 }
 
-export function SharedFile({ message, transfer, onChanged, inChat = false, previewStatus }: {
-  message: Message; transfer?: Transfer; onChanged: () => void; inChat?: boolean; previewStatus?: string;
+export function SharedFile({ message, transfer, onChanged, inChat = false, previewStatus, expired = fileExpired(message) }: {
+  message: Message; transfer?: Transfer; onChanged: () => void; inChat?: boolean; previewStatus?: string; expired?: boolean;
 }) {
   const file = message.attachment!;
   const { remarks, open } = useContext(People);
@@ -30,8 +30,12 @@ export function SharedFile({ message, transfer, onChanged, inChat = false, previ
         <small>{type} · {bytes(file.size)}{!inChat && ` · ${dateTimeLabel(message.created_at)}`}</small>
       </div>
     </div>
-    {previewStatus && <small className="file-preview-status" role="status">{previewStatus}</small>}
-    <AttachmentDownload file={file} transfer={transfer} onChanged={onChanged} />
+    {expired || transfer?.status === "expired"
+      ? <small className="file-preview-status" role="status">This file expired. Ask the sender to share it again.</small>
+      : <>
+        {previewStatus && <small className="file-preview-status" role="status">{previewStatus}</small>}
+        <AttachmentDownload file={file} transfer={transfer} onChanged={onChanged} />
+      </>}
   </article>;
 }
 
@@ -74,14 +78,16 @@ function TransferProgress({ transfer, onChanged, chooseNew, choosing }: {
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
   const running = transfer.status === "running";
+  const queued = transfer.status === "queued";
   const failed = transfer.status === "failed";
+  const expired = transfer.status === "expired";
   const complete = transfer.status === "complete";
   const total = transfer.attachment.size;
   const percentage = total > 0 ? Math.floor(transfer.received * 100 / total) : complete ? 100 : 0;
   const status = complete ? (transfer.direction === "upload" ? "Shared and verified" : "Download verified")
-    : failed ? "Failed" : running
+    : expired ? "Expired" : failed ? "Failed" : running
       ? percentage === 100 ? "Verifying…" : transfer.direction === "upload" ? "Uploading" : "Downloading"
-      : "Paused";
+      : queued ? "Queued" : "Paused";
 
   async function action(name: "pause" | "resume" | "discard") {
     setBusy(true);
@@ -92,20 +98,20 @@ function TransferProgress({ transfer, onChanged, chooseNew, choosing }: {
   }
 
   return <div className="transfer-progress">
-    <div className="transfer-status"><span className={complete ? "verified" : failed ? "danger" : ""}>
+    <div className="transfer-status"><span className={complete ? "verified" : failed || expired ? "danger" : ""}>
       {complete && <Check size={14} />}{status}
     </span>{!complete && <span>{bytes(transfer.received)} of {bytes(total)} · {percentage}%</span>}</div>
     {!complete && <>
       <progress max={100} value={percentage} aria-label={status + " " + transfer.attachment.name} />
       {(failure || transfer.error) && <p className="inline-error" role="alert">{failure || transfer.error}</p>}
       <div className="transfer-buttons">
-        {running
+        {running || queued
           ? <button className="button subtle small" onClick={() => void action("pause")} disabled={busy}><Pause size={14} /> Pause</button>
           : <>
-            <button className="button subtle small" onClick={() => void action("resume")} disabled={busy}>
+            {!expired && <button className="button subtle small" onClick={() => void action("resume")} disabled={busy}>
               {failed ? <RotateCcw size={14} /> : <Play size={14} />}{failed ? "Retry" : "Resume"}
-            </button>
-            {chooseNew && <button className="button subtle small" disabled={busy || choosing} onClick={chooseNew}>Save as…</button>}
+            </button>}
+            {chooseNew && !expired && <button className="button subtle small" disabled={busy || choosing} onClick={chooseNew}>Save as…</button>}
             <button className="icon-button danger" aria-label={"Discard transfer for " + transfer.attachment.name}
               title="Discard partial transfer" onClick={() => void action("discard")} disabled={busy}><Trash2 size={15} /></button>
           </>}

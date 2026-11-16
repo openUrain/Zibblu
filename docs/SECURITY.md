@@ -32,29 +32,33 @@ We **cannot** promise protection from: screenshots or cameras, recipients manual
 - The Windows client encrypts provider keys with user-scoped DPAPI and binds each key to its provider. The renderer receives configuration metadata, including the API base URL. Changing the base URL requires entering the key for that endpoint.
 - The native app verifies normal-chat membership, reads only the selected text and snapshots UTF-8 files from a native picker through read-only handles. Reparse points, nonlocal path forms and files larger than 32 KiB are rejected. The provider receives only the prompt, selected text with sender handles, and picked filenames with their text.
 - The send action consumes one in-memory snapshot of up to 60 text messages and 256 KiB. The disclosed HTTPS endpoint receives one request with normal certificate validation, including OS-trusted roots for managed gateways. Redirects and retries are disabled. OpenAI and xAI requests set `store: false`. DeepSeek's Responses API is stateless. Provider-side handling remains subject to the provider's terms.
-- Unshared replies stay in memory for the current sign-in. When the user explicitly shares a reply, the server validates the selected chat members and enforces that audience for message synchronization and conversation previews.
+- Unshared replies stay in memory for the current sign-in. When the user explicitly shares a reply, the server validates the selected chat members and filters temporary reply delivery by that audience. Conversation previews use locally held history.
 
 ## Ordinary chats and files
 
-Local-First 的在线副本、WAL、备份与缓存保留策略见 [M1 协议草案](ARCHITECTURE.md#m1-local-first-rfc)。以下为现有 M1 安全边界。
+临时投递、设备游标与回收见 [M1 Local-First RFC](ARCHITECTURE.md#m1-local-first-rfc)。
 
 - Authenticate users and secure transport; design eventual message E2EE with a standard, reviewed approach rather than inventing cryptography.
 - Bound file sizes/resources, validate transfers, apply integrity checks and avoid overwriting unrelated destination files.
 - Clearly distinguish privacy expectations of normal server-assisted traffic and LAN-only temporary traffic.
 
-M1 uses Argon2id password hashes and seven-day opaque session tokens. The service stores token hashes. Windows can persist the last successful token using user-scoped DPAPI, sealed together with the original server and account. The renderer receives only the account card and any cached avatar thumbnail. Passwords and bearer tokens stay out of persistent WebView storage. Restoration requires an explicit click and successful validation by the original service before local chat history is available. A network failure leaves the card available for retry. A rejected credential is removed. Sign-out clears the local credential even when the service is unreachable and attempts remote revocation when possible. Remote clients require HTTPS with normal certificate verification. Plain HTTP is available on loopback for local use. The online service can read normal chat messages and attachments. M1 has no end-to-end message encryption, and its local SQLite and staged files use the OS account's file permissions.
+M1 使用 Argon2id 保存密码摘要。服务端保存七天会话令牌和安装设备凭据的摘要；会话绑定账号、有效设备和当前 feed epoch。Windows 用用户范围 DPAPI 保存登录令牌和按规范化服务地址及账号隔离的安装凭据。WebView 只收到账号卡片字段。恢复后先向原服务校验身份和设备，再打开本地资料。退出清除保存的登录令牌并尝试撤销在线会话；退役会撤销该设备的会话和投递任务。
 
-Downloads require authenticated conversation membership for each chunk. Upload changes require ownership, and incomplete uploads are unavailable to recipients. A file or folder archive is limited to 256 MiB. The service reserves attachment storage up to 2 GiB and 256 transfers per account, and 16 GiB and 4,096 transfers overall. Unfinished uploads can be discarded. Published attachment retention is indefinite in M1, so an operator must budget for the database and its write-ahead log.
+远程客户端要求 HTTPS 和正常证书验证。环回开发可用 HTTP。在线服务在有效期内可读 M1 载荷，普通聊天尚无端到端加密。SQLite、暂存和已核验本地附件使用操作系统账号的文件权限。
+
+每次附件分块、预览和内容 ACK 检查当前会话、账号、成员、历史截止点和撤回状态。上传修改由所有者发起并复核发送权限。文件或目录归档上限 256 MiB。服务按账号预留最多 2 GiB 和 256 个传输，全服务上限 16 GiB 和 4,096 个传输。超过配置的期限后停止服务对应载荷；可选自动清理释放数据库空间与上传配额。默认关闭自动清理，生产期限和开关须单独审批。
+
+SQLite 落盘后才发送元数据 ACK。完整保存并校验长度和 SHA-256 后，设备才提交独立的文件内容 ACK。未授权请求统一按不可见处理，授权用户可收到过期回应。内容响应使用 `Cache-Control: private, no-store`。服务端清理只结束数据的在线可用性，WAL、数据库备份、快照和代理需执行各自的留存与访问控制。
 
 Local attachment paths come from a native picker or an explicitly confirmed drop. Pasted images supply bounded image bytes, without a path. Media previews use the same authenticated chunk access as downloads. Image previews check SHA-256 and serve a content type derived from the validated bytes with `nosniff`. Image decoding is limited by input size, dimensions and decoded pixels. Animations are limited to 240 frames and 64 million canvas pixels in total. The app does not extract received archives or overwrite existing destinations.
 
 Contact approval can only be performed by the recipient. Recall can only be performed by the original sender within five minutes according to server time. Recalled attachments are unavailable through the service, and the app keeps a notice in the timeline. Copies already saved by a recipient remain on that device.
 
-A contact greeting is visible in the two accounts' request lists. Approval publishes it once as a normal message in the same transaction that establishes the contact relationship. When someone explicitly opens a LAN participant's profile or requests contact, the normal service receives the account ID and any greeting the user enters in that separate form.
+A contact greeting is visible in the two accounts' request lists during its delivery window. Approval publishes a still-valid greeting once, using the request key in the transaction that establishes the contact relationship. When someone explicitly opens a LAN participant's profile or requests contact, the normal service receives the account ID and any greeting the user enters in that separate form.
 
 Signed-in users can view account handles and avatars. A profile's cover and bio require the owner's account or an approved contact relationship. Contact remarks and details belong to the viewer's address book and are returned only to that viewer. After confirmation, the desktop decodes and normalizes supported profile images. The service accepts decoded, static PNG data within 2 MiB and 1024 × 1024 pixels for the authenticated account.
 
-The server checks membership, history cutoffs and AI reply audiences when advancing the private per-account unread cursor. Delivery ACKs require an authenticated recipient and an unexpired batch issued for that account's incoming sync page. The desktop sends the ACK after committing the page to SQLite. The foreground chat records a view only when the message is visible in the active window, and the service requires delivery evidence before advancing the receipt cursor. Both accounts must opt in for the sender to receive the latest direct-message status. Preference changes exclude earlier messages from status queries. Group chats, recalled messages and shared AI replies have no receipt marks.
+服务端复核每个窗口实际提供的序号及当前权限。游标与页绑定到认证的设备。设备间的同步位置彼此独立，前台查看有本设备的精确落盘证明才推进单聊回执。双方开启时，发送者只能查询当前末条自发普通单聊的状态；偏好切换后的资格从提交水位重新计算。未读计数和预览在 SQLite 按可见历史计算。
 
 Delete for me hides the message in the current SQLite profile, including search, quotes, file history and AI selection. An incomplete transfer remains manageable in Transfers. Other devices and other accounts retain their own views. Quotes reference a message in the same conversation and resolve against each viewer's authorized history. Normal drafts live in the signed-in renderer's memory. Private drafts also clear on session termination or disconnect.
 

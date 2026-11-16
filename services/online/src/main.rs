@@ -25,8 +25,19 @@ async fn main() -> anyhow::Result<()> {
         .connect(&database_url)
         .await
         .map_err(|_| anyhow::anyhow!("Could not connect to the Zibblu PostgreSQL database"))?;
-    let app = zibblu_online::router(db).await?;
+    let retention = zibblu_online::retention::Retention::from_env()?;
+    let app = zibblu_online::router_with_retention(db.clone(), retention).await?;
     let listener = tokio::net::TcpListener::bind(address).await?;
+    if let Some(interval) = retention.sweep_interval {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                if zibblu_online::retention::sweep(&db).await.is_err() {
+                    eprintln!("Local-First cleanup batch failed; it will be retried.");
+                }
+            }
+        });
+    }
     println!(
         "Zibblu online service listening at {}",
         listener.local_addr()?
