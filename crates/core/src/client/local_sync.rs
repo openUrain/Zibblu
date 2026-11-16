@@ -13,7 +13,7 @@ impl Client {
         db: &SqlitePool,
         session: &DeviceSession,
         restore: bool,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let mut tx = db.begin().await?;
         let statements =
             "CREATE TABLE IF NOT EXISTS inbox (
@@ -76,6 +76,9 @@ impl Client {
                 .fetch_optional(&mut *tx)
                 .await?;
         let device_id = session.device_id.to_string();
+        let re_registered = saved
+            .as_ref()
+            .is_some_and(|previous| *previous != device_id);
         if saved.as_deref() != Some(&device_id) {
             ensure!(
                 !restore,
@@ -94,7 +97,7 @@ impl Client {
                 .execute(&mut *tx).await?;
         }
         tx.commit().await?;
-        Ok(())
+        Ok(re_registered)
     }
 
     pub(super) fn history_changed(&self) {

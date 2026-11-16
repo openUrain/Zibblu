@@ -64,6 +64,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [connection, setConnection] = useState<"Connecting" | "Connected" | "Reconnecting">("Connecting");
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [failure, setFailure] = useState(session.notice ?? "");
+  const [syncProblem, setSyncProblem] = useState("");
   const [newChat, setNewChat] = useState(false);
   const [offer, setOffer] = useState<DropOffer & { conversation: string }>();
   const [sharing, setSharing] = useState(false);
@@ -122,6 +123,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       try {
         apply(await api.sync());
         setConnection("Connected");
+        setSyncProblem("");
       } catch (error) {
         if (isExpired(error)) {
           if (!signingOut.current) {
@@ -130,6 +132,9 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           }
         } else {
           setConnection("Reconnecting");
+          if (typeof error === "object" && error !== null && "status" in error && error.status === 409) {
+            setSyncProblem("This device's sync position is no longer valid. Keep this profile and sign in from a new data directory.");
+          }
           void api.localUpdate().then(apply).catch(() => {});
         }
       } finally {
@@ -358,6 +363,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       {failure && <div className="workspace-error" role="alert">{failure}
         <button className="icon-button" aria-label="Dismiss error" onClick={() => setFailure("")}><X size={17} /></button>
       </div>}
+      {syncProblem && <div className="workspace-error" role="alert">{syncProblem}</div>}
       {nav === "Chats" && <div className={"chat-layout" + (mobileChat && (active || privateOpen) ? " mobile-chat-open" : "")}>
         <ChatList chats={directory.conversations} own={session.user} selected={privateOpen ? undefined : selected}
           open={selectChat} newChat={() => setNewChat(true)} rooms={privateRooms} activePrivate={privateId}

@@ -158,7 +158,11 @@ impl Desktop {
         let result = SignedIn {
             user: client.user.clone(),
             server: client.server().into(),
-            notice,
+            notice: notice.or_else(|| {
+                client.device_re_registered().then_some(
+                    "This device was registered again. Older messages may have expired while it was inactive.",
+                )
+            }),
         };
         *session = Some(client.clone());
         *self.private_worker.lock().await = Some(tauri::async_runtime::spawn(
@@ -285,6 +289,8 @@ pub(crate) struct SignInPreferences {
 pub(crate) struct CommandError {
     message: String,
     expired: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<u16>,
 }
 
 impl From<anyhow::Error> for CommandError {
@@ -292,6 +298,10 @@ impl From<anyhow::Error> for CommandError {
         Self {
             message: error.to_string(),
             expired: is_unauthorized(&error),
+            status: match error.downcast_ref::<OnlineError>() {
+                Some(OnlineError::Rejected { status, .. }) => Some(status.as_u16()),
+                _ => None,
+            },
         }
     }
 }
@@ -305,6 +315,7 @@ fn invalid_saved_session() -> CommandError {
     CommandError {
         message: "The saved sign-in is unavailable. Enter your password to sign in.".into(),
         expired: true,
+        status: Some(401),
     }
 }
 
@@ -458,7 +469,7 @@ pub(crate) async fn restore_session(
         Ok(client) => client,
         Err(error) if is_unauthorized(&error) => {
             if saved_session::clear(&state.data).is_err() {
-                return Err(CommandError { message: "The saved sign-in was rejected and could not be removed. Enter your password to sign in.".into(), expired: true });
+                return Err(CommandError { message: "The saved sign-in was rejected and could not be removed. Enter your password to sign in.".into(), expired: true, status: Some(401) });
             }
             return Err(error.into());
         }
@@ -489,6 +500,7 @@ pub(crate) async fn sync(app: AppHandle, state: State<'_, Desktop>) -> Result<Sy
             let cleanup = state.end_session(&app, &mut session, false).await;
             return Err(CommandError {
                 expired: true,
+                status: Some(401),
                 message: match cleanup {
                     Ok(()) => "Your session has expired. Sign in again.".into(),
                     Err(error) => error.to_string(),

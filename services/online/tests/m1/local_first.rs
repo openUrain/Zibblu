@@ -257,6 +257,7 @@ async fn outbox_replay_ack_recovery_and_device_handoff() -> Result<()> {
     alice.recall_message(chat, seq).await?;
     drop(bob);
     let rebuilt = sign_in(b.path(), &server, &bob_handle, password, false).await?;
+    assert!(rebuilt.device_re_registered());
     assert_ne!(
         rebuilt
             .devices()

@@ -46,7 +46,7 @@ $env:ZIBBLU_TEST_DATABASE_URL = 'postgres://zibblu:zibblu_issue46_fixture_only@1
 cargo test --locked -p zibblu-online --test m1 -- --nocapture
 ```
 
-复验时保留旧资料目录，换一个新的 `ZIBBLU_DATA_DIR` 重新登录和登记。只有仍有效的未完成投递会接续。旧资料存在其原路径。验收结束可停止这两个指定容器以保留证据。删除旧资料、测试库或卷之前，先列清对应资源并获取 Owner 确认。
+设备退役或失活后，重新输入密码可登记并核对原本机记录，界面会提示旧投递可能已过期。如果设备游标与服务端不匹配，保留原资料目录，从新的 `ZIBBLU_DATA_DIR` 登录。新资料只接续仍有效的未完成投递，旧资料存在其原路径。验收结束可停止这两个指定容器以保留证据。删除旧资料、测试库或卷之前，先列清对应资源并获取 Owner 确认。
 
 ```powershell
 docker --context desktop-linux stop zibblu-issue46-zibblu-online-1 zibblu-issue46-postgres-1

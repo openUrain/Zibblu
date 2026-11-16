@@ -73,6 +73,7 @@ pub struct Client {
     staging: PathBuf,
     managed_files: PathBuf,
     history_revision: AtomicI64,
+    device_re_registered: bool,
     sync_gate: Mutex<()>,
     prepare_gate: Mutex<()>,
     workers: Mutex<HashMap<JobKey, Active>>,
@@ -185,7 +186,7 @@ impl Client {
             )
             .await
             .context("Could not open the local chat history")?;
-        Self::initialize_history(&db, &session, restore).await?;
+        let device_re_registered = Self::initialize_history(&db, &session, restore).await?;
         Ok(Arc::new(Self {
             user: session.user,
             api,
@@ -193,6 +194,7 @@ impl Client {
             staging,
             managed_files,
             history_revision: AtomicI64::new(1),
+            device_re_registered,
             _profile_lock: lock,
             sync_gate: Mutex::new(()),
             prepare_gate: Mutex::new(()),
@@ -204,6 +206,10 @@ impl Client {
 
     pub fn server(&self) -> &str {
         self.api.base.as_str()
+    }
+
+    pub fn device_re_registered(&self) -> bool {
+        self.device_re_registered
     }
 
     pub fn session_token(&self) -> &str {
