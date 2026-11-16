@@ -21,6 +21,8 @@
 
 ## 01 — Chat & Files (normal mode)
 
+下一阶段的本地历史、手动备份与有期限的离线文件投递见 [D-018](DECISIONS.md#d-018--m1-local-first-与临时文件投递)。
+
 On Windows, the standalone client defaults to **Zibblu Online** on a fresh profile. Sign in or create an account directly. **Advanced** allows a custom server, and upgrades keep the previously saved server and local profile. The client uses local SQLite. PostgreSQL runs with the server.
 
 On Windows, a normal app exit leaves the last successful sign-in available. On the next start, select the saved account card to ask its server to restore the session, or choose **Use another account** for password sign-in. The card uses the last locally saved avatar or an initial. A network failure allows a retry. An expired or revoked session returns to password sign-in. **Sign out** removes the saved sign-in from this device.
