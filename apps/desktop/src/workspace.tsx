@@ -384,8 +384,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
               answered: reply => setAiReplies(current => [...current, reply]),
               dismiss: id => setAiReplies(current => current.filter(reply => reply.id !== id)),
             }} />
-          : <section className="chat-blank"><Blank icon={<MessageCircle size={31} />} title="Your conversations">
-            <p>Open a chat to read messages or start a new one.</p>
+          : <section className="chat-blank"><Blank icon={<MessageCircle size={31} />} title="No conversation selected">
             <button className="button primary" onClick={() => setNewChat(true)}>New conversation <ArrowRight size={16} /></button>
           </Blank></section>}
       </div>}
@@ -482,7 +481,7 @@ function Contacts({ own, directory, selected, refresh, create }: {
 
   const pending = pending_contacts.find(request => request.user.id === found?.id);
   return <section className="settings-page">
-    <header className="workspace-heading"><h1>Contacts</h1><p>Find people by their Zibblu username.</p></header>
+    <header className="workspace-heading"><h1>Contacts</h1></header>
     <div className="surface contact-search">
       <form onSubmit={event => {
         event.preventDefault();
@@ -536,7 +535,7 @@ function Contacts({ own, directory, selected, refresh, create }: {
         <button className="icon-button" disabled={busy} title="Remove contact" aria-label={"Remove " + displayName(user, remarks)}
           onClick={() => void perform(async () => { await api.removeContact(user.id); await refresh(); })}><UserRoundMinus size={18} /></button>
       </div>)}
-    </div> : <Blank icon={<UsersRound size={27} />} title="No contacts yet"><p>Find a username above and send a request.</p></Blank>}
+    </div> : <Blank icon={<UsersRound size={27} />} title="No contacts yet" />}
   </section>;
 }
 
