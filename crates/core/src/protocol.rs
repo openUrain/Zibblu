@@ -12,7 +12,6 @@ pub const RECALL_WINDOW_MS: i64 = 5 * 60 * 1000;
 pub const MAX_GROUP_MEMBERS: usize = 16;
 pub const MAX_PROFILE_IMAGE_BYTES: usize = 2 * CHUNK_SIZE as usize;
 pub const MAX_RECEIPT_QUERY: usize = 200;
-pub const MAX_PENDING_DELIVERY_BATCHES: usize = 64;
 pub const LAN_NEARBY_NAME: &str = "nearby.zibblu.invalid";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,9 +27,32 @@ pub struct Credentials {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct DeviceLogin {
+    #[serde(flatten)]
+    pub credentials: Credentials,
+    pub device_key: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct Session {
     pub user: User,
     pub token: String,
+    pub device_id: Uuid,
+    pub cursor: Uuid,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DeviceSession {
+    pub user: User,
+    pub device_id: Uuid,
+    pub cursor: Uuid,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Device {
+    pub id: Uuid,
+    pub last_seen_at: i64,
+    pub current: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -52,6 +74,7 @@ pub fn lan_peer_name(account: Uuid) -> String {
 #[derive(Serialize, Deserialize)]
 pub struct ContactRequest {
     pub user_id: Uuid,
+    pub request_id: Uuid,
     #[serde(default)]
     pub greeting: String,
 }
@@ -219,6 +242,37 @@ pub struct Message {
     pub recalled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expired: Option<ExpiredPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<PendingSend>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local_file: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpiredPayload {
+    Text,
+    File,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PendingSend {
+    pub error: Option<String>,
+    pub blocked: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Publication {
+    pub seq: i64,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+    pub recalled: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, Serialize)]
@@ -248,7 +302,7 @@ pub struct PublishAiReply {
     pub readers: Vec<Uuid>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MessageRecall {
     pub seq: i64,
     pub message_seq: i64,
@@ -369,18 +423,33 @@ pub struct Directory {
 #[derive(Serialize, Deserialize)]
 pub struct SyncPage {
     pub directory: Directory,
-    pub messages: Vec<Message>,
-    #[serde(default)]
-    pub recalls: Vec<MessageRecall>,
-    #[serde(default)]
-    pub server_time: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery_batch: Option<Uuid>,
+    pub events: Vec<SyncEvent>,
+    pub server_time: i64,
+    pub page_id: Uuid,
+    pub has_more: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum SyncEvent {
+    Published(Message),
+    Recalled(MessageRecall),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SyncAck {
+    pub page_id: Uuid,
+    pub metadata_received: Vec<i64>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct DeliveryAck {
-    pub batches: Vec<Uuid>,
+pub struct SyncPosition {
+    pub cursor: Uuid,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ContentAck {
+    pub sha256: String,
 }
 
 pub fn valid_handle(handle: &str) -> bool {

@@ -10,8 +10,8 @@ import { ai } from "./ai-api";
 import type { AiReply, Assistant } from "./ai-api";
 import { AssistantSettings } from "./ai";
 import { api, errorMessage, isExpired } from "./api";
-import type { CloseAction, Conversation, ConversationRequest, Directory, Draft, DropOffer, Session, ShareSource, Transfer, User } from "./api";
-import { Blank, Brand, Choice, Dialog, People, PersonAvatar, chatName, displayName } from "./common";
+import type { CloseAction, Conversation, ConversationRequest, Device, Directory, Draft, DropOffer, Session, ShareSource, SyncUpdate, Transfer, User } from "./api";
+import { Blank, Brand, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName } from "./common";
 import { ChatList, ChatView } from "./chat";
 import { FilesView } from "./files";
 import { NearbyDevices, PrivateChatView, PrivateInvitationOverlay, PrivateTargets, usePrivateRooms } from "./private-chat";
@@ -47,6 +47,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [profile, setProfile] = useState<User>();
   const [profileNotice, setProfileNotice] = useState(0);
   const refreshInFlight = useRef<Promise<void> | null>(null);
+  const appliedRevision = useRef(0);
   const [clockOffset, setClockOffset] = useState(0);
   const [selected, setSelected] = useState<string>();
   const [mobileChat, setMobileChat] = useState(false);
@@ -63,6 +64,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [connection, setConnection] = useState<"Connecting" | "Connected" | "Reconnecting">("Connecting");
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [failure, setFailure] = useState(session.notice ?? "");
+  const [syncProblem, setSyncProblem] = useState("");
   const [newChat, setNewChat] = useState(false);
   const [offer, setOffer] = useState<DropOffer & { conversation: string }>();
   const [sharing, setSharing] = useState(false);
@@ -104,32 +106,44 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     return () => { current = false; };
   }, []);
 
+  const apply = useCallback((update: SyncUpdate) => {
+    if (signingOut.current || update.revision < appliedRevision.current) return;
+    appliedRevision.current = update.revision;
+    setDirectory(update.directory);
+    setClockOffset(update.server_now - Date.now());
+    setRecalled(previous => previous.size === update.recalled.length ? previous : new Set(update.recalled));
+    setRevision(update.revision);
+    setLatestAiSeq(update.latest_ai_seq);
+  }, []);
+
   const refresh = useCallback(() => {
+    void api.localUpdate().then(apply).catch(() => {});
     if (refreshInFlight.current) return refreshInFlight.current;
     const sync = async () => {
       try {
-        const update = await api.sync();
-        setDirectory(update.directory);
-        setClockOffset(update.server_now - Date.now());
-        setRecalled(previous => previous.size === update.recalled.length
-          ? previous : new Set(update.recalled));
+        apply(await api.sync());
         setConnection("Connected");
-        setRevision(update.last_seq);
-        setLatestAiSeq(update.latest_ai_seq);
+        setSyncProblem("");
       } catch (error) {
         if (isExpired(error)) {
           if (!signingOut.current) {
             signingOut.current = true;
             signedOut(errorMessage(error));
           }
-        } else setConnection("Reconnecting");
+        } else {
+          setConnection("Reconnecting");
+          if (typeof error === "object" && error !== null && "status" in error && error.status === 409) {
+            setSyncProblem("This device's sync position is no longer valid. Keep this profile and sign in from a new data directory.");
+          }
+          void api.localUpdate().then(apply).catch(() => {});
+        }
       } finally {
         refreshInFlight.current = null;
       }
     };
     refreshInFlight.current = sync();
     return refreshInFlight.current;
-  }, [signedOut]);
+  }, [apply, signedOut]);
 
   const changed = useCallback(() => {
     void api.transfers().then(setTransfers).catch(error => setFailure(errorMessage(error)));
@@ -143,8 +157,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       await refresh();
       if (!closed) poll = window.setTimeout(syncLoop, 1700);
     }
-    api.directory().then(cached => { if (!closed) setDirectory(cached); })
-      .catch(error => { if (!closed) setFailure(errorMessage(error)); }).finally(() => void syncLoop());
+    void syncLoop();
     return () => { closed = true; window.clearTimeout(poll); };
   }, [refresh]);
 
@@ -350,6 +363,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       {failure && <div className="workspace-error" role="alert">{failure}
         <button className="icon-button" aria-label="Dismiss error" onClick={() => setFailure("")}><X size={17} /></button>
       </div>}
+      {syncProblem && <div className="workspace-error" role="alert">{syncProblem}</div>}
       {nav === "Chats" && <div className={"chat-layout" + (mobileChat && (active || privateOpen) ? " mobile-chat-open" : "")}>
         <ChatList chats={directory.conversations} own={session.user} selected={privateOpen ? undefined : selected}
           open={selectChat} newChat={() => setNewChat(true)} rooms={privateRooms} activePrivate={privateId}
@@ -589,6 +603,8 @@ function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, se
 }) {
   const [failure, setFailure] = useState("");
   const [saving, setSaving] = useState(false);
+  const [deviceList, setDeviceList] = useState<Device[]>();
+  const [retiring, setRetiring] = useState<Device>();
   async function save(change: () => Promise<void>) {
     setSaving(true);
     setFailure("");
@@ -600,6 +616,8 @@ function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, se
     <div className="surface settings-card">
       <h2><CircleUserRound size={20} /> Account</h2>
       <p className="muted server-address">{session.server}</p>
+      <button className="button subtle small" type="button" disabled={saving}
+        onClick={() => void save(async () => setDeviceList(await api.devices()))}>Devices</button>
     </div>
     <div className="surface settings-card">
       {windows && <CloseActionChoices action={closeAction} choose={action => void save(() => setCloseAction(action))} disabled={saving} />}
@@ -618,5 +636,21 @@ function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, se
       {failure && <p className="inline-error" role="alert">{failure}</p>}
     </div>
     {assistantSettings}
+    {deviceList && <Dialog title="Devices" close={() => { setDeviceList(undefined); setRetiring(undefined); }} closeDisabled={saving}>
+      {deviceList.map(device => <div className="drawer-action" key={device.id}>
+        <span>{device.current ? "This device" : "Device " + device.id.slice(0, 8)} · {dateTimeLabel(device.last_seen_at)}</span>
+        {!device.current && <button className="button subtle small" disabled={saving} onClick={() => setRetiring(device)}>Retire</button>}
+      </div>)}
+      {retiring && <div className="file-download-actions">
+        <p>End sign-in for device {retiring.id.slice(0, 8)}?</p>
+        <button className="button subtle" onClick={() => setRetiring(undefined)} disabled={saving}>Cancel</button>
+        <button className="button danger" disabled={saving} onClick={() => void save(async () => {
+          await api.retireDevice(retiring.id);
+          setDeviceList(current => current?.filter(device => device.id !== retiring.id));
+          setRetiring(undefined);
+        })}>Retire device</button>
+      </div>}
+      {failure && <p className="inline-error" role="alert">{failure}</p>}
+    </Dialog>}
   </section>;
 }

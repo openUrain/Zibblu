@@ -19,7 +19,7 @@ pub(crate) async fn issue(
         "INSERT INTO group_invites (conversation_id, code_hash, expires_at)
          SELECT c.id, $3, now() + interval '7 days'
          FROM conversations c JOIN members m ON m.conversation_id = c.id
-         WHERE c.id = $1 AND m.account_id = $2 AND c.title IS NOT NULL
+         WHERE c.id = $1 AND m.account_id = $2 AND m.active AND c.title IS NOT NULL
          ON CONFLICT (conversation_id) DO UPDATE
          SET code_hash = excluded.code_hash, expires_at = excluded.expires_at
          RETURNING (extract(epoch FROM expires_at) * 1000)::BIGINT",
@@ -39,7 +39,7 @@ pub(crate) async fn preview(
     Json(input): Json<GroupInviteRequest>,
 ) -> Result<Json<GroupInvitePreview>> {
     let (id, title, member_count) = sqlx::query_as(
-        "SELECT c.id, c.title, (SELECT count(*) FROM members WHERE conversation_id = c.id)
+        "SELECT c.id, c.title, (SELECT count(*) FROM members WHERE conversation_id = c.id AND active)
          FROM group_invites i JOIN conversations c ON c.id = i.conversation_id
          WHERE i.code_hash = $1 AND i.expires_at > now() AND c.title IS NOT NULL",
     )
@@ -62,6 +62,7 @@ pub(crate) async fn join(
     let mut tx = app.db.begin().await?;
     // The same lock orders publishes and the new member's history cutoff.
     lock_message_feed(&mut tx).await?;
+    auth.require(&mut tx).await?;
     let id: Uuid = sqlx::query_scalar(
         "SELECT i.conversation_id FROM group_invites i
          JOIN conversations c ON c.id = i.conversation_id
@@ -74,7 +75,7 @@ pub(crate) async fn join(
     .ok_or_else(Error::missing)?;
     let (count, joined): (i64, bool) = sqlx::query_as(
         "SELECT count(*), coalesce(bool_or(account_id = $2), false)
-         FROM members WHERE conversation_id = $1",
+         FROM members WHERE conversation_id = $1 AND active",
     )
     .bind(id)
     .bind(auth.user_id)
@@ -86,7 +87,9 @@ pub(crate) async fn join(
         }
         sqlx::query(
             "INSERT INTO members (conversation_id, account_id, joined_after)
-             SELECT $1, $2, coalesce(max(seq), 0) FROM messages WHERE conversation_id = $1",
+             SELECT $1, $2, committed_through FROM m1_feed
+             ON CONFLICT (conversation_id, account_id) DO UPDATE
+             SET active = true, joined_after = excluded.joined_after, viewed_through = 0",
         )
         .bind(id)
         .bind(auth.user_id)

@@ -6,10 +6,13 @@ use std::{path::Path, process::Command, sync::Arc, time::Duration};
 use uuid::Uuid;
 use zibblu_core::{
     AiProvider, AiScope, CHUNK_SIZE, Client, ContactNotes, ConversationRequest, Credentials,
-    DeliveryAck, Direction, FileFilter, MAX_PROFILE_IMAGE_BYTES, MessageReceipt, ProfileImage,
-    ProfileRelation, PublishAiReply, ReadUpdate, ReceiptStatus, SendMessage, Session, SyncPage,
-    Transfer, TransferStatus,
+    DeviceLogin, Direction, FileFilter, MAX_PROFILE_IMAGE_BYTES, MessageReceipt, ProfileImage,
+    ProfileRelation, PublishAiReply, ReadUpdate, ReceiptStatus, SendMessage, Session, SyncAck,
+    SyncEvent, SyncPage, Transfer, TransferStatus,
 };
+
+#[path = "m1/local_first.rs"]
+mod local_first;
 
 #[test]
 fn non_loopback_bind_requires_container_opt_in() -> Result<()> {
@@ -266,10 +269,13 @@ async fn normal_chat_and_files() -> Result<()> {
 
     let http = reqwest::Client::builder().no_proxy().build()?;
     let outsider: Session = http
-        .post(format!("{server}/v1/register"))
-        .json(&Credentials {
-            handle: outsider_handle,
-            password: password.clone(),
+        .post(format!("{server}/v2/register"))
+        .json(&DeviceLogin {
+            credentials: Credentials {
+                handle: outsider_handle,
+                password: password.clone(),
+            },
+            device_key: device_key(),
         })
         .send()
         .await?
@@ -342,10 +348,13 @@ async fn normal_chat_and_files() -> Result<()> {
     alice.recall_message(chat, file_seq).await?;
     assert!(bob.attachment(id).await.is_ok());
     let reader: Session = http
-        .post(format!("{server}/v1/login"))
-        .json(&Credentials {
-            handle: bob_handle.clone(),
-            password: password.clone(),
+        .post(format!("{server}/v2/login"))
+        .json(&DeviceLogin {
+            credentials: Credentials {
+                handle: bob_handle.clone(),
+                password: password.clone(),
+            },
+            device_key: device_key(),
         })
         .send()
         .await?
@@ -419,10 +428,13 @@ async fn normal_chat_and_files() -> Result<()> {
     );
     assert!(scanner.messages(group, None).await?.items.is_empty());
     let scanner_session: Session = http
-        .post(format!("{server}/v1/login"))
-        .json(&Credentials {
-            handle: scanner_handle,
-            password,
+        .post(format!("{server}/v2/login"))
+        .json(&DeviceLogin {
+            credentials: Credentials {
+                handle: scanner_handle,
+                password,
+            },
+            device_key: device_key(),
         })
         .send()
         .await?
@@ -564,7 +576,13 @@ async fn normal_chat_and_files() -> Result<()> {
     let directory_before = scanner.sync().await?;
     assert!(
         alice
-            .publish_ai_reply(group, ai_reply(vec![Uuid::new_v4()]))
+            .publish_ai_reply(
+                group,
+                PublishAiReply {
+                    nonce: Uuid::new_v4(),
+                    ..ai_reply(vec![Uuid::new_v4()])
+                }
+            )
             .await
             .is_err()
     );
@@ -655,6 +673,41 @@ async fn normal_chat_and_files() -> Result<()> {
             .filter(|item| item.ai_provider.is_some())
             .count(),
         1
+    );
+    scanner.leave_group(group).await?;
+    let group_chunk = format!("{server}/v1/files/{new_attachment}/chunks/0");
+    assert_eq!(
+        http.get(&group_chunk)
+            .bearer_auth(scanner.session_token())
+            .send()
+            .await?
+            .status(),
+        404
+    );
+    assert!(
+        scanner
+            .sync()
+            .await?
+            .conversations
+            .iter()
+            .all(|chat| chat.id != group)
+    );
+    assert_eq!(scanner.join_group_invite(invite.code).await?, group);
+    assert_eq!(
+        http.get(&group_chunk)
+            .bearer_auth(scanner.session_token())
+            .send()
+            .await?
+            .status(),
+        404
+    );
+    send(&alice, group, "After joining again").await?;
+    scanner.sync().await?;
+    assert_eq!(
+        scanner.messages(group, None).await?.items[0]
+            .text
+            .as_deref(),
+        Some("After joining again")
     );
     alice.remove_contact(bob.user.id).await?;
     assert!(
@@ -838,18 +891,28 @@ async fn desktop_experience_permissions_and_sync() -> Result<()> {
     send(&alice, chat, "Read by both accounts").await?;
     let http = reqwest::Client::builder().no_proxy().build()?;
     let bob_session: Session = http
-        .post(format!("{server}/v1/login"))
-        .json(&Credentials {
-            handle: bob_handle.clone(),
-            password: password.clone(),
+        .post(format!("{server}/v2/login"))
+        .json(&DeviceLogin {
+            credentials: Credentials {
+                handle: bob_handle.clone(),
+                password: password.clone(),
+            },
+            device_key: device_key(),
         })
         .send()
         .await?
         .error_for_status()?
         .json()
         .await?;
-    let url = format!("{server}/v1/sync?after={greeting}");
-    let legacy: SyncPage = http
+    assert_eq!(
+        http.get(format!("{server}/v1/sync?after={greeting}"))
+            .send()
+            .await?
+            .status(),
+        426
+    );
+    let url = format!("{server}/v2/sync?cursor={}", bob_session.cursor);
+    let page: SyncPage = http
         .get(&url)
         .bearer_auth(&bob_session.token)
         .send()
@@ -857,39 +920,42 @@ async fn desktop_experience_permissions_and_sync() -> Result<()> {
         .error_for_status()?
         .json()
         .await?;
-    assert!(legacy.delivery_batch.is_none());
-    let page: SyncPage = http
-        .get(format!("{url}&delivery_acks=true"))
+    let repeated: SyncPage = http
+        .get(&url)
         .bearer_auth(&bob_session.token)
         .send()
         .await?
         .error_for_status()?
         .json()
         .await?;
-    let sent = page.messages[0].seq;
-    let proof = page
-        .delivery_batch
-        .context("Expected a delivery batch for the recipient")?;
+    assert_eq!(page.page_id, repeated.page_id);
+    let sent = page
+        .events
+        .iter()
+        .find_map(|event| match event {
+            SyncEvent::Published(message) => Some(message.seq),
+            SyncEvent::Recalled(_) => None,
+        })
+        .context("Expected an unconfirmed message")?;
     assert_eq!(alice.update_receipt(chat, query(sent)).await?, None);
-    let alice_session: Session = http
-        .post(format!("{server}/v1/login"))
-        .json(&Credentials {
-            handle: alice_handle.clone(),
-            password: password.clone(),
+    let foreign = http
+        .post(format!("{server}/v2/sync/ack"))
+        .bearer_auth(alice.session_token())
+        .json(&SyncAck {
+            page_id: page.page_id,
+            metadata_received: vec![sent],
         })
         .send()
-        .await?
-        .error_for_status()?
-        .json()
         .await?;
-    http.post(format!("{server}/v1/sync/ack"))
-        .bearer_auth(&alice_session.token)
-        .json(&DeliveryAck {
-            batches: vec![proof],
-        })
-        .send()
-        .await?
-        .error_for_status()?;
+    assert_eq!(foreign.status(), 409);
+    assert_eq!(
+        http.get(&url)
+            .bearer_auth(alice.session_token())
+            .send()
+            .await?
+            .status(),
+        409
+    );
     http.post(format!("{server}/v1/conversations/{chat}/read?latest=true"))
         .bearer_auth(&bob_session.token)
         .json(&ReadUpdate {
@@ -911,7 +977,7 @@ async fn desktop_experience_permissions_and_sync() -> Result<()> {
         .connect_with(
             SqliteConnectOptions::new().filename(
                 data.path()
-                    .join("profiles")
+                    .join("profiles-v2")
                     .join(bob_profile)
                     .join("chat.sqlite3"),
             ),
@@ -1001,7 +1067,7 @@ async fn desktop_experience_permissions_and_sync() -> Result<()> {
         bob_on_second_client
             .quoted_message(chat, sent)
             .await?
-            .is_some()
+            .is_none()
     );
     assert!(
         bob.sync()
@@ -1024,6 +1090,10 @@ async fn desktop_experience_permissions_and_sync() -> Result<()> {
     assert!(bob.sync().await?.remarks.is_empty());
     task.abort();
     Ok(())
+}
+
+fn device_key() -> String {
+    format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 
 async fn sign_in(
@@ -1086,7 +1156,7 @@ async fn session_restore_validates_account_before_opening_the_local_profile() ->
             .await
             .is_err()
     );
-    assert!(!rejected.path().join("profiles").exists());
+    assert!(!rejected.path().join("profiles-v2").exists());
 
     alice.add_contact(bob.user.id).await?;
     bob.respond_contact(alice_id, true).await?;
@@ -1125,7 +1195,7 @@ async fn session_restore_validates_account_before_opening_the_local_profile() ->
             .await
             .is_err()
     );
-    assert!(!rejected.path().join("profiles").exists());
+    assert!(!rejected.path().join("profiles-v2").exists());
     task.abort();
     Ok(())
 }

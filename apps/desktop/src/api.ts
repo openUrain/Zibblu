@@ -3,6 +3,7 @@ import type { AiProvider } from "./ai-api";
 
 export type User = { id: string; handle: string };
 export type Session = { user: User; server: string; notice?: string };
+export type Device = { id: string; last_seen_at: number; current: boolean };
 export type SavedAccount = { user: User; server: string; avatar: number[] | null };
 export type CloseAction = "exit" | "tray";
 export type Preferences = { server: string; official_server: string; private_quiet: boolean; close_action?: CloseAction; saved_account?: SavedAccount };
@@ -26,12 +27,17 @@ export type Message = {
   seq: number; conversation_id: string; sender: User; created_at: number;
   text: string | null; attachment: Attachment | null; ai_provider?: AiProvider; recalled: boolean;
   reply_to?: number;
+  nonce?: string;
+  expires_at?: number;
+  expired?: "text" | "file";
+  pending?: { error: string | null; blocked: boolean };
+  local_file?: boolean;
 };
 export type Draft = { text: string; quote?: Message; image?: File; nonce?: string };
 export type Page = { items: Message[]; has_more: boolean };
 export type Transfer = {
   attachment: Attachment; conversation_id: string; direction: "upload" | "download";
-  status: "running" | "paused" | "failed" | "complete"; received: number; error: string | null;
+  status: "running" | "queued" | "paused" | "failed" | "expired" | "complete"; received: number; error: string | null;
   sharer: User | null;
 };
 export type FileFilter = {
@@ -55,6 +61,9 @@ export type Discovery = { status: "starting" | "network_unavailable" | "discover
 export type PrivateMessage = { seq: number; sender: User; text: string; created_at: number };
 export type PrivateCode = { room: string; host: string; addresses: string[]; secret: string; expires_at: number };
 type PrivateView = PrivateSummary & { connection: string; messages: PrivateMessage[] };
+export type SyncUpdate = {
+  directory: Directory; recalled: number[]; server_now: number; revision: number; latest_ai_seq: number;
+};
 
 export const api = {
   preferences: () => invoke<Preferences>("preferences"),
@@ -64,9 +73,10 @@ export const api = {
   restoreSession: (account: SavedAccount) => invoke<Session>("restore_session", { accountId: account.user.id, server: account.server }),
   logout: () => invoke<void>("logout"),
   directory: () => invoke<Directory>("directory"),
-  sync: () => invoke<{
-    directory: Directory; recalled: number[]; server_now: number; last_seq: number; latest_ai_seq: number;
-  }>("sync"),
+  sync: () => invoke<SyncUpdate>("sync"),
+  localUpdate: () => invoke<SyncUpdate>("local_update"),
+  devices: () => invoke<Device[]>("devices"),
+  retireDevice: (id: string) => invoke<void>("retire_device", { id }),
   messages: (conversation: string, before?: number, search?: string) => invoke<Page>("messages", { conversation, before, search }),
   files: (filter: FileFilter, before?: number) => invoke<Page>("files", { filter, before }),
   findUser: (handle: string) => invoke<User>("find_user", { handle }),
@@ -87,12 +97,14 @@ export const api = {
   create: (request: ConversationRequest) => invoke<string>("create_conversation", { request }),
   send: (conversation: string, text: string, nonce: string, replyTo?: number) =>
     invoke<void>("send_message", { conversation, message: { text, nonce, reply_to: replyTo } }),
+  retryMessage: (nonce: string) => invoke<void>("retry_message", { nonce }),
   recall: (conversation: string, seq: number) => invoke<void>("recall_message", { conversation, seq }),
   publishAiReply: (conversation: string, reply: { nonce: string; provider: AiProvider; text: string; created_at: number; readers: string[] }) =>
     invoke<void>("publish_ai_reply", { conversation, reply }),
   groupInvite: (conversation: string) => invoke<GroupInvite>("group_invite", { conversation }),
   groupPreview: (code: string) => invoke<GroupPreview>("group_preview", { code }),
   groupJoin: (code: string) => invoke<string>("group_join", { code }),
+  leaveGroup: (conversation: string) => invoke<void>("leave_group", { conversation }),
   startPrivate: (conversation: string | null, invited: string[], open = false) =>
     invoke<string>("private_start", { conversation, invited, open }),
   nearbyDevices: () => invoke<Discovery>("private_nearby"),
@@ -115,6 +127,11 @@ export const api = {
   transferAction: (action: "pause" | "resume" | "discard", transfer: Transfer) =>
     invoke<void>(action + "_transfer", { id: transfer.attachment.id, direction: transfer.direction }),
 };
+
+export function fileExpired(message: Message, now = Date.now()): boolean {
+  return !message.local_file && (message.expired === "file"
+    || (message.attachment !== null && message.expires_at !== undefined && message.expires_at <= now));
+}
 
 export function isExpired(error: unknown): boolean {
   return typeof error === "object" && error !== null && "expired" in error && error.expired === true;

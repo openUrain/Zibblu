@@ -1,6 +1,7 @@
 use crate::{
     App, Auth, Error, Result,
     chats::{lock_message_feed, require_send_access},
+    sync,
 };
 use axum::{
     Json,
@@ -12,7 +13,7 @@ use futures_util::TryStreamExt;
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgConnection};
 use uuid::Uuid;
-use zibblu_core::{Attachment, CHUNK_SIZE, UploadProgress};
+use zibblu_core::{Attachment, CHUNK_SIZE, ContentAck, Publication, UploadProgress};
 
 const ACCOUNT_BYTES: i64 = 2 * 1024 * 1024 * 1024;
 const SERVICE_BYTES: i64 = 16 * 1024 * 1024 * 1024;
@@ -28,6 +29,7 @@ struct Upload {
     sha256: String,
     received: i64,
     complete: bool,
+    expired: bool,
 }
 
 impl Upload {
@@ -51,12 +53,11 @@ pub(crate) async fn begin(
         ));
     }
     let mut tx = app.db.begin().await?;
-    require_send_access(&mut tx, conversation, auth.user_id).await?;
-    // Reserve bytes once per transfer, even when multiple uploads begin concurrently.
-    sqlx::query("SELECT pg_advisory_xact_lock(1002)")
-        .execute(&mut *tx)
-        .await?;
-    if let Some(existing) = sqlx::query_as::<_, Upload>("SELECT * FROM attachments WHERE id = $1")
+    lock_message_feed(&mut tx).await?;
+    auth.require(&mut tx).await?;
+    if let Some(existing) = sqlx::query_as::<_, Upload>(
+        "SELECT *, coalesce(expires_at <= statement_timestamp(), false) AS expired FROM attachments WHERE id = $1",
+    )
         .bind(file.id)
         .fetch_optional(&mut *tx)
         .await?
@@ -73,8 +74,30 @@ pub(crate) async fn begin(
                 "The upload metadata changed. Share the file again.",
             ));
         }
+        if !existing.complete {
+            require_send_access(&mut tx, conversation, auth.user_id).await?;
+            if existing.expired {
+                return Err(upload_expired());
+            }
+        }
         return Ok(Json(existing.progress()));
     }
+    let published: Option<(Uuid, Uuid)> =
+        sqlx::query_as("SELECT sender_id, conversation_id FROM messages WHERE attachment_id = $1")
+            .bind(file.id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if let Some((owner, original_chat)) = published {
+        if owner != auth.user_id || original_chat != conversation {
+            return Err(Error::missing());
+        }
+        return Ok(Json(UploadProgress {
+            received: file.size,
+            complete: true,
+        }));
+    }
+    require_send_access(&mut tx, conversation, auth.user_id).await?;
+    check_upload_expiry(&mut tx, file.id, auth.user_id).await?;
     let (account, account_count, total, total_count): (i64, i64, i64, i64) = sqlx::query_as(
         "SELECT coalesce(sum(size) FILTER (WHERE owner_id = $1), 0)::BIGINT,
                 count(*) FILTER (WHERE owner_id = $1),
@@ -93,9 +116,13 @@ pub(crate) async fn begin(
             "The service's attachment storage limit was reached.",
         ));
     }
-    sqlx::query("INSERT INTO attachments (id, conversation_id, owner_id, name, kind, size, sha256) VALUES ($1,$2,$3,$4,$5,$6,$7)")
+    sqlx::query(
+        "INSERT INTO attachments (id, conversation_id, owner_id, name, kind, size, sha256, expires_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,clock_timestamp() + make_interval(secs => $8::int))",
+    )
         .bind(file.id).bind(conversation).bind(auth.user_id).bind(file.name)
         .bind(file.kind.as_str()).bind(file.size as i64).bind(file.sha256)
+        .bind(app.retention.upload_secs)
         .execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(UploadProgress {
@@ -105,12 +132,44 @@ pub(crate) async fn begin(
 }
 
 async fn lock_upload(db: &mut PgConnection, id: Uuid, owner: Uuid) -> Result<Upload> {
-    sqlx::query_as("SELECT * FROM attachments WHERE id = $1 AND owner_id = $2 FOR UPDATE")
-        .bind(id)
-        .bind(owner)
-        .fetch_optional(db)
-        .await?
-        .ok_or_else(Error::missing)
+    let file: Option<Upload> = sqlx::query_as(
+        "SELECT *, coalesce(expires_at <= statement_timestamp(), false) AS expired
+         FROM attachments WHERE id = $1 AND owner_id = $2 FOR UPDATE",
+    )
+    .bind(id)
+    .bind(owner)
+    .fetch_optional(&mut *db)
+    .await?;
+    match file {
+        Some(file) if !file.expired => Ok(file),
+        Some(_) => Err(upload_expired()),
+        None => {
+            check_upload_expiry(db, id, owner).await?;
+            Err(Error::missing())
+        }
+    }
+}
+
+fn upload_expired() -> Error {
+    Error(
+        StatusCode::GONE,
+        "This upload expired. Share the attachment again.",
+    )
+}
+
+async fn check_upload_expiry(db: &mut PgConnection, id: Uuid, owner: Uuid) -> Result<()> {
+    let expired: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM m1_expired_uploads WHERE id = $1 AND owner_id = $2)",
+    )
+    .bind(id)
+    .bind(owner)
+    .fetch_one(db)
+    .await?;
+    if expired {
+        Err(upload_expired())
+    } else {
+        Ok(())
+    }
 }
 
 pub(crate) async fn discard(
@@ -119,7 +178,9 @@ pub(crate) async fn discard(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode> {
     let mut tx = app.db.begin().await?;
-    let file = sqlx::query_as::<_, Upload>("SELECT * FROM attachments WHERE id = $1 FOR UPDATE")
+    let file = sqlx::query_as::<_, Upload>(
+        "SELECT *, coalesce(expires_at <= statement_timestamp(), false) AS expired FROM attachments WHERE id = $1 FOR UPDATE",
+    )
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?;
@@ -148,7 +209,10 @@ pub(crate) async fn write_chunk(
     bytes: Bytes,
 ) -> Result<Json<UploadProgress>> {
     let mut tx = app.db.begin().await?;
+    lock_message_feed(&mut tx).await?;
+    auth.require(&mut tx).await?;
     let file = lock_upload(&mut tx, id, auth.user_id).await?;
+    require_send_access(&mut tx, file.conversation_id, auth.user_id).await?;
     if file.complete || offset != file.received {
         return Err(Error::conflict(
             "The upload position changed. Resume to synchronize it.",
@@ -183,12 +247,21 @@ pub(crate) async fn complete(
     State(app): State<App>,
     auth: Auth,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode> {
+) -> Result<Json<Publication>> {
     let mut tx = app.db.begin().await?;
-    let file = lock_upload(&mut tx, id, auth.user_id).await?;
-    if file.complete {
-        return Ok(StatusCode::NO_CONTENT);
+    lock_message_feed(&mut tx).await?;
+    auth.require(&mut tx).await?;
+    let published: Option<i64> =
+        sqlx::query_scalar("SELECT seq FROM messages WHERE attachment_id = $1 AND sender_id = $2")
+            .bind(id)
+            .bind(auth.user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if let Some(seq) = published {
+        return Ok(Json(sync::publication(&mut tx, seq).await?));
     }
+    let file = lock_upload(&mut tx, id, auth.user_id).await?;
+    require_send_access(&mut tx, file.conversation_id, auth.user_id).await?;
     if file.received != file.size {
         return Err(Error::conflict("The upload still has missing chunks."));
     }
@@ -219,22 +292,25 @@ pub(crate) async fn complete(
             "File verification failed. Retry the upload.",
         ));
     }
-    lock_message_feed(&mut tx).await?;
-    require_send_access(&mut tx, file.conversation_id, auth.user_id).await?;
-    sqlx::query("UPDATE attachments SET complete = true WHERE id = $1")
-        .bind(file.id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
-        "INSERT INTO messages (conversation_id, sender_id, attachment_id) VALUES ($1,$2,$3)",
+    let seq: i64 = sqlx::query_scalar(
+        "INSERT INTO messages (conversation_id, sender_id, attachment_id, expires_at)
+         SELECT $1, $2, $3, clock_timestamp() + make_interval(secs => $4::int)
+         FROM attachments WHERE id = $3 AND coalesce(expires_at > clock_timestamp(), true)
+         RETURNING seq",
     )
     .bind(file.conversation_id)
     .bind(auth.user_id)
     .bind(id)
-    .execute(&mut *tx)
-    .await?;
+    .bind(app.retention.file_secs)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(upload_expired)?;
+    sqlx::query("UPDATE attachments SET complete = true, expires_at = (SELECT expires_at FROM messages WHERE seq = $2) WHERE id = $1")
+        .bind(file.id).bind(seq).execute(&mut *tx).await?;
+    sync::dispatch(&mut tx, seq).await?;
+    let publication = sync::publication(&mut tx, seq).await?;
     tx.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(publication))
 }
 
 pub(crate) async fn read_chunk(
@@ -242,13 +318,11 @@ pub(crate) async fn read_chunk(
     auth: Auth,
     Path((id, offset)): Path<(Uuid, i64)>,
 ) -> Result<Bytes> {
-    let bytes: Vec<u8> = sqlx::query_scalar(
-        "SELECT c.data FROM attachment_chunks c
-         JOIN attachments f ON f.id = c.attachment_id
-         JOIN members m ON m.conversation_id = f.conversation_id AND m.account_id = $3
-         JOIN messages published ON published.attachment_id = f.id
-         WHERE c.attachment_id = $1 AND c.byte_offset = $2 AND f.complete
-               AND published.seq > m.joined_after AND published.recall_seq IS NULL",
+    let (expired, bytes): (bool, Option<Vec<u8>>) = sqlx::query_as(
+        "SELECT coalesce(m.expires_at <= statement_timestamp(), false), c.data
+         FROM m1_visible_messages m LEFT JOIN attachment_chunks c ON c.attachment_id = m.attachment_id
+           AND c.byte_offset = $2 AND coalesce(m.expires_at > statement_timestamp(), true)
+         WHERE m.attachment_id = $1 AND m.account_id = $3 AND m.recall_seq IS NULL",
     )
     .bind(id)
     .bind(offset)
@@ -256,5 +330,82 @@ pub(crate) async fn read_chunk(
     .fetch_optional(&app.db)
     .await?
     .ok_or_else(Error::missing)?;
-    Ok(bytes.into())
+    if expired {
+        return Err(file_expired());
+    }
+    Ok(bytes.ok_or_else(Error::missing)?.into())
+}
+
+fn file_expired() -> Error {
+    Error(
+        StatusCode::GONE,
+        "The file expired. Ask the sender to share it again.",
+    )
+}
+
+async fn downloadable(db: &mut PgConnection, id: Uuid, account: Uuid) -> Result<(i64, String)> {
+    let (seq, expired, digest): (i64, bool, Option<String>) = sqlx::query_as(
+        "SELECT m.seq, coalesce(m.expires_at <= statement_timestamp(), false), f.sha256
+         FROM m1_visible_messages m LEFT JOIN attachments f ON f.id = m.attachment_id
+         WHERE m.attachment_id = $1 AND m.account_id = $2 AND m.recall_seq IS NULL",
+    )
+    .bind(id)
+    .bind(account)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(Error::missing)?;
+    if expired {
+        return Err(file_expired());
+    }
+    Ok((seq, digest.ok_or_else(Error::missing)?))
+}
+
+pub(crate) async fn start_download(
+    State(app): State<App>,
+    auth: Auth,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode> {
+    let mut tx = app.db.begin().await?;
+    lock_message_feed(&mut tx).await?;
+    auth.require(&mut tx).await?;
+    let (seq, _) = downloadable(&mut tx, id, auth.user_id).await?;
+    sqlx::query(
+        "INSERT INTO m1_device_events (device_id, event_seq, message_seq, metadata_state, content_state)
+         VALUES ($1, $2, $2, 'processed', 'pending') ON CONFLICT DO NOTHING",
+    ).bind(auth.device_id).bind(seq).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn ack_content(
+    State(app): State<App>,
+    auth: Auth,
+    Path(id): Path<Uuid>,
+    Json(input): Json<ContentAck>,
+) -> Result<StatusCode> {
+    let mut tx = app.db.begin().await?;
+    lock_message_feed(&mut tx).await?;
+    auth.require(&mut tx).await?;
+    let (seq, digest) = downloadable(&mut tx, id, auth.user_id).await?;
+    if input.sha256 != digest {
+        return Err(Error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "The downloaded file did not match its SHA-256.",
+        ));
+    }
+    let updated = sqlx::query(
+        "UPDATE m1_device_events SET content_state = 'verified'
+         WHERE device_id = $1 AND event_seq = $2 AND content_state IN ('pending', 'verified')",
+    )
+    .bind(auth.device_id)
+    .bind(seq)
+    .execute(&mut *tx)
+    .await?;
+    if updated.rows_affected() == 0 {
+        return Err(Error::missing());
+    }
+    sqlx::query("UPDATE m1_recipients SET content_verified = true WHERE message_seq = $1 AND account_id = $2")
+        .bind(seq).bind(auth.user_id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }

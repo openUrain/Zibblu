@@ -1,4 +1,7 @@
 mod ai_context;
+mod device;
+mod local_sync;
+mod outbox;
 mod staging;
 mod transfer;
 
@@ -9,10 +12,9 @@ use crate::protocol::*;
 use anyhow::{Context, Result, bail, ensure};
 use reqwest::{Method, RequestBuilder, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use sha2::{Digest, Sha256};
 use sqlx::{
     SqlitePool,
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
 };
 use std::{
     collections::HashMap,
@@ -69,6 +71,9 @@ pub struct Client {
     api: Api,
     db: SqlitePool,
     staging: PathBuf,
+    managed_files: PathBuf,
+    history_revision: AtomicI64,
+    device_re_registered: bool,
     sync_gate: Mutex<()>,
     prepare_gate: Mutex<()>,
     workers: Mutex<HashMap<JobKey, Active>>,
@@ -89,6 +94,7 @@ pub struct SyncUpdate {
     pub recalled: Vec<i64>,
     pub server_now: i64,
     pub last_seq: i64,
+    pub revision: i64,
     pub latest_ai_seq: i64,
 }
 
@@ -111,17 +117,7 @@ impl Client {
         credentials: Credentials,
         register: bool,
     ) -> Result<Arc<Self>> {
-        let mut api = Api::new(address)?;
-        let route = if register {
-            "/v1/register"
-        } else {
-            "/v1/login"
-        };
-        let session: Session = api
-            .json(api.request(Method::POST, route).json(&credentials))
-            .await?;
-        api.token = Some(session.token);
-        Self::open(data_dir, api, session.user).await
+        Self::sign_in(data_dir, Api::new(address)?, credentials, register).await
     }
 
     pub async fn restore(
@@ -142,28 +138,35 @@ impl Client {
         );
         let mut api = Api::new(address)?;
         api.token = Some(token.to_owned());
-        let profile = match api.profile(account_id).await {
-            Ok(profile) => profile,
+        let session: DeviceSession = match api.json(api.request(Method::GET, "/v2/session")).await {
+            Ok(session) => session,
             Err(OnlineError::Rejected {
-                status: StatusCode::UNAUTHORIZED | StatusCode::NOT_FOUND,
+                status:
+                    StatusCode::UNAUTHORIZED | StatusCode::NOT_FOUND | StatusCode::UPGRADE_REQUIRED,
                 ..
-            }) => {
-                return Err(invalid().into());
-            }
+            }) => return Err(invalid().into()),
             Err(error) => return Err(error.into()),
         };
-        ensure!(
-            matches!(profile.relation, ProfileRelation::Own) && profile.user.id == account_id,
-            invalid()
-        );
-        Self::open(data_dir, api, profile.user).await
+        ensure!(session.user.id == account_id, invalid());
+        let profile = Self::profile_at(data_dir, &api, account_id);
+        ensure!(profile.join("chat.sqlite3").is_file(), invalid());
+        let client = Self::open(data_dir, api, session, true).await?;
+        client.reconcile_history().await?;
+        Ok(client)
     }
 
-    async fn open(data_dir: &Path, api: Api, user: User) -> Result<Arc<Self>> {
-        let profile_id = format!("{:x}", Sha256::digest(format!("{}\n{}", api.base, user.id)));
-        let profile = data_dir.join("profiles").join(profile_id);
+    async fn open(
+        data_dir: &Path,
+        api: Api,
+        session: DeviceSession,
+        restore: bool,
+    ) -> Result<Arc<Self>> {
+        let profile = Self::profile_at(data_dir, &api, session.user.id);
         let staging = profile.join("transfers");
+        let managed_files = profile.join("files");
         std::fs::create_dir_all(&staging).context("Could not create the local profile")?;
+        std::fs::create_dir_all(&managed_files)
+            .context("Could not create the local file directory")?;
         let lock = OpenOptions::new()
             .write(true)
             .create(true)
@@ -178,48 +181,20 @@ impl Client {
                     .filename(profile.join("chat.sqlite3"))
                     .create_if_missing(true)
                     .journal_mode(SqliteJournalMode::Wal)
+                    .synchronous(SqliteSynchronous::Full)
                     .busy_timeout(Duration::from_secs(5)),
             )
             .await
             .context("Could not open the local chat history")?;
-        sqlx::raw_sql(
-            "CREATE TABLE IF NOT EXISTS inbox (
-                seq INTEGER PRIMARY KEY, conversation_id TEXT NOT NULL, payload TEXT NOT NULL,
-                attachment_id TEXT UNIQUE
-             );
-             CREATE INDEX IF NOT EXISTS inbox_chat ON inbox (conversation_id, seq);
-             CREATE INDEX IF NOT EXISTS inbox_chat_time ON inbox (conversation_id, json_extract(payload, '$.created_at'), seq);
-             CREATE INDEX IF NOT EXISTS inbox_recalled ON inbox (seq)
-                WHERE json_extract(payload, '$.recalled') = 1;
-             CREATE INDEX IF NOT EXISTS inbox_ai_replies ON inbox (seq)
-                WHERE json_type(payload, '$.ai_provider') = 'text';
-             CREATE TABLE IF NOT EXISTS hidden_messages (
-                seq INTEGER PRIMARY KEY REFERENCES inbox (seq), attachment_id TEXT UNIQUE
-             );
-             CREATE TABLE IF NOT EXISTS directory (
-                id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS recall_cursor (
-                id INTEGER PRIMARY KEY CHECK (id = 1), seq INTEGER NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS pending_delivery_ack (
-                batch TEXT PRIMARY KEY NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS transfers (
-                id TEXT NOT NULL, direction TEXT NOT NULL, payload TEXT NOT NULL,
-                PRIMARY KEY (id, direction)
-             );
-             UPDATE transfers SET payload = json_set(payload, '$.status', 'paused')
-                WHERE json_extract(payload, '$.status') = 'running';",
-        )
-        .execute(&db)
-        .await
-        .context("Could not initialize the local chat history")?;
+        let device_re_registered = Self::initialize_history(&db, &session, restore).await?;
         Ok(Arc::new(Self {
-            user,
+            user: session.user,
             api,
             db,
             staging,
+            managed_files,
+            history_revision: AtomicI64::new(1),
+            device_re_registered,
             _profile_lock: lock,
             sync_gate: Mutex::new(()),
             prepare_gate: Mutex::new(()),
@@ -231,6 +206,10 @@ impl Client {
 
     pub fn server(&self) -> &str {
         self.api.base.as_str()
+    }
+
+    pub fn device_re_registered(&self) -> bool {
+        self.device_re_registered
     }
 
     pub fn session_token(&self) -> &str {
@@ -248,198 +227,6 @@ impl Client {
             .await?)
     }
 
-    pub async fn sync(&self) -> Result<Directory> {
-        Ok(self.sync_updates().await?.directory)
-    }
-
-    pub async fn sync_updates(&self) -> Result<SyncUpdate> {
-        let _sync = self.sync_gate.lock().await;
-        let mut can_ack = self.flush_delivery_acks().await?;
-        let mut after: i64 = sqlx::query_scalar("SELECT coalesce(max(seq), 0) FROM inbox")
-            .fetch_one(&self.db)
-            .await?;
-        let mut recall_after: i64 =
-            sqlx::query_scalar("SELECT seq FROM recall_cursor WHERE id = 1")
-                .fetch_optional(&self.db)
-                .await?
-                .unwrap_or_default();
-        loop {
-            let started = unix_millis();
-            let page: SyncPage = self
-                .api
-                .json(
-                    self.api
-                        .request(Method::GET, "/v1/sync")
-                        .query(&[("after", after), ("recall_after", recall_after)])
-                        .query(&[("delivery_acks", true)]),
-                )
-                .await?;
-            if let Some(server_time) = page.server_time {
-                let elapsed = unix_millis().saturating_sub(started);
-                self.server_clock_offset.store(
-                    server_time.saturating_sub(started + elapsed / 2),
-                    Ordering::Relaxed,
-                );
-            }
-            let mut tx = self.db.begin().await?;
-            let count = page.messages.len();
-            let recall_count = page.recalls.len();
-            for message in page.messages {
-                ensure!(
-                    message.seq > after
-                        && message.attachment.as_ref().is_none_or(Attachment::is_valid),
-                    OnlineError::InvalidResponse
-                );
-                after = message.seq;
-                sqlx::query("INSERT INTO inbox (seq, conversation_id, payload, attachment_id) VALUES (?,?,?,?)")
-                    .bind(message.seq).bind(message.conversation_id.to_string())
-                    .bind(serde_json::to_string(&message)?)
-                    .bind(message.attachment.as_ref().map(|attachment| attachment.id.to_string()))
-                    .execute(&mut *tx).await?;
-            }
-            for recall in page.recalls {
-                ensure!(
-                    recall.seq > recall_after && recall.message_seq < recall.seq,
-                    OnlineError::InvalidResponse
-                );
-                recall_after = recall.seq;
-                sqlx::query(
-                    "UPDATE inbox SET attachment_id = NULL,
-                         payload = json_set(payload, '$.text', NULL, '$.attachment', NULL, '$.recalled', json('true'))
-                     WHERE seq = ?",
-                )
-                .bind(recall.message_seq).execute(&mut *tx).await?;
-            }
-            if recall_count > 0 {
-                sqlx::query(
-                    "INSERT INTO recall_cursor (id, seq) VALUES (1,?)
-                     ON CONFLICT (id) DO UPDATE SET seq = excluded.seq",
-                )
-                .bind(recall_after)
-                .execute(&mut *tx)
-                .await?;
-            }
-            sqlx::query(
-                "INSERT INTO directory (id, payload) VALUES (1,?)
-                 ON CONFLICT (id) DO UPDATE SET payload = excluded.payload",
-            )
-            .bind(serde_json::to_string(&page.directory)?)
-            .execute(&mut *tx)
-            .await?;
-            if let Some(batch) = page.delivery_batch {
-                sqlx::query("INSERT OR IGNORE INTO pending_delivery_ack (batch) VALUES (?)")
-                    .bind(batch.to_string())
-                    .execute(&mut *tx)
-                    .await?;
-                sqlx::query(
-                    "DELETE FROM pending_delivery_ack WHERE rowid IN (
-                    SELECT rowid FROM pending_delivery_ack ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
-                )
-                .bind(MAX_PENDING_DELIVERY_BATCHES as i64)
-                .execute(&mut *tx)
-                .await?;
-            }
-            tx.commit().await?;
-            if can_ack && page.delivery_batch.is_some() {
-                can_ack = self.flush_delivery_acks().await?;
-            }
-            if count < SYNC_PAGE_SIZE && recall_count < SYNC_PAGE_SIZE {
-                let recalled = sqlx::query_scalar(
-                    "SELECT seq FROM inbox WHERE json_extract(payload, '$.recalled') = 1 ORDER BY seq",
-                )
-                .fetch_all(&self.db).await?;
-                let latest_ai_seq = sqlx::query_scalar(
-                    "SELECT coalesce(max(seq), 0) FROM inbox WHERE json_type(payload, '$.ai_provider') = 'text'",
-                )
-                .fetch_one(&self.db).await?;
-                return Ok(SyncUpdate {
-                    directory: self.visible_directory(page.directory).await?,
-                    recalled,
-                    server_now: self.server_now(),
-                    last_seq: after,
-                    latest_ai_seq,
-                });
-            }
-        }
-    }
-
-    async fn flush_delivery_acks(&self) -> Result<bool> {
-        let pending: Vec<String> = sqlx::query_scalar("SELECT batch FROM pending_delivery_ack")
-            .fetch_all(&self.db)
-            .await?;
-        if pending.is_empty() {
-            return Ok(true);
-        }
-        let batches = pending
-            .iter()
-            .map(|id| Uuid::parse_str(id))
-            .collect::<std::result::Result<_, _>>()?;
-        let request = self
-            .api
-            .request(Method::POST, "/v1/sync/ack")
-            .timeout(Duration::from_secs(3))
-            .json(&DeliveryAck { batches });
-        match self.api.send(request).await {
-            Ok(_)
-            | Err(OnlineError::Rejected {
-                status: StatusCode::NOT_FOUND,
-                ..
-            }) => {
-                sqlx::query("DELETE FROM pending_delivery_ack")
-                    .execute(&self.db)
-                    .await?;
-                Ok(true)
-            }
-            // Keep the proof for the next sync even if the optional receipt path is down.
-            Err(_) => Ok(false),
-        }
-    }
-
-    pub async fn directory(&self) -> Result<Directory> {
-        let json: Option<String> = sqlx::query_scalar("SELECT payload FROM directory WHERE id = 1")
-            .fetch_optional(&self.db)
-            .await?;
-        let directory = json
-            .map(|value| serde_json::from_str(&value))
-            .transpose()?
-            .unwrap_or_default();
-        self.visible_directory(directory).await
-    }
-
-    async fn visible_directory(&self, mut directory: Directory) -> Result<Directory> {
-        let hidden: Vec<(i64, String, bool, bool)> = sqlx::query_as(
-            "SELECT i.seq, i.conversation_id, json_extract(i.payload, '$.sender.id') <> ?,
-                    coalesce(json_extract(i.payload, '$.recalled'), 0)
-             FROM hidden_messages h JOIN inbox i ON i.seq = h.seq",
-        )
-        .bind(self.user.id.to_string())
-        .fetch_all(&self.db)
-        .await?;
-        let mut chats: HashMap<_, _> = directory
-            .conversations
-            .iter_mut()
-            .map(|chat| (chat.id.to_string(), chat))
-            .collect();
-        for (seq, id, incoming, recalled) in hidden {
-            let Some(chat) = chats.get_mut(&id) else {
-                continue;
-            };
-            if incoming && !recalled && seq > chat.read_through {
-                chat.unread = (chat.unread - 1).max(0);
-            }
-            if chat.preview_seq == Some(seq) {
-                chat.preview = sqlx::query_scalar(
-                    "SELECT CASE WHEN json_extract(payload, '$.recalled') = 1 THEN 'Message recalled'
-                                 ELSE coalesce(substr(json_extract(payload, '$.text'), 1, 100),
-                                               json_extract(payload, '$.attachment.name')) END
-                     FROM inbox WHERE conversation_id = ? AND seq NOT IN (SELECT seq FROM hidden_messages)
-                     ORDER BY json_extract(payload, '$.created_at') DESC, seq DESC LIMIT 1",
-                ).bind(&id).fetch_optional(&self.db).await?;
-            }
-        }
-        Ok(directory)
-    }
-
     pub fn server_now(&self) -> i64 {
         unix_millis().saturating_add(self.server_clock_offset.load(Ordering::Relaxed))
     }
@@ -455,7 +242,7 @@ impl Client {
         search: Option<&str>,
     ) -> Result<Page> {
         let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-            "SELECT payload FROM inbox WHERE seq NOT IN (SELECT seq FROM hidden_messages) AND conversation_id = ",
+            "SELECT payload FROM timeline WHERE seq NOT IN (SELECT seq FROM hidden_messages) AND conversation_id = ",
         );
         query.push_bind(conversation.to_string());
         if let Some(before) = before {
@@ -475,7 +262,7 @@ impl Client {
 
     pub async fn files(&self, filter: FileFilter, before: Option<i64>) -> Result<Page> {
         let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-            "SELECT payload FROM inbox WHERE attachment_id IS NOT NULL AND seq NOT IN (SELECT seq FROM hidden_messages)",
+            "SELECT payload FROM timeline WHERE attachment_id IS NOT NULL AND seq NOT IN (SELECT seq FROM hidden_messages)",
         );
         if let Some(before) = before {
             push_before(&mut query, before, filter.oldest_first);
@@ -522,7 +309,7 @@ impl Client {
     }
 
     pub async fn attachment(&self, id: Uuid) -> Result<Message> {
-        let json: String = sqlx::query_scalar("SELECT payload FROM inbox WHERE attachment_id = ? AND seq NOT IN (SELECT seq FROM hidden_messages)")
+        let json: String = sqlx::query_scalar("SELECT payload FROM timeline WHERE attachment_id = ? AND seq NOT IN (SELECT seq FROM hidden_messages)")
             .bind(id.to_string())
             .fetch_optional(&self.db)
             .await?
@@ -544,17 +331,6 @@ impl Client {
 
     pub async fn add_contact(&self, user_id: Uuid) -> Result<()> {
         self.request_contact(user_id, String::new()).await
-    }
-
-    pub async fn request_contact(&self, user_id: Uuid, greeting: String) -> Result<()> {
-        self.api
-            .send(
-                self.api
-                    .request(Method::POST, "/v1/contacts")
-                    .json(&ContactRequest { user_id, greeting }),
-            )
-            .await?;
-        Ok(())
     }
 
     pub async fn remove_contact(&self, user_id: Uuid) -> Result<()> {
@@ -685,6 +461,7 @@ impl Client {
         update: ReadUpdate,
         latest: bool,
     ) -> Result<ReadResult> {
+        self.ensure_open()?;
         if let Some(through) = update.through {
             let arrived: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM inbox WHERE seq = ? AND conversation_id = ?)",
@@ -694,12 +471,24 @@ impl Client {
             .fetch_one(&self.db)
             .await?;
             ensure!(arrived, "Wait for the conversation to finish syncing");
+            sqlx::query(
+                "INSERT INTO local_read_positions (conversation_id, read_through) VALUES (?,?)
+                 ON CONFLICT (conversation_id) DO UPDATE SET read_through = max(read_through, excluded.read_through)",
+            ).bind(conversation.to_string()).bind(through).execute(&self.db).await?;
+        }
+        if update.sent.is_empty() && update.viewed.is_none() {
+            return Ok(if latest {
+                ReadResult::Latest { receipt: None }
+            } else {
+                ReadResult::Legacy(vec![])
+            });
         }
         if let Some(viewed) = update.viewed {
             let visible: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM inbox i WHERE i.seq = ? AND i.conversation_id = ?
                  AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h.seq = i.seq)
-                 AND coalesce(json_extract(i.payload, '$.recalled'), 0) = 0)",
+                 AND coalesce(json_extract(i.payload, '$.recalled'), 0) = 0
+                 AND json_extract(i.payload, '$.expired') IS NULL)",
             )
             .bind(viewed)
             .bind(conversation.to_string())
@@ -735,12 +524,14 @@ impl Client {
                 .bind(seq).bind(conversation.to_string()).fetch_one(&self.db).await?;
             ensure!(hidden, "This message is unavailable");
         }
+        self.history_changed();
         Ok(())
     }
 
     pub async fn quoted_message(&self, conversation: Uuid, seq: i64) -> Result<Option<Message>> {
         let payload: Option<String> = sqlx::query_scalar(
-            "SELECT payload FROM inbox WHERE seq = ? AND conversation_id = ? AND seq NOT IN (SELECT seq FROM hidden_messages)",
+            "SELECT payload FROM timeline WHERE seq = ? AND seq > 0 AND conversation_id = ? AND seq NOT IN (SELECT seq FROM hidden_messages)
+             AND json_extract(payload, '$.expired') IS NULL AND coalesce(json_extract(payload, '$.recalled'), 0) = 0",
         ).bind(seq).bind(conversation.to_string()).fetch_optional(&self.db).await?;
         Ok(payload
             .map(|json| serde_json::from_str(&json))
@@ -753,20 +544,6 @@ impl Client {
                 Method::DELETE,
                 &format!("/v1/conversations/{conversation}/messages/{seq}"),
             ))
-            .await?;
-        Ok(())
-    }
-
-    pub async fn publish_ai_reply(&self, conversation: Uuid, reply: PublishAiReply) -> Result<()> {
-        self.api
-            .send(
-                self.api
-                    .request(
-                        Method::POST,
-                        &format!("/v1/conversations/{conversation}/ai-replies"),
-                    )
-                    .json(&reply),
-            )
             .await?;
         Ok(())
     }
@@ -816,22 +593,13 @@ impl Client {
         Ok(group.id)
     }
 
-    pub async fn send_message(&self, conversation: Uuid, message: SendMessage) -> Result<()> {
-        if let Some(seq) = message.reply_to {
-            ensure!(
-                self.quoted_message(conversation, seq).await?.is_some(),
-                "This quoted message is unavailable"
-            );
-        }
+    pub async fn leave_group(&self, id: Uuid) -> Result<()> {
+        self.ensure_open()?;
         self.api
-            .send(
-                self.api
-                    .request(
-                        Method::POST,
-                        &format!("/v1/conversations/{conversation}/messages"),
-                    )
-                    .json(&message),
-            )
+            .send(self.api.request(
+                Method::DELETE,
+                &format!("/v1/conversations/{id}/membership"),
+            ))
             .await?;
         Ok(())
     }
@@ -841,7 +609,7 @@ fn push_before(query: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>, before: i64, ol
     query
         .push(" AND (json_extract(payload, '$.created_at'), seq) ")
         .push(if oldest_first { ">" } else { "<" })
-        .push(" (SELECT json_extract(payload, '$.created_at'), seq FROM inbox WHERE seq = ")
+        .push(" (SELECT json_extract(payload, '$.created_at'), seq FROM timeline WHERE seq = ")
         .push_bind(before)
         .push(")");
 }
@@ -867,6 +635,13 @@ struct Api {
     base: Url,
     http: reqwest::Client,
     token: Option<String>,
+}
+
+impl Drop for Api {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.token.zeroize();
+    }
 }
 
 impl Api {

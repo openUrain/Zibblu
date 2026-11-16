@@ -1,0 +1,11 @@
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${ZIBBLU_TEST_DB_PORT:-17846}:5432"
+    networks: [database, test-db]
+    restart: "no"
+  zibblu-online:
+    restart: "no"
+
+networks:
+  test-db:
