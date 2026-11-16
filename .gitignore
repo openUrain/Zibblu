@@ -1,4 +1,5 @@
 /.local/
+/.data/
 /target/
 **/node_modules/
 **/dist/
