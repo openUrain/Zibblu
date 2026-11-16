@@ -2,6 +2,17 @@
 
 Local-First 在线服务用 PostgreSQL 17 保存账号、设备、目录、投递元数据和临时载荷。Docker 应用容器监听 `0.0.0.0:7841`，宿主机只发布环回端口。公网 HTTPS 部署须经 Owner 单独批准。开放更多注册前先完成注册和登录限流。
 
+## Enterprise Self-Hosting
+
+企业可将 `zibblu-online` 和 PostgreSQL 17 部署在自己的服务器上。使用 v0.1.4 对应源码和空 PostgreSQL 库，从仓库根目录启动 Compose。按 `deploy/docker/.env.example` 的变量名配置独立数据库密码，并由部署方管理真实凭据。
+
+```sh
+docker compose --env-file /path/to/zibblu.env -f deploy/docker/compose.yaml up -d --build
+curl --fail http://127.0.0.1:7841/healthz
+```
+
+在宿主机为环回服务配置 HTTPS 反向代理与受客户端信任的证书。让员工在登录页 **Advanced** 填写该 HTTPS 源地址（无路径），并在同一企业服务器注册或登录。公司普通聊天和附件经该服务器投递，官方 Zibblu 服务不参与这条路径。普通聊天使用 HTTPS 传输，无端到端加密，运营方可访问在线载荷。请按企业策略设置下方的投递期限、清理、备份和访问控制。
+
 ## Issue #46 · Win11 隔离验收
 
 在 Docker Desktop 的 Linux Engine 上执行。测试脚本使用专用 Compose 项目，发布两个独立的环回端口，自动回收仅用于生成的测试库。先确认所选项目名、端口和资料目录专用于本次测试。默认资源如下。
