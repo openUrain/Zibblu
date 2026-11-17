@@ -89,12 +89,13 @@ export const api = {
   setDisplayName: (name: string) => invoke<void>("set_display_name", { name }),
   setBio: (bio: string) => invoke<void>("set_bio", { bio }),
   setContactNotes: (id: string, notes: ContactNotes) => invoke<void>("set_contact_notes", { id, notes }),
-  pickProfileImage: () => invoke<ArrayBuffer | number[]>("pick_profile_image")
+  pickImage: (forProfile: boolean) => invoke<ArrayBuffer | number[]>("pick_image", { forProfile })
     .then(bytes => Array.isArray(bytes) ? new Uint8Array(bytes).buffer : bytes),
   setProfileImage: (kind: "avatar" | "cover", bytes: ArrayBuffer) =>
     invoke<string>("set_profile_image", bytes, { headers: { "zibblu-profile-image": kind } }),
   copyText: (text: string) => invoke<void>("copy_text", { text }),
   pasteText: () => invoke<string | null>("paste_text"),
+  scanIosQr: () => invoke<string | null>("ios_scan_qr"),
   profileImageUrl: (id: string, version: string) => convertFileSrc(`profile_${id}_${version}`, "zibblu-media"),
   readUpdate: (conversation: string, through?: number, sent?: number, viewed?: number) =>
     invoke<MessageReceipt | null>("read_update", { conversation, update: { through, sent: sent === undefined ? [] : [sent], viewed } }),

@@ -163,22 +163,23 @@ svg { vertical-align: middle; }
 .signin-account > svg { flex: none; color: var(--accent); }
 .inline-error { overflow-wrap: anywhere; padding: 9px 11px; border-radius: 8px; background: var(--danger-bg); color: var(--danger); line-height: 1.45; }
 
-.shell { display: grid; grid-template-columns: 70px minmax(0, 1fr); height: 100dvh; overflow: hidden; }
+.shell { display: grid; grid-template-columns: 60px minmax(0, 1fr); height: 100dvh; overflow: hidden; }
 .rail {
-  display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 14px 6px;
+  display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 12px 8px;
   background: #ebecef; color: var(--muted); border-right: 1px solid var(--line);
 }
-.rail .rail-brand { width: 44px; height: 44px; flex: none; border-radius: 12px; }
+.rail .rail-brand { width: 44px; height: 44px; flex: none; }
+.rail .rail-brand .avatar { border-radius: 6px; }
 .rail-links { display: grid; width: 100%; gap: 4px; }
 .rail-links button {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
-  min-height: 52px; width: 100%; padding: 6px 2px; border: 0; border-radius: 10px;
+  min-height: 44px; width: 100%; padding: 4px 2px; border: 0; border-radius: 6px;
   background: transparent; color: inherit; font-size: 11px; font-weight: 500;
   transition: background .12s ease, color .12s ease;
 }
 .rail-links button:hover { background: rgba(0, 0, 0, 0.05); color: #1d1d1f; }
-.rail-links button[aria-current="page"] { background: var(--primary); color: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
-.rail-links button[aria-current="page"]:hover { background: var(--primary-hover); color: #fff; }
+.rail-links button > span:last-child { display: none; }
+.rail-links button[aria-current="page"] { background: var(--tint); color: var(--primary); }
 .rail button:focus-visible { outline-color: var(--accent); outline-offset: 1px; }
 .rail-icon { position: relative; }
 .rail-dot {
@@ -226,8 +227,13 @@ svg { vertical-align: middle; }
 .workspace-error .icon-button { color: inherit; }
 
 .chat-layout { display: grid; grid-template-columns: clamp(240px, 26vw, 300px) minmax(0, 1fr); min-height: 0; flex: 1; }
-.chat-list { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--panel); border-right: 1px solid var(--line); }
-.chat-list-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 14px 8px; }
+.chat-list { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); border-right: 1px solid var(--line); }
+.chat-list-title { display: none; }
+.chat-list-head { display: flex; align-items: center; gap: 6px; padding: 10px 10px 8px; }
+.chat-list-head .search { flex: 1; min-width: 0; }
+.chat-list-head .chat-actions { flex: none; gap: 2px; }
+.chat-list-head .icon-button { width: 35px; min-width: 35px; height: 35px; }
+.chat-list-head .new-conversation { background: var(--soft); color: var(--ink); }
 .chat-list h1, .workspace-heading h1 { font-size: 15px; letter-spacing: -.01em; line-height: 1.2; font-weight: 600; }
 .search {
   display: flex; align-items: center; gap: 6px; padding-left: 8px; border: 1px solid var(--line);
@@ -238,7 +244,6 @@ svg { vertical-align: middle; }
 .search input { border: 0; padding-inline: 0 8px; background: transparent; min-height: 32px; font-size: 12px; }
 .search:focus-within { border-color: rgba(99, 79, 180, 0.4); background: var(--panel); outline: 2px solid rgba(99, 79, 180, 0.12); outline-offset: 0; }
 .search input:focus { outline: 0; }
-.chat-list > .search { margin: 0 12px 10px; }
 .chat-rows { overflow: auto; padding: 0 8px 10px; }
 .chat-row {
   position: relative; display: flex; align-items: flex-start; width: 100%; gap: 10px; padding: 9px 8px;
@@ -595,7 +600,21 @@ fieldset { padding: 5px; border: 1px solid var(--line); border-radius: 9px; }
 .dialog-contacts, .group-form fieldset { border: 0; padding: 2px; }
 legend { padding: 0 5px; color: var(--muted); }
 
-.profile-open .shell-main > :not(.topbar, .workspace-error, .profile-page) { display: none; }
+.workspace-content { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.profile-replaces-root > :not(.profile-page), .chat-profile-open > :is(.chat-view, .chat-blank, .private-chat) { display: none; }
+.settings-screen {
+  display: grid; grid-template-columns: minmax(175px, 230px) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden; padding: 0;
+}
+.settings-screen > * { max-width: none; }
+.settings-screen > header { grid-column: 1 / -1; padding: 14px 16px; margin: 0; border-bottom: 1px solid var(--line); }
+.settings-nav, .settings-detail { min-height: 0; overflow: auto; }
+.settings-nav { background: var(--panel); border-right: 1px solid var(--line); }
+.settings-nav button { min-height: 48px; padding-inline: 15px; }
+.settings-nav button + button { border-top: 1px solid var(--line); }
+.settings-nav button span { flex: 1; }
+.settings-nav button[aria-current="page"] { background: var(--tint); }
+.settings-detail { padding: 14px 16px; }
 .profile-page { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
 .profile-header {
   display: grid; align-items: center; grid-template-columns: 44px minmax(0, 1fr) 44px;
@@ -624,7 +643,7 @@ button.profile-row:hover { background: var(--hover); }
 .profile-person { display: flex; align-items: center; gap: 14px; padding-block: 16px; overflow-wrap: anywhere; }
 .profile-person h2 { font-size: 1.25rem; }
 .profile-bio { margin: 0 0 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.profile-direct { margin-top: 16px; }
+.profile-direct { margin: 16px 8px 0 0; }
 .profile-status { display: flex; align-items: baseline; gap: 8px; margin-block: 12px; color: var(--muted); }
 .profile-fields { display: grid; gap: 12px; }
 .profile-fields label { display: grid; gap: 6px; }
@@ -659,6 +678,7 @@ button.profile-row:hover { background: var(--hover); }
   .windows-topbar .chat-actions { gap: 2px; }
   .chat-layout { grid-template-columns: minmax(0, 1fr); }
   .chat-layout:not(.mobile-chat-open) > :is(.chat-view, .chat-blank), .mobile-chat-open > .chat-list { display: none; }
+  .chat-profile-open > .chat-list { display: none; }
   .chat-list { border: 0; }
   .mobile-back { display: inline-flex; }
   .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }

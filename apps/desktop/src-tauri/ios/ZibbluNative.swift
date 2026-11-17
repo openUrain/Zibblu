@@ -1,3 +1,4 @@
+import AVFoundation
 import Darwin
 import Foundation
 import ImageIO
@@ -6,6 +7,8 @@ import PhotosUI
 import Security
 import UIKit
 import UniformTypeIdentifiers
+import WebKit
+import WebKit
 import dnssd
 
 private let serviceType = "_zibblu-private._udp"
@@ -60,6 +63,166 @@ private let native = NativeState()
 private func appWindow() -> UIWindow? {
     let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
     return windows.first(where: \.isKeyWindow) ?? UIApplication.shared.windows.first(where: \.isKeyWindow)
+}
+
+typealias LayoutCallback = @convention(c) (Double, Double) -> Void
+
+private final class InputLayout: NSObject {
+    static let shared = InputLayout()
+    private weak var webView: WKWebView?
+    private var onChanged: LayoutCallback?
+    private var onBack: (@convention(c) () -> Void)?
+    private var keyboardFrame: CGRect?
+    private var backGesture: UIScreenEdgePanGestureRecognizer?
+
+    func install(_ view: WKWebView, _ changed: @escaping LayoutCallback, _ back: @escaping @convention(c) () -> Void) {
+        webView = view
+        onChanged = changed
+        onBack = back
+        view.scrollView.contentInsetAdjustmentBehavior = .never
+        view.scrollView.bounces = false
+        let gesture = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(goBack(_:)))
+        gesture.edges = .left
+        gesture.isEnabled = false
+        view.addGestureRecognizer(gesture)
+        backGesture = gesture
+        let center = NotificationCenter.default
+        for name in [UIResponder.keyboardWillChangeFrameNotification, UIResponder.keyboardDidChangeFrameNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { notification in
+                self.keyboardFrame = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+                self.publish()
+            }
+        }
+        center.addObserver(forName: UIResponder.keyboardDidHideNotification, object: nil, queue: .main) { _ in
+            self.keyboardFrame = nil
+            self.publish()
+        }
+        center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            self.keyboardFrame = nil
+        }
+        for name in [UIApplication.didBecomeActiveNotification, UIContentSizeCategory.didChangeNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { _ in self.publish() }
+        }
+        publish()
+    }
+
+    func publish() {
+        guard let view = webView else { return }
+        let scale = UIFontMetrics(forTextStyle: .body).scaledValue(for: 17, compatibleWith: view.traitCollection) / 17
+        var inset: CGFloat = 0
+        if let frame = keyboardFrame, let window = view.window {
+            let overlap = view.convert(frame, from: window.screen.coordinateSpace).intersection(view.bounds)
+            if !overlap.isNull, overlap.maxY >= view.bounds.maxY - 1, overlap.width >= view.bounds.width - 1 {
+                inset = overlap.height
+            }
+        }
+        onChanged?(Double(inset), Double(scale))
+    }
+
+    func enableBack(_ enabled: Bool) {
+        backGesture?.isEnabled = enabled
+    }
+
+    @objc private func goBack(_ gesture: UIScreenEdgePanGestureRecognizer) {
+        let offset = gesture.translation(in: webView)
+        if gesture.state == .ended && offset.x > 48 && abs(offset.y) < offset.x { onBack?() }
+    }
+}
+
+@_cdecl("zibblu_ios_install_layout")
+func zibbluInstallLayout(_ pointer: UnsafeMutableRawPointer, _ changed: @escaping LayoutCallback, _ back: @escaping @convention(c) () -> Void) {
+    let view = Unmanaged<WKWebView>.fromOpaque(pointer).takeUnretainedValue()
+    InputLayout.shared.install(view, changed, back)
+}
+
+@_cdecl("zibblu_ios_publish_layout")
+func zibbluPublishLayout() {
+    DispatchQueue.main.async { InputLayout.shared.publish() }
+}
+
+@_cdecl("zibblu_ios_back_enabled")
+func zibbluBackEnabled(_ enabled: Bool) {
+    DispatchQueue.main.async { InputLayout.shared.enableBack(enabled) }
+}
+
+typealias LayoutCallback = @convention(c) (Double, Double) -> Void
+
+private final class InputLayout: NSObject {
+    static let shared = InputLayout()
+    private weak var webView: WKWebView?
+    private var onChanged: LayoutCallback?
+    private var onBack: (@convention(c) () -> Void)?
+    private var keyboardFrame: CGRect?
+    private var backGesture: UIScreenEdgePanGestureRecognizer?
+
+    func install(_ view: WKWebView, _ changed: @escaping LayoutCallback, _ back: @escaping @convention(c) () -> Void) {
+        webView = view
+        onChanged = changed
+        onBack = back
+        view.scrollView.contentInsetAdjustmentBehavior = .never
+        view.scrollView.bounces = false
+        let gesture = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(goBack(_:)))
+        gesture.edges = .left
+        gesture.isEnabled = false
+        view.addGestureRecognizer(gesture)
+        backGesture = gesture
+        let center = NotificationCenter.default
+        for name in [UIResponder.keyboardWillChangeFrameNotification, UIResponder.keyboardDidChangeFrameNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { notification in
+                self.keyboardFrame = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+                self.publish()
+            }
+        }
+        center.addObserver(forName: UIResponder.keyboardDidHideNotification, object: nil, queue: .main) { _ in
+            self.keyboardFrame = nil
+            self.publish()
+        }
+        center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            self.keyboardFrame = nil
+        }
+        for name in [UIApplication.didBecomeActiveNotification, UIContentSizeCategory.didChangeNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { _ in self.publish() }
+        }
+        publish()
+    }
+
+    func publish() {
+        guard let view = webView else { return }
+        let scale = UIFontMetrics(forTextStyle: .body).scaledValue(for: 17, compatibleWith: view.traitCollection) / 17
+        var inset: CGFloat = 0
+        if let frame = keyboardFrame, let window = view.window {
+            let overlap = view.convert(frame, from: window.screen.coordinateSpace).intersection(view.bounds)
+            if !overlap.isNull, overlap.maxY >= view.bounds.maxY - 1, overlap.width >= view.bounds.width - 1 {
+                inset = overlap.height
+            }
+        }
+        onChanged?(Double(inset), Double(scale))
+    }
+
+    func enableBack(_ enabled: Bool) {
+        backGesture?.isEnabled = enabled
+    }
+
+    @objc private func goBack(_ gesture: UIScreenEdgePanGestureRecognizer) {
+        let offset = gesture.translation(in: webView)
+        if gesture.state == .ended && offset.x > 48 && abs(offset.y) < offset.x { onBack?() }
+    }
+}
+
+@_cdecl("zibblu_ios_install_layout")
+func zibbluInstallLayout(_ pointer: UnsafeMutableRawPointer, _ changed: @escaping LayoutCallback, _ back: @escaping @convention(c) () -> Void) {
+    let view = Unmanaged<WKWebView>.fromOpaque(pointer).takeUnretainedValue()
+    InputLayout.shared.install(view, changed, back)
+}
+
+@_cdecl("zibblu_ios_publish_layout")
+func zibbluPublishLayout() {
+    DispatchQueue.main.async { InputLayout.shared.publish() }
+}
+
+@_cdecl("zibblu_ios_back_enabled")
+func zibbluBackEnabled(_ enabled: Bool) {
+    DispatchQueue.main.async { InputLayout.shared.enableBack(enabled) }
 }
 
 private final class Lifecycle {
@@ -421,5 +584,98 @@ func zibbluPickPhoto(_ context: UnsafeMutableRawPointer, _ callback: @escaping P
         picker.delegate = delegate
         picker.isModalInPresentation = true
         controller.present(picker, animated: true)
+    }
+}
+
+private final class QRScanner: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
+    private let capture = AVCaptureSession()
+    private let captureQueue = DispatchQueue(label: "com.zibblu.qr-camera")
+    private lazy var preview = AVCaptureVideoPreviewLayer(session: capture)
+    private var completed: ((Int32, Data) -> Void)?
+
+    init(_ completed: @escaping (Int32, Data) -> Void) {
+        self.completed = completed
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { return nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "扫一扫" : "Scan QR code"
+        view.backgroundColor = .black
+        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(cancel))
+        preview.videoGravity = .resizeAspectFill
+        view.layer.addSublayer(preview)
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard let camera = AVCaptureDevice.default(for: .video),
+              let input = try? AVCaptureDeviceInput(device: camera),
+              capture.canAddInput(input) else { return finish(-1) }
+        capture.addInput(input)
+        let output = AVCaptureMetadataOutput()
+        guard capture.canAddOutput(output) else { return finish(-1) }
+        capture.addOutput(output)
+        guard output.availableMetadataObjectTypes.contains(.qr) else { return finish(-1) }
+        output.metadataObjectTypes = [.qr]
+        output.setMetadataObjectsDelegate(self, queue: .main)
+        orientPreview()
+        captureQueue.async { [capture] in capture.startRunning() }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        preview.frame = view.bounds
+        orientPreview()
+    }
+
+    private func orientPreview() {
+        guard let connection = preview.connection, connection.isVideoOrientationSupported
+            else { return }
+        switch view.window?.windowScene?.interfaceOrientation {
+        case .landscapeLeft: connection.videoOrientation = .landscapeLeft
+        case .landscapeRight: connection.videoOrientation = .landscapeRight
+        case .portraitUpsideDown: connection.videoOrientation = .portraitUpsideDown
+        default: connection.videoOrientation = .portrait
+        }
+    }
+
+    func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput objects: [AVMetadataObject], from connection: AVCaptureConnection) {
+        if let code = objects.compactMap({ ($0 as? AVMetadataMachineReadableCodeObject)?.stringValue }).first {
+            finish(1, Data(code.utf8))
+        }
+    }
+
+    @objc private func cancel() { finish(0) }
+
+    private func finish(_ status: Int32, _ data: Data = Data()) {
+        guard let completion = completed else { return }
+        completed = nil
+        captureQueue.async { [capture] in capture.stopRunning() }
+        dismiss(animated: true) { completion(status, data) }
+    }
+}
+
+@_cdecl("zibblu_ios_scan_qr")
+func zibbluScanQR(_ context: UnsafeMutableRawPointer, _ callback: @escaping PhotoCallback) {
+    let present: (Bool) -> Void = { allowed in
+        DispatchQueue.main.async {
+            guard allowed, UIApplication.shared.applicationState != .background,
+                  var controller = appWindow()?.rootViewController else { return callback(context, -1, nil, 0) }
+            while let shown = controller.presentedViewController { controller = shown }
+            let scanner = QRScanner { status, data in
+                data.withUnsafeBytes { callback(context, status, $0.bindMemory(to: UInt8.self).baseAddress, $0.count) }
+            }
+            let navigation = UINavigationController(rootViewController: scanner)
+            navigation.modalPresentationStyle = .fullScreen
+            controller.present(navigation, animated: true)
+        }
+    }
+    if AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined {
+        AVCaptureDevice.requestAccess(for: .video, completionHandler: present)
+    } else {
+        present(AVCaptureDevice.authorizationStatus(for: .video) == .authorized)
     }
 }

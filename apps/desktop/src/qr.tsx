@@ -5,6 +5,8 @@ import QRCode from "qrcode";
 import { api, errorMessage } from "./api";
 import type { GroupPreview, PrivateCode, Session, User } from "./api";
 import { Avatar, Dialog, People, PersonAvatar, dateTimeLabel, displayName, messageTimeLabel } from "./common";
+import { ios } from "./ios";
+import { t } from "./locale";
 
 export type SharedCode = {
   kind: "contact" | "group" | "private";
@@ -135,18 +137,32 @@ export function ScanQr({ session, close, contactFound, groupJoined, privateJoine
     };
   }, [camera]);
 
-  async function image(file: File | undefined) {
-    if (!file) return;
+  async function image() {
     setCamera(false);
     setFailure("");
+    setBusy(true);
     try {
-      const bitmap = await createImageBitmap(file);
+      const bytes = await api.pickImage(false);
+      if (!bytes.byteLength) return;
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
       try {
         const text = readImage(document.createElement("canvas"), bitmap, bitmap.width, bitmap.height);
         if (!text) throw new Error("No QR code was found in this image.");
         if (mounted.current) await decode(text);
       } finally { bitmap.close(); }
-    } catch (error) { if (mounted.current) setFailure(error instanceof Error ? error.message : errorMessage(error)); }
+    } catch (error) { if (mounted.current) setFailure(errorMessage(error)); }
+    finally { if (mounted.current) setBusy(false); }
+  }
+
+  async function startCamera() {
+    if (!ios) { setCamera(!camera); return; }
+    setFailure("");
+    setBusy(true);
+    try {
+      const code = await api.scanIosQr();
+      if (code && mounted.current) await decode(code);
+    } catch (error) { if (mounted.current) setFailure(errorMessage(error)); }
+    finally { if (mounted.current) setBusy(false); }
   }
 
   async function confirm() {
@@ -168,7 +184,7 @@ export function ScanQr({ session, close, contactFound, groupJoined, privateJoine
     } finally { if (mounted.current) setBusy(false); }
   }
 
-  return <Dialog title="Scan a QR code" close={() => { if (!busy) close(); }}>
+  return <Dialog title={t("Scan a QR code", "扫一扫")} mobilePage closeDisabled={busy} close={close}>
     <div className="qr-content">
       {camera && <video className="qr-camera" ref={video} muted playsInline />}
       {result ? <>
@@ -180,13 +196,12 @@ export function ScanQr({ session, close, contactFound, groupJoined, privateJoine
           {result.kind === "contact" ? "View profile" : "Join chat"}
         </button>
       </> : <div className="qr-actions">
-        <button className="button subtle" disabled={busy} onClick={() => setCamera(!camera)}>
-          <Camera size={17} /> {camera ? "Stop camera" : "Use camera"}
+        <button className="button subtle" disabled={busy} onClick={() => void startCamera()}>
+          <Camera size={21} /> {camera ? t("Stop camera", "关闭相机") : t("Use camera", "打开相机")}
         </button>
-        <label className="button subtle"><ImageUp size={17} /> Choose QR image
-          <input className="qr-file" type="file" accept="image/*" disabled={busy}
-            onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void image(file); }} />
-        </label>
+        <button className="button subtle" disabled={busy} onClick={() => void image()}>
+          <ImageUp size={21} /> {t("Choose QR image", "从图片识别")}
+        </button>
       </div>}
       {failure && <p className="inline-error" role="alert">{failure}</p>}
     </div>

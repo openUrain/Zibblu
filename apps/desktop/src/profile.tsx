@@ -5,16 +5,18 @@ import { api, errorMessage } from "./api";
 import type { CachedProfile, Profile, Session, User } from "./api";
 import { People, PersonAvatar, displayName } from "./common";
 import { actions, t } from "./locale";
+import { useIosBack } from "./ios";
 import { QrContent } from "./qr";
 import { ProfileImageEditor } from "./profile-image";
 
 type ImageField = "avatar" | "cover";
-type Page = ImageField | "display_name" | "bio" | "notes" | "greeting" | "qr";
+type Page = ImageField | "display_name" | "bio" | "notes" | "greeting" | "qr" | "remove";
 
 const labels: Record<Page, string> = {
   avatar: t("Avatar", "头像"), cover: t("Cover", "封面"), display_name: t("Name", "名称"),
   bio: t("Bio", "简介"), notes: t("Contact notes", "备注与资料"), greeting: t("Contact request", "添加联系人"),
   qr: t("My QR code", "我的二维码"),
+  remove: t("Remove contact", "删除联系人"),
 };
 
 function Row({ label, children, choose, disabled }: {
@@ -93,12 +95,13 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
     if (page) show(undefined);
     else close();
   }
+  useIosBack(back, 10);
 
   async function pick(field: ImageField) {
     setPicking(true);
     setSaveError("");
     try {
-      const image = await api.pickProfileImage();
+      const image = await api.pickImage(true);
       if (image.byteLength) {
         setPhoto(image);
         setPage(field);
@@ -156,7 +159,7 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
 
   const name = profile?.notes?.remark || profile?.display_name || displayName(user, remarks);
   const photoPage = page === "avatar" || page === "cover";
-  const editor = page && (own || (page === "notes" ? contact : profile?.relation === "stranger"));
+  const editor = page && (own || (page === "notes" || page === "remove" ? contact : profile?.relation === "stranger"));
   const title = editor ? labels[page] : own ? t("Personal information", "个人信息") : t("Profile", "个人资料");
   const saveLabel = busy ? actions.saving : saveError ? actions.retry : page === "greeting" ? t("Send", "发送") : actions.save;
   const qrName = labels.qr;
@@ -176,7 +179,22 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
           void save(async () => ({ [page]: await api.setProfileImage(page, await crop()) }));
         }} />}
       {editor && page === "qr" && <QrContent code={{ kind: "contact", name: qrName, value: session.user.handle }} server={session.server} />}
-      {editor && !photoPage && page !== "qr" && <form className="profile-fields" key={page} onSubmit={submit}>
+      {editor && page === "remove" && <>
+        <p>{t("Remove this person from your contacts?", "删除这位联系人？")}</p>
+        <div className="dialog-actions">
+          <button className="button subtle" disabled={busy} onClick={back}>{actions.cancel}</button>
+          <button className="button danger" disabled={busy} onClick={async () => {
+            setBusy(true);
+            setSaveError("");
+            try {
+              await api.removeContact(user.id);
+              close();
+              void refresh();
+            } catch (error) { setSaveError(errorMessage(error)); setBusy(false); }
+          }}>{saveError ? actions.retry : labels.remove}</button>
+        </div>
+      </>}
+      {editor && !photoPage && page !== "qr" && page !== "remove" && <form className="profile-fields" key={page} onSubmit={submit}>
         <label>{page === "notes" ? t("Remark", "备注名") : labels[page]}
           {page === "bio" || page === "greeting"
             ? <textarea name="value" maxLength={page === "bio" ? 300 : 200} rows={4} readOnly={busy} autoFocus
@@ -218,6 +236,9 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
             try { await message(); }
             catch (error) { setSaveError(errorMessage(error)); setBusy(false); }
           }}>{t("Message", "发消息")}</button>}
+          {contact && <button className="button danger profile-direct" onClick={() => show("remove")} disabled={busy}>
+            {labels.remove}
+          </button>}
           {profile?.relation === "stranger" && <button className="button primary profile-direct" onClick={() => show("greeting")}>
             {t("Add contact", "添加联系人")}
           </button>}

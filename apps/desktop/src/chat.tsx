@@ -1,6 +1,6 @@
 import {
   ArrowDown, ArrowLeft, ArrowRight, AtSign, Check, CheckCheck, Copy, Download, FilePlus2, FolderOpen, Ghost, LockKeyhole,
-  Image, LogOut, MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Reply, RotateCcw, Search, Send, Trash2, Undo2, UsersRound, X,
+  Image, LogOut, MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Radar, Reply, RotateCcw, ScanLine, Search, Send, Trash2, Undo2, UsersRound, X,
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
@@ -11,35 +11,50 @@ import { api, errorMessage, fileExpired } from "./api";
 import type { Conversation, Draft, Message, MessageReceipt, Page, PrivateSummary, ShareSource, Transfer, User } from "./api";
 import { MAX_IMAGE_BYTES } from "./attachment-media";
 import { Avatar, Blank, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName, messageTimeLabel, startsTimeGroup, usePage } from "./common";
-import { copyText, useMenu } from "./context-menu";
+import { copyText, useMenu, useRowMenu } from "./context-menu";
 import { FilesView, TransferList, useAttachmentSave } from "./files";
 import { ChatAttachment, MediaHistory, MediaViewer } from "./chat-media";
 import { privatePhaseLabel, privateTitle } from "./private-chat";
-import { ios } from "./ios";
+import { ios, useIosBack } from "./ios";
+import { actions as actionLabels, t } from "./locale";
 
-export function ChatList({ chats, own, selected, open, newChat, rooms, activePrivate, openPrivate, createQr }: {
-  chats: Conversation[]; own: User; selected?: string; open: (id: string) => void; newChat: () => void;
+type ChatPage = "details" | "search";
+
+export function ChatList({ chats, own, selected, open, newChat, rooms, activePrivate, openPrivate, createQr, nearby, scan }: {
+  chats: Conversation[]; own: User; selected?: string; open: (id: string, page?: ChatPage) => void; newChat: () => void;
   rooms: PrivateSummary[]; activePrivate?: string; openPrivate: (id: string) => void; createQr: () => void;
+  nearby: () => void; scan: () => void;
 }) {
   const { remarks } = useContext(People);
+  const menu = useRowMenu();
   const [search, setSearch] = useState("");
   const query = search.trim().toLocaleLowerCase();
   const filtered = chats.filter(chat => chatName(chat, own.id, remarks).toLocaleLowerCase().includes(query));
   return <aside className="chat-list">
-    <div className="chat-list-head"><div><h1>Chats</h1></div>
+    <header className="chat-list-title"><h1>{t("Chats", "聊天")}</h1>
+      {ios && <div className="chat-actions">
+        <button className="icon-button" aria-label={t("Nearby devices", "附近设备")} onClick={nearby}><Radar size={24} /></button>
+        <button className="icon-button" aria-label={t("Scan QR code", "扫一扫")} onClick={scan}><ScanLine size={24} /></button>
+      </div>}
+    </header>
+    <div className="chat-list-head">
+      <label className="search"><Search size={18} /><input type="search" aria-label={t("Search chats", "搜索聊天")}
+        placeholder={t("Search", "搜索")} value={search} onChange={event => setSearch(event.target.value)} /></label>
       <div className="chat-actions">
         <button className="icon-button" aria-label="Start private QR chat" title="Start private QR chat"
-          onClick={createQr}><QrCode size={20} /></button>
-        <button className="square-primary" aria-label="New conversation" title="New conversation" onClick={newChat}><Plus size={22} /></button>
+          onClick={createQr}><QrCode size={22} /></button>
+        <button className="icon-button new-conversation" aria-label={t("New conversation", "发起聊天")}
+          title={t("New conversation", "发起聊天")} onClick={newChat}><Plus size={23} /></button>
       </div>
     </div>
-    <label className="search"><Search size={17} /><input aria-label="Search conversations"
-      placeholder="Search conversations" value={search} onChange={event => setSearch(event.target.value)} /></label>
     <div className="chat-rows">
       {filtered.map(chat => {
         const name = chatName(chat, own.id, remarks);
         const peer = chat.members.find(user => user.id !== own.id);
-        return <button key={chat.id} className={"chat-row" + (chat.id === selected ? " selected" : "")}
+        return <button key={chat.id} className={"chat-row" + (chat.id === selected ? " selected" : "")} {...menu([
+          { label: t("Chat info", "聊天信息"), icon: <MoreHorizontal size={18} />, action: () => open(chat.id, "details") },
+          { label: t("Search chat", "查找聊天内容"), icon: <Search size={18} />, action: () => open(chat.id, "search") },
+        ])}
           aria-current={chat.id === selected ? "true" : undefined} onClick={() => open(chat.id)}>
           {chat.title || !peer ? <Avatar name={name} group={!!chat.title} /> : <PersonAvatar user={peer} />}
           <span className="chat-row-text"><strong>{name}</strong><small>{chat.preview || "New conversation"}</small></span>
@@ -71,10 +86,12 @@ type ChatAssistants = {
 type ChatDraft = { draft: Draft; setDraft: (change: (draft: Draft) => Draft) => void };
 
 export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, back, share, openPrivate, groupCode, aiChat,
-  hidden, hide, readReceipts, draft, setDraft }: {
+  hidden, hide, readReceipts, draft, setDraft, profileOpen, requested }: {
   chat: Conversation; own: User; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
   refresh: () => Promise<void>; back: () => void; share: (source: ShareSource) => Promise<void>; openPrivate: () => void;
   groupCode: () => void; aiChat: ChatAssistants; hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean;
+  profileOpen: boolean;
+  requested?: { page: ChatPage };
 } & ChatDraft) {
   const [showFiles, setShowFiles] = useState(false);
   const [drawer, setDrawer] = useState(false);
@@ -85,7 +102,15 @@ export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffs
   const [leaveError, setLeaveError] = useState("");
   const { remarks, open } = useContext(People);
   const name = chatName(chat, own.id, remarks);
+  const count = new Intl.NumberFormat(navigator.language).format(chat.members.length);
+  const heading = chat.title ? name + t(" (" + count + ")", "（" + count + "）") : name;
   const peer = chat.title ? undefined : chat.members.find(user => user.id !== own.id);
+  useIosBack(showFiles && !profileOpen ? () => setShowFiles(false) : undefined, 5);
+
+  useEffect(() => {
+    if (requested?.page === "details") setDrawer(true);
+    if (requested?.page === "search") setSearch("text");
+  }, [requested]);
 
   function keepDrawerFocus(event: KeyboardEvent<HTMLDialogElement>) {
     if (event.key !== "Tab") return;
@@ -98,25 +123,26 @@ export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffs
     }
   }
 
-  return <section className="chat-view" aria-label={name}>
+  return <section className="chat-view" aria-label={heading}>
     <header className="chat-header">
       <button className="icon-button mobile-back" onClick={back} aria-label="Back to chats"><ArrowLeft size={20} /></button>
-      <div className="chat-heading"><h2>{peer ? <button className="person-link" onClick={() => open?.(peer)}>{name}</button> : name}</h2></div>
+      <div className="chat-heading"><h2>{peer ? <button className="person-link" onClick={() => open?.(peer)}>{name}</button> : heading}</h2></div>
       {showFiles && <button className="button subtle small" onClick={() => setShowFiles(false)}><ArrowLeft size={15} /> Messages</button>}
       <button className="icon-button" aria-label="Open private chat" title="Open private chat"
-        onClick={openPrivate}><Ghost size={20} /></button>
+        onClick={openPrivate}><Ghost size={23} /></button>
       <button className="icon-button" aria-label={chat.title ? "Group details" : "Conversation details"}
         title={chat.title ? "Group details" : "Conversation details"} aria-haspopup="dialog" aria-expanded={drawer}
-        onClick={event => { event.currentTarget.focus(); setDrawer(true); }}><MoreHorizontal size={22} /></button>
+        onClick={event => { event.currentTarget.focus(); setDrawer(true); }}><MoreHorizontal size={25} /></button>
     </header>
     {showFiles
       ? <FilesView conversation={chat.id} people={chat.members} transfers={transfers} revision={revision} recalled={recalled} hidden={hidden} onChanged={changed} />
       : <ChatMessages chat={chat} own={own} revision={revision} latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset} transfers={transfers}
         changed={changed} refresh={refresh} share={share} aiChat={aiChat} openMedia={setMedia} {...{ hidden, hide, readReceipts, draft, setDraft }} />}
-    {drawer && <Dialog title={chat.title ? "Group details" : "Conversation details"} className="conversation-drawer"
+    {drawer && !profileOpen && !search && !showFiles && !leave && <Dialog mobilePage
+      title={chat.title ? t("Group details", "群聊信息") : t("Conversation details", "聊天信息")} className="conversation-drawer"
       close={() => setDrawer(false)} onKeyDown={keepDrawerFocus}>
-      {chat.title ? <div className="drawer-identity"><Avatar name={name} group large /><strong>{name}</strong></div>
-        : peer && <button className="drawer-identity drawer-action" onClick={() => { setDrawer(false); open?.(peer); }}>
+      {chat.title ? <div className="drawer-identity"><Avatar name={name} group large /><strong>{heading}</strong></div>
+        : peer && <button className="drawer-identity drawer-action" onClick={() => open?.(peer)}>
           <PersonAvatar user={peer} large />
           <span><strong>{name}</strong><small>View profile</small></span>
           <ArrowRight size={17} />
@@ -124,18 +150,18 @@ export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffs
       {chat.title && <section className="drawer-members">
         <h3>Members <small>{chat.members.length}</small></h3>
         <ul>{chat.members.map(member => <li key={member.id}>
-          <button className="drawer-action" onClick={() => { setDrawer(false); open?.(member); }}>
+          <button className="drawer-action" onClick={() => open?.(member)}>
             <PersonAvatar user={member} /><span>{displayName(member, remarks)}</span>
           </button>
         </li>)}</ul>
         <button className="drawer-action" onClick={() => { setDrawer(false); groupCode(); }}><QrCode size={19} /> Group invite QR code</button>
       </section>}
       <div className="drawer-actions">
-        <button className="drawer-action" onClick={() => { setDrawer(false); setSearch("text"); }}><Search size={19} /> Search chat</button>
-        <button className="drawer-action" onClick={() => { setDrawer(false); setShowFiles(true); }} disabled={showFiles}><FolderOpen size={19} /> Shared files</button>
-        <button className="drawer-action" onClick={() => { setDrawer(false); setSearch("media"); }}><Image size={19} /> Photos and videos</button>
+        <button className="drawer-action" onClick={() => setSearch("text")}><Search size={22} /> Search chat</button>
+        <button className="drawer-action" onClick={() => setShowFiles(true)}><FolderOpen size={22} /> Shared files</button>
+        <button className="drawer-action" onClick={() => setSearch("media")}><Image size={22} /> Photos and videos</button>
         {chat.title && <button className="drawer-action danger" onClick={() => {
-          setDrawer(false); setLeaveError(""); setLeave(true);
+          setLeaveError(""); setLeave(true);
         }}><LogOut size={19} /> Leave group</button>}
       </div>
     </Dialog>}
@@ -166,7 +192,7 @@ function ChatSearch({ conversation, initialTab, revision, latestAiSeq, recalled,
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState(initialTab);
-  return <Dialog title="Search chat" close={close}>
+  return <Dialog title={t("Search chat", "查找聊天内容")} mobilePage close={close}>
     <fieldset className="tabs">
       <legend className="sr-only">Search chat by</legend>
       <Choice type="radio" name="chat-search" checked={tab === "text"} onChange={() => setTab("text")}>Messages</Choice>
@@ -285,6 +311,16 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
     if (nearBottom.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
   }, [lastSeq, pending.length, aiChat.replies.length]);
 
+  useEffect(() => {
+    const view = viewport.current;
+    if (!ios || !view) return;
+    const resize = new ResizeObserver(() => {
+      if (nearBottom.current) view.scrollTop = view.scrollHeight;
+    });
+    resize.observe(view);
+    return () => resize.disconnect();
+  }, []);
+
   async function recall(seq: number) {
     if (recalling !== undefined) return;
     setRecalling(seq);
@@ -349,7 +385,8 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
           function actions(selection?: string) {
             const copy = selection || text;
             return [
-              ...(file && !expiredFile && (!download || download.status === "complete") ? [{ label: "Save attachment", icon: <Download size={15} />,
+              ...(file && !expiredFile && (!download || download.status === "complete") ? [{ label: ios
+                ? download?.status === "complete" ? t("Share", "分享") : t("Download", "下载") : actionLabels.save, icon: <Download size={15} />,
                 disabled: saving, action: () => void save(file.id) }] : []),
               ...(copy ? [{ label: "Copy", icon: <Copy size={15} />, action: () => {
                 void copyText(copy).catch(error => setRecallError(errorMessage(error)));
@@ -620,7 +657,8 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
         <textarea ref={textarea} id={menuId + "-message"} aria-label={assistant ? "AI prompt" : "Message"}
           aria-autocomplete="list" aria-controls={menu ? menuId : undefined}
           aria-activedescendant={menu && activeOption ? menuId + "-" + menuIndex : undefined}
-          rows={2} value={draft} onChange={event => {
+          rows={ios ? 1 : 2} placeholder={ios ? (assistant ? t("Write a prompt", "输入提示词") : t("Message", "输入消息")) : undefined}
+          value={draft} onChange={event => {
             const value = event.target.value;
             setDraft(previous => ({ ...previous, text: value, nonce: undefined }));
             setMenu(/^\s*@[\p{L}\p{N}_-]*\s*$/u.test(value));

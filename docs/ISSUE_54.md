@@ -20,3 +20,13 @@
 - iPhone · 对照开发者商店页面与实拍操作说明。保留「聊天 / 联系人 / 文件 / 我的」四个 Zibblu 入口。头像、名称和封面置于资料行，用返回键或系统边缘手势回到上一级。[微信 App Store](https://apps.apple.com/cn/app/id414478124) · [iPhone 更换头像步骤](https://www.lenovo.com.cn/wiki/article-320383.html)
 - iPad · 实测报道展示横向分栏，把会话列表和聊天分置左右。本轮以该结构适配宽窗口，窄分屏使用紧凑导航。公开截图未覆盖当前版本全部 iPad 交互。[微信 iPad 横向分栏实测](https://sspai.com/post/41374)
 - 原生入口 · iOS 照片选择器只返回明确选中的资产。软件键盘占用由 UIKit 提供，浮动键盘与底部停靠键盘分别处理。[Apple 照片选择器](https://developer.apple.com/documentation/PhotoKit/selecting-photos-and-videos-in-ios) · [UIKit 键盘布局](https://developer.apple.com/documentation/uikit/uikeyboardlayoutguide)
+
+## 原生证据与复验步骤
+
+- Windows · WebView2 原生应用接入隔离的环回服务和新 PostgreSQL 库。合成账号登录，打开测试群聊，右键复制消息和粘贴到输入框，确认文字进入草稿。点击头像，Windows 系统选择器选图，调整到 120% 并保存，资料页和左上头像就地更新。名称保存返回个人信息页，登录账号仍为原用户名。[粘贴](windows-feedback/issue54/windows-clipboard.jpg) · [缩放裁剪](windows-feedback/issue54/windows-avatar-crop.jpg) · [保存结果](windows-feedback/issue54/windows-avatar-saved.jpg)
+- Windows 相机 · 用户显式点击「扫一扫 → 打开相机」后仍走 WebView2 相机许可。系统图片选择与普通剪贴板已走原生入口。
+- iPhone · **BLOCKED，需真机。** 登录后在群聊、搜索、简介与 AI 授权中分别使用系统键盘和中文候选。观察顶栏、输入框和历史位置。横竖屏、调大系统字体、切后台后返回各复测一次。系统菜单粘贴文字和图片，选头像和封面后拖动并缩放，分别取消和保存，再用左缘返回逐层退出。首次打开相机时测试允许与拒绝，并验证仍能从照片选择 QR 图。
+- iPad · **BLOCKED，需真机或真实 iPadOS。** 横竖屏切换会话和联系人。把窗口缩到紧凑宽度，确认当前页面和编辑草稿保留。测试左侧搜索、右侧输入、触屏长按和鼠标右键。分别使用停靠、浮动与外接键盘，确认软键盘收起后列表、输入区和底部导航回到原位。
+- 联动 · 用另一账号加入/退出群聊观察人数。断开服务再重复打开已读资料，重启并通过原服务认证后复看头像和联系人。切账号/服务验证隔离，从另一客户端解除联系后验证资料收回。双机复验 M2 同意与直连路径，单次 AI 授权复验发送前的精确内容及目标服务。
+
+Owner 按真实交互决定验收状态。

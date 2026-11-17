@@ -7,6 +7,7 @@ import type { FormEvent } from "react";
 import { ai, aiProviders } from "./ai-api";
 import type { AiFile, AiPreview, AiProvider, AiReply, AiScope, Assistant } from "./ai-api";
 import { api, errorMessage } from "./api";
+import { actions } from "./locale";
 import type { Message, User } from "./api";
 import { bytes, Choice, Dialog, People, displayName } from "./common";
 import "./ai.css";
@@ -132,7 +133,7 @@ function AssistantEditor({ provider, assistant, saved }: {
         {busy === "test" ? "Testing…" : "Test connection"}
       </button>
       {assistant && <button className="button subtle" type="button" disabled={!!busy} onClick={() => void remove()}>Remove</button>}
-      <button className="button primary" type="submit" disabled={!!busy}>{busy === "save" ? "Saving…" : "Save assistant"}</button>
+      <button className="button primary" type="submit" disabled={!!busy}>{busy === "save" ? actions.saving : actions.save}</button>
     </div>
   </form>;
 }
@@ -225,8 +226,7 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
     change();
   }
 
-  return <Dialog className="ai-request" title={"Ask @" + assistant.name}
-    close={() => { if (!busy) close(); }}>
+  return <Dialog className="ai-request" title={"Ask @" + assistant.name} mobilePage closeDisabled={!!busy} close={close}>
     <div className="ai-request-model">
       <ProviderLogo provider={chosenAssistant.provider} />
       <div><strong>{provider}</strong><span>{chosenAssistant.model}</span></div>
@@ -325,7 +325,7 @@ export function ShareAiReply({ reply, members, close, published }: {
     finally { setPosting(false); }
   }
 
-  return <Dialog title="Visible to" close={() => { if (!posting) close(); }}>
+  return <Dialog title="Visible to" mobilePage closeDisabled={posting} close={close}>
     <p className="muted">Share this reply with the selected chat members. You will also be able to see it.</p>
     <fieldset className="dialog-contacts" disabled={posting || !!lockedReaders.current}>
       <legend>Chat members</legend>
