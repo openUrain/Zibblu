@@ -75,7 +75,7 @@ jobs:
           diff -qr "$app" "$bundle"
           executable=$(plutil -extract CFBundleExecutable raw -o - "$bundle/Info.plist")
           test -x "$bundle/$executable"
-          xcrun lipo -verify_arch arm64 "$bundle/$executable"
+          xcrun lipo "$bundle/$executable" -verify_arch arm64
           echo "Verified Payload/${app##*/} with its arm64 executable and all archived bundle contents."
       - name: Upload unsigned IPA
         if: github.event_name == 'pull_request' || inputs.distribution == 'unsigned-ipa'
