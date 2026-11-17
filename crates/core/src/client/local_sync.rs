@@ -32,6 +32,13 @@ impl Client {
              CREATE TABLE IF NOT EXISTS directory (
                 id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS cached_profiles (
+                user_id TEXT PRIMARY KEY, payload TEXT NOT NULL, expires_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS cached_profile_images (
+                user_id TEXT NOT NULL, version TEXT NOT NULL, data BLOB NOT NULL,
+                expires_at INTEGER NOT NULL, PRIMARY KEY (user_id, version)
+             );
              CREATE TABLE IF NOT EXISTS sync_checkpoint (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 device_id TEXT NOT NULL, cursor TEXT NOT NULL, pending_ack TEXT, reconcile_after INTEGER
@@ -191,13 +198,18 @@ impl Client {
                 }
             }
         }
-        sqlx::query(
+        let directory_changed = sqlx::query(
             "INSERT INTO directory (id, payload) VALUES (1,?)
-             ON CONFLICT (id) DO UPDATE SET payload = excluded.payload",
+             ON CONFLICT (id) DO UPDATE SET payload = excluded.payload
+             WHERE directory.payload <> excluded.payload",
         )
         .bind(serde_json::to_string(&page.directory)?)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected() > 0;
+        if directory_changed {
+            self.prune_profile_cache(&mut tx).await?;
+        }
         sqlx::query("UPDATE sync_checkpoint SET pending_ack = ? WHERE id = 1")
             .bind(serde_json::to_string(&ack)?)
             .execute(&mut *tx)

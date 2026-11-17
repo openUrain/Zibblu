@@ -1,12 +1,12 @@
 use crate::ai::MAX_FILE_BYTES;
 use anyhow::{Context, Result, ensure};
 use std::{
-    ffi::CString,
+    ffi::{CString, c_char, c_void},
     io::Read,
     os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
     path::{Path, PathBuf},
 };
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 use zibblu_core::assistant::{AiFile, AiProvider};
 use zibblu_core::keychain::{delete_secret, read_secret, store_secret};
 
@@ -14,6 +14,11 @@ unsafe extern "C" {
     fn zibblu_ios_install(network_changed: extern "C" fn(bool));
     fn zibblu_ios_share(path: *const std::ffi::c_char) -> bool;
     fn zibblu_ios_data_dir(buffer: *mut u8, capacity: usize) -> usize;
+    fn zibblu_ios_copy_text(text: *const c_char) -> bool;
+    fn zibblu_ios_pick_photo(
+        context: *mut c_void,
+        callback: extern "C" fn(*mut c_void, i32, *const u8, usize),
+    );
 }
 
 #[derive(Clone, Copy, Default)]
@@ -52,6 +57,30 @@ pub(crate) fn share_file(path: &Path) -> Result<()> {
         "Could not open the iOS share sheet"
     );
     Ok(())
+}
+
+pub(crate) fn copy_text(text: &str) -> Result<()> {
+    let text = CString::new(text).context("Cannot copy this text")?;
+    ensure!(unsafe { zibblu_ios_copy_text(text.as_ptr()) }, "Open Zibblu before copying");
+    Ok(())
+}
+
+pub(crate) async fn pick_photo() -> Result<Option<Vec<u8>>> {
+    type Reply = oneshot::Sender<Result<Option<Vec<u8>>>>;
+    extern "C" fn selected(context: *mut c_void, status: i32, bytes: *const u8, length: usize) {
+        let sender = unsafe { Box::from_raw(context.cast::<Reply>()) };
+        let result = match status {
+            0 => Ok(None),
+            1 if !bytes.is_null() && length <= zibblu_core::MAX_PASTED_IMAGE_BYTES => {
+                Ok(Some(unsafe { std::slice::from_raw_parts(bytes, length) }.to_vec()))
+            }
+            _ => Err(anyhow::anyhow!("Could not open the selected photo. Choose an image up to 16 MiB.")),
+        };
+        let _ = sender.send(result);
+    }
+    let (sender, receiver) = oneshot::channel();
+    unsafe { zibblu_ios_pick_photo(Box::into_raw(Box::new(sender)).cast(), selected) };
+    receiver.await.context("Photo picker was interrupted")?
 }
 
 pub(crate) fn data_directory() -> Result<PathBuf> {

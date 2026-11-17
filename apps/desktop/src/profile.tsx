@@ -1,139 +1,236 @@
-import { Camera, ImagePlus, MessageSquare, QrCode, UserPlus, UserRound } from "lucide-react";
-import { useContext, useEffect, useState } from "react";
+import { ChevronLeft, ChevronRight, QrCode } from "lucide-react";
+import { useContext, useEffect, useRef, useState } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { api, errorMessage } from "./api";
-import type { Profile, User } from "./api";
-import { MAX_IMAGE_BYTES } from "./attachment-media";
-import { Blank, Dialog, People, PersonAvatar, displayName } from "./common";
+import type { CachedProfile, Profile, Session, User } from "./api";
+import { People, PersonAvatar, displayName } from "./common";
+import { actions, t } from "./locale";
+import { QrContent } from "./qr";
+import { ProfileImageEditor } from "./profile-image";
 
-const imageTypes = "image/png,image/apng,image/jpeg,image/webp,image/gif,image/bmp,.apng";
-const imageHelp = "PNG, JPEG, WebP, GIF or BMP up to 16 MiB";
+type ImageField = "avatar" | "cover";
+type Page = ImageField | "display_name" | "bio" | "notes" | "greeting" | "qr";
 
-export function ProfileView({ user, relationVersion, close, refresh, saved, message, code }: {
-  user: User; relationVersion: string; close: () => void; refresh: () => Promise<void>;
-  saved: () => void; message: () => Promise<void>; code: () => void;
+const labels: Record<Page, string> = {
+  avatar: t("Avatar", "头像"), cover: t("Cover", "封面"), display_name: t("Name", "名称"),
+  bio: t("Bio", "简介"), notes: t("Contact notes", "备注与资料"), greeting: t("Contact request", "添加联系人"),
+  qr: t("My QR code", "我的二维码"),
+};
+
+function Row({ label, children, choose, disabled }: {
+  label: string; children?: ReactNode; choose: () => void; disabled?: boolean;
+}) {
+  return <button className="profile-row" disabled={disabled} onClick={choose}>
+    <span>{label}</span><span className="profile-value">{children}</span><ChevronRight size={17} aria-hidden />
+  </button>;
+}
+
+export function ProfileView({ session, user, relationVersion, reconnecting, close, refresh, edited, message }: {
+  session: Session; user: User; relationVersion: string; reconnecting: boolean;
+  close: () => void; refresh: () => Promise<void>; edited: (id: string, patch: Partial<Profile>) => void;
+  message: () => Promise<void>;
 }) {
   const { remarks } = useContext(People);
-  const [profile, setProfile] = useState<Profile>();
-  const [retry, setRetry] = useState(0);
+  const own = user.id === session.user.id;
+  const [snapshot, setSnapshot] = useState<{ data: CachedProfile; relation: string }>();
+  const [page, setPage] = useState<Page>();
+  const [photo, setPhoto] = useState<ArrayBuffer>();
+  const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState("");
-  const [asking, setAsking] = useState(false);
-  const [pendingImage, setPendingImage] = useState<{ kind: "avatar" | "cover"; file: File }>();
+  const [saveError, setSaveError] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const serial = useRef(0);
+  const backButton = useRef<HTMLButtonElement>(null);
+  const current = snapshot?.relation === relationVersion ? snapshot.data : undefined;
+  const profile = current?.profile;
+  const contact = profile?.relation === "contact";
 
   useEffect(() => {
-    let current = true;
-    setProfile(undefined);
-    setFailure("");
-    void api.profile(user.id).then(value => { if (current) setProfile(value); })
-      .catch(error => { if (current) setFailure(errorMessage(error)); });
-    return () => { current = false; };
-  }, [user.id, relationVersion, retry]);
+    const load = ++serial.current;
+    async function read() {
+      setLoadError("");
+      const cached = await api.cachedProfile(user.id).catch(() => null);
+      if (serial.current !== load) return;
+      if (cached) setSnapshot(previous => previous?.relation === relationVersion ? previous : { data: cached, relation: relationVersion });
+      try {
+        const data = await api.profile(user.id);
+        if (serial.current === load) setSnapshot({ data, relation: relationVersion });
+      } catch (error) {
+        if (serial.current !== load) return;
+        const status = typeof error === "object" && error && "status" in error ? error.status : undefined;
+        if (status === 401 || status === 403 || status === 404) setSnapshot(undefined);
+        setLoadError(errorMessage(error));
+      }
+    }
+    void read();
+    return () => { ++serial.current; };
+  }, [user.id, relationVersion, retry, reconnecting]);
 
-  async function save(action: () => Promise<void>, closeOnSuccess = false) {
+  useEffect(() => {
+    if (!current) return;
+    const timer = window.setTimeout(() => {
+      setSnapshot(undefined);
+      setRetry(value => value + 1);
+    }, Math.max(0, current.expires_at - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [current]);
+
+  useEffect(() => {
+    if (page === undefined) backButton.current?.focus({ preventScroll: true });
+  }, [page]);
+
+  function show(next: Page | undefined) {
+    setSaveError("");
+    setSaved(false);
+    setPhoto(undefined);
+    setPage(next);
+  }
+
+  function back() {
+    if (busy || picking) return;
+    if (page) show(undefined);
+    else close();
+  }
+
+  async function pick(field: ImageField) {
+    setPicking(true);
+    setSaveError("");
+    try {
+      const image = await api.pickProfileImage();
+      if (image.byteLength) {
+        setPhoto(image);
+        setPage(field);
+      }
+    } catch (error) {
+      setSaveError(errorMessage(error));
+    } finally {
+      setPicking(false);
+    }
+  }
+
+  async function save(action: () => Promise<Partial<Profile>>) {
     if (busy) return;
     setBusy(true);
-    setFailure("");
+    setSaveError("");
     try {
-      await action();
-      if (closeOnSuccess) saved();
-      else setProfile(await api.profile(user.id));
-      await refresh();
+      const patch = await action();
+      ++serial.current;
+      setSnapshot(previous => previous && { ...previous, data: {
+        ...previous.data, profile: { ...previous.data.profile, ...patch },
+      } });
+      edited(user.id, patch);
+      show(undefined);
+      setSaved(true);
+      void refresh();
+    } catch (error) {
+      setSaveError(errorMessage(error));
+    } finally {
+      setBusy(false);
     }
-    catch (error) { setFailure(errorMessage(error)); }
-    finally { setBusy(false); }
   }
 
-  function choose(kind: "avatar" | "cover", file?: File) {
-    if (!file) return;
-    if (file.size > MAX_IMAGE_BYTES) {
-      setPendingImage(undefined);
-      setFailure(`Choose a ${imageHelp}.`);
-      return;
-    }
-    setFailure("");
-    setPendingImage({ kind, file });
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const fields = new FormData(event.currentTarget);
+    const value = String(fields.get("value") ?? "").trim();
+    void save(async () => {
+      if (page === "display_name") {
+        await api.setDisplayName(value);
+        return { display_name: value || null };
+      }
+      if (page === "bio") {
+        await api.setBio(value);
+        return { bio: value };
+      }
+      if (page === "notes") {
+        const notes = { remark: value, contact_info: String(fields.get("details") ?? "").trim() };
+        await api.setContactNotes(user.id, notes);
+        return { notes };
+      }
+      await api.addContact(user.id, value);
+      return { relation: "outgoing" };
+    });
   }
 
-  const name = profile?.notes?.remark || displayName(user, remarks);
-  const own = profile?.relation === "own";
-  const contact = profile?.relation === "contact";
-  return <Dialog title={own ? "Your profile" : "Profile"} className="profile-dialog" close={close} closeDisabled={busy}>
-    {!profile && (failure ? <Blank icon={<UserRound size={24} />} title="Profile unavailable">
-      <p role="alert">{failure}</p><button className="button subtle" onClick={() => setRetry(value => value + 1)}>Retry</button>
-    </Blank> : <p className="loading muted" role="status">Loading profile…</p>)}
-    {profile && <>
-      <div className={"profile-banner" + (!own && !contact ? " profile-banner-basic" : "")}>
-        {profile.cover && <img src={api.profileImageUrl(user.id, profile.cover)} alt="" />}
-        {own && <label className="button profile-image-control" title={imageHelp}><ImagePlus size={16} /> Change cover
-          <input type="file" accept={imageTypes} disabled={busy} onChange={event => {
-            choose("cover", event.currentTarget.files?.[0]); event.currentTarget.value = "";
-          }} />
+  const name = profile?.notes?.remark || profile?.display_name || displayName(user, remarks);
+  const photoPage = page === "avatar" || page === "cover";
+  const editor = page && (own || (page === "notes" ? contact : profile?.relation === "stranger"));
+  const title = editor ? labels[page] : own ? t("Personal information", "个人信息") : t("Profile", "个人资料");
+  const saveLabel = busy ? actions.saving : saveError ? actions.retry : page === "greeting" ? t("Send", "发送") : actions.save;
+  const qrName = labels.qr;
+
+  return <section className="profile-page" aria-label={title} onKeyDown={event => {
+    if (event.key === "Escape") { event.stopPropagation(); back(); }
+  }}>
+    <header className="profile-header">
+      <button className="icon-button" type="button" ref={backButton} onClick={back} disabled={busy || picking} aria-label={actions.back}>
+        <ChevronLeft size={25} />
+      </button>
+      <h1>{title}</h1>
+    </header>
+    <div className="profile-content">
+      {editor && photoPage && photo && <ProfileImageEditor key={page} source={photo} kind={page}
+        disabled={busy} saveLabel={saveLabel} cancel={back} save={crop => {
+          void save(async () => ({ [page]: await api.setProfileImage(page, await crop()) }));
+        }} />}
+      {editor && page === "qr" && <QrContent code={{ kind: "contact", name: qrName, value: session.user.handle }} server={session.server} />}
+      {editor && !photoPage && page !== "qr" && <form className="profile-fields" key={page} onSubmit={submit}>
+        <label>{page === "notes" ? t("Remark", "备注名") : labels[page]}
+          {page === "bio" || page === "greeting"
+            ? <textarea name="value" maxLength={page === "bio" ? 300 : 200} rows={4} readOnly={busy} autoFocus
+              defaultValue={page === "bio" ? profile?.bio ?? "" : ""} />
+            : <input name="value" maxLength={64} readOnly={busy} autoFocus
+              defaultValue={page === "notes" ? profile?.notes?.remark ?? "" : profile?.display_name ?? ""} />}
+        </label>
+        {page === "notes" && <label>{t("Contact details", "联系资料")}
+          <textarea name="details" rows={3} maxLength={300} readOnly={busy} defaultValue={profile?.notes?.contact_info ?? ""} />
+          <small>{t("Only you can see these details.", "仅自己可见。")}</small>
         </label>}
-      </div>
-      <div className="profile-identity">
-        <div className="profile-avatar"><PersonAvatar user={profile.user} version={profile.avatar} large />
-          {own && <label className="icon-button profile-image-control" title={`Change avatar · ${imageHelp}`}><Camera size={16} />
-            <input type="file" aria-label="Change avatar" accept={imageTypes} disabled={busy} onChange={event => {
-              choose("avatar", event.currentTarget.files?.[0]); event.currentTarget.value = "";
-            }} />
-          </label>}
-        </div>
-        <div><h3>{name}</h3>{name !== profile.user.handle && <p className="muted">@{profile.user.handle}</p>}</div>
-        {own && <button className="button subtle" disabled={busy} onClick={code}><QrCode size={17} /> Your QR code</button>}
-        {contact && <button className="button subtle" disabled={busy} onClick={async () => {
-          setBusy(true);
-          setFailure("");
-          try { await message(); }
-          catch (error) { setFailure(errorMessage(error)); setBusy(false); }
-        }}><MessageSquare size={17} /> Message</button>}
-        {profile.relation === "stranger" && !asking && <button className="button primary" onClick={() => setAsking(true)}><UserPlus size={17} /> Add contact</button>}
-      </div>
-      {own && pendingImage && <div className="profile-image-approval">
-        <p role="status"><strong>{pendingImage.file.name}</strong></p>
-        <p className="muted">The image is resized to fit. Animations use the first frame.</p>
         <div className="dialog-actions">
-          <button className="button subtle" disabled={busy} onClick={() => { setPendingImage(undefined); setFailure(""); }}>Cancel</button>
-          <button className="button primary" disabled={busy} onClick={() => void save(async () => {
-            await api.setProfileImage(pendingImage.kind, await pendingImage.file.arrayBuffer());
-            setPendingImage(undefined);
-          })}>{busy ? "Saving…" : pendingImage.kind === "avatar" ? "Use as avatar" : "Use as cover"}</button>
+          <button type="button" className="button subtle" onClick={back} disabled={busy}>{actions.cancel}</button>
+          <button className="button primary" disabled={busy}>{saveLabel}</button>
         </div>
-      </div>}
-      {own && <form className="profile-fields" key={profile.bio} onSubmit={event => {
-        event.preventDefault();
-        const bio = String(new FormData(event.currentTarget).get("bio") ?? "");
-        void save(() => api.setBio(bio), true);
-      }}>
-        <label>Bio<textarea name="bio" rows={3} maxLength={300} defaultValue={profile.bio ?? ""} readOnly={busy} /></label>
-        <button className="button primary" disabled={busy}>Save bio</button>
       </form>}
-      {contact && <>
-        {profile.bio && <p className="profile-bio">{profile.bio}</p>}
-        {profile.notes && <form className="profile-fields" key={JSON.stringify(profile.notes)} onSubmit={event => {
-          event.preventDefault();
-          const fields = new FormData(event.currentTarget);
-          void save(() => api.setContactNotes(user.id, {
-            remark: String(fields.get("remark") ?? ""), contact_info: String(fields.get("contact_info") ?? ""),
-          }), true);
-        }}>
-          <label>Remark<input name="remark" defaultValue={profile.notes.remark} maxLength={64} readOnly={busy} /></label>
-          <label>Contact details <small>Only you can see these details</small>
-            <textarea name="contact_info" defaultValue={profile.notes.contact_info} maxLength={300} rows={2} readOnly={busy} />
-          </label>
-          <button className="button primary" disabled={busy}>Save contact details</button>
-        </form>}
+      {!editor && <>
+        {own ? <div className="profile-rows">
+          <Row label={labels.avatar} choose={() => void pick("avatar")} disabled={!profile || picking}>
+            <PersonAvatar user={user} version={profile?.avatar} large />
+          </Row>
+          <Row label={labels.display_name} choose={() => show("display_name")} disabled={!profile}>{name}</Row>
+          <div className="profile-row profile-static"><span>{t("Username", "账号")}</span><span className="profile-value">@{user.handle}</span></div>
+          <Row label={labels.cover} choose={() => void pick("cover")} disabled={!profile || picking}>
+            {profile?.cover && <img className="profile-cover-thumb" src={api.profileImageUrl(user.id, profile.cover)} alt="" />}
+          </Row>
+          <Row label={labels.bio} choose={() => show("bio")} disabled={!profile}>{profile?.bio}</Row>
+          <Row label={qrName} choose={() => show("qr")}><QrCode size={21} /></Row>
+        </div> : <>
+          {profile?.cover && <img className="profile-cover" src={api.profileImageUrl(user.id, profile.cover)} alt="" />}
+          <div className="profile-person"><PersonAvatar user={user} version={profile?.avatar} large />
+            <div><h2>{name}</h2><small className="muted">@{user.handle}</small></div>
+          </div>
+          {profile?.bio && <p className="profile-bio">{profile.bio}</p>}
+          {contact && <div className="profile-rows"><Row label={labels.notes} choose={() => show("notes")}>{profile.notes?.remark}</Row></div>}
+          {contact && <button className="button primary profile-direct" disabled={busy} onClick={async () => {
+            setBusy(true);
+            setSaveError("");
+            try { await message(); }
+            catch (error) { setSaveError(errorMessage(error)); setBusy(false); }
+          }}>{t("Message", "发消息")}</button>}
+          {profile?.relation === "stranger" && <button className="button primary profile-direct" onClick={() => show("greeting")}>
+            {t("Add contact", "添加联系人")}
+          </button>}
+          {profile?.relation === "incoming" && <p className="muted">{t("Respond to this request in Contacts.", "在联系人中处理此请求。")}</p>}
+          {profile?.relation === "outgoing" && <p className="muted" role="status">{t("Contact request sent.", "好友请求已发送。")}</p>}
+        </>}
+        {!profile && !loadError && <p role="status" className="muted">{t("Loading profile…", "正在读取资料…")}</p>}
+        {loadError && <div className="profile-status" role="status">
+          <span>{loadError}</span><button className="text-button" onClick={() => setRetry(value => value + 1)}>{actions.retry}</button>
+        </div>}
+        {saved && <p role="status" className="profile-status">{actions.saved}</p>}
       </>}
-      {asking && profile.relation === "stranger" && <form className="profile-fields" onSubmit={event => {
-        event.preventDefault();
-        const greeting = String(new FormData(event.currentTarget).get("greeting") ?? "");
-        void save(() => api.addContact(user.id, greeting));
-      }}>
-        <label>Greeting <small>Sent as a message after approval</small><textarea name="greeting" rows={3} maxLength={200} autoFocus /></label>
-        <button className="button primary" disabled={busy}>Send contact request</button>
-      </form>}
-      {profile.relation === "incoming" && <p className="muted">Respond to this request in Contacts.</p>}
-      {profile.relation === "outgoing" && <p className="muted" role="status">Contact request sent.</p>}
-      {failure && <p className="inline-error" role="alert">{failure}</p>}
-    </>}
-  </Dialog>;
+      {saveError && <p className="inline-error" role="alert">{saveError}</p>}
+    </div>
+  </section>;
 }

@@ -55,6 +55,10 @@
 .ios .settings-heading .icon-button { margin-inline-start: -10px; }
 .ios .phone-profile { min-height: 62px; border-bottom: 1px solid var(--line); }
 .ios .phone-profile strong { flex: 1; overflow-wrap: anywhere; }
+.ios .phone-profile > span:nth-child(2) { flex: 1; display: grid; gap: 3px; }
+.ios .profile-open :is(.phone-tabs, .topbar) { display: none; }
+.ios .profile-content { padding-bottom: max(16px, var(--phone-bottom)); }
+.ios .profile-content .button { min-height: 44px; }
 .ios .phone-me-actions { margin-block: 12px 20px; border-bottom: 1px solid var(--line); }
 .ios .phone-me-actions .drawer-action svg:last-child { margin-left: auto; color: var(--muted); }
 

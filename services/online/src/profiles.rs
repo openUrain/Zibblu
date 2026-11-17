@@ -14,6 +14,7 @@ use zibblu_core::{ContactNotes, Profile, ProfileBio, ProfileImage, ProfileRelati
 #[derive(FromRow)]
 struct ProfileRow {
     handle: String,
+    display_name: Option<String>,
     bio: Option<String>,
     avatar: Option<Uuid>,
     cover: Option<Uuid>,
@@ -28,7 +29,7 @@ pub(crate) async fn profile(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Profile>> {
     let row: ProfileRow = sqlx::query_as(
-        "SELECT a.handle, c.remark, c.contact_info, r.requester_id AS requester,
+        "SELECT a.handle, nullif(a.display_name, '') AS display_name, c.remark, c.contact_info, r.requester_id AS requester,
                 CASE WHEN a.id = $1 OR c.owner_id IS NOT NULL THEN a.bio END AS bio,
                 avatar.version AS avatar, cover.version AS cover
          FROM accounts a
@@ -38,7 +39,7 @@ pub(crate) async fn profile(
          LEFT JOIN profile_images avatar ON avatar.account_id = a.id AND avatar.kind = 'avatar'
          LEFT JOIN profile_images cover ON cover.account_id = a.id AND cover.kind = 'cover'
                                       AND (a.id = $1 OR c.owner_id IS NOT NULL)
-         WHERE a.id = $2",
+         WHERE a.id = $2 AND a.revoked_at IS NULL",
     )
     .bind(auth.user_id)
     .bind(id)
@@ -57,6 +58,7 @@ pub(crate) async fn profile(
         ProfileRelation::Stranger
     };
     Ok(Json(Profile {
+        display_name: row.display_name,
         user: User {
             id,
             handle: row.handle,
@@ -73,6 +75,23 @@ pub(crate) async fn profile(
                 contact_info,
             }),
     }))
+}
+
+pub(crate) async fn set_name(
+    State(app): State<App>,
+    auth: Auth,
+    Json(name): Json<String>,
+) -> Result<StatusCode> {
+    let name = name.trim();
+    if name.chars().count() > 64 || name.chars().any(char::is_control) {
+        return Err(Error::bad("Enter a display name of up to 64 characters."));
+    }
+    sqlx::query("UPDATE accounts SET display_name = $2 WHERE id = $1")
+        .bind(auth.user_id)
+        .bind(name)
+        .execute(&app.db)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn set_bio(
@@ -123,7 +142,8 @@ pub(crate) async fn image(
     Path((id, version)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
     let bytes: Vec<u8> = sqlx::query_scalar(
-        "SELECT data FROM profile_images WHERE account_id = $2 AND version = $3
+        "SELECT data FROM profile_images JOIN accounts ON accounts.id = account_id
+         WHERE account_id = $2 AND version = $3 AND accounts.revoked_at IS NULL
            AND (kind = 'avatar' OR account_id = $1 OR EXISTS (
                SELECT 1 FROM contacts WHERE owner_id = $1 AND contact_id = $2
            ))",

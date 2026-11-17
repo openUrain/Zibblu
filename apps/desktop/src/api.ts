@@ -15,13 +15,14 @@ export type MessageReceipt = { seq: number; status: "delivered" | "read" };
 export type PendingContact = { user: User; incoming: boolean; request_id: string | null; greeting: string };
 export type Directory = {
   contacts: User[]; conversations: Conversation[]; pending_contacts: PendingContact[];
-  remarks: Record<string, string>; avatars: Record<string, string>; read_receipts: boolean;
+  remarks: Record<string, string>; names: Record<string, string>; avatars: Record<string, string>; read_receipts: boolean;
 };
 export type ContactNotes = { remark: string; contact_info: string };
 export type Profile = {
   user: User; relation: "own" | "contact" | "incoming" | "outgoing" | "stranger";
-  avatar: string | null; cover: string | null; bio: string | null; notes: ContactNotes | null;
+  display_name: string | null; avatar: string | null; cover: string | null; bio: string | null; notes: ContactNotes | null;
 };
+export type CachedProfile = { profile: Profile; expires_at: number };
 export type Attachment = { id: string; name: string; kind: "file" | "folder"; size: number; sha256: string };
 export type Message = {
   seq: number; conversation_id: string; sender: User; created_at: number;
@@ -83,11 +84,17 @@ export const api = {
   addContact: (userId: string, greeting: string) => invoke<void>("add_contact", { userId, greeting }),
   respondContact: (userId: string, accept: boolean, requestId?: string | null) => invoke<void>("respond_contact", { userId, accept, requestId }),
   removeContact: (userId: string) => invoke<void>("remove_contact", { userId }),
-  profile: (id: string) => invoke<Profile>("profile", { id }),
+  profile: (id: string) => invoke<CachedProfile>("profile", { id }),
+  cachedProfile: (id: string) => invoke<CachedProfile | null>("cached_profile", { id }),
+  setDisplayName: (name: string) => invoke<void>("set_display_name", { name }),
   setBio: (bio: string) => invoke<void>("set_bio", { bio }),
   setContactNotes: (id: string, notes: ContactNotes) => invoke<void>("set_contact_notes", { id, notes }),
+  pickProfileImage: () => invoke<ArrayBuffer | number[]>("pick_profile_image")
+    .then(bytes => Array.isArray(bytes) ? new Uint8Array(bytes).buffer : bytes),
   setProfileImage: (kind: "avatar" | "cover", bytes: ArrayBuffer) =>
-    invoke<void>("set_profile_image", bytes, { headers: { "zibblu-profile-image": kind } }),
+    invoke<string>("set_profile_image", bytes, { headers: { "zibblu-profile-image": kind } }),
+  copyText: (text: string) => invoke<void>("copy_text", { text }),
+  pasteText: () => invoke<string | null>("paste_text"),
   profileImageUrl: (id: string, version: string) => convertFileSrc(`profile_${id}_${version}`, "zibblu-media"),
   readUpdate: (conversation: string, through?: number, sent?: number, viewed?: number) =>
     invoke<MessageReceipt | null>("read_update", { conversation, update: { through, sent: sent === undefined ? [] : [sent], viewed } }),

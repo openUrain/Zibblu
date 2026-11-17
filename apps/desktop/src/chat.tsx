@@ -11,7 +11,7 @@ import { api, errorMessage, fileExpired } from "./api";
 import type { Conversation, Draft, Message, MessageReceipt, Page, PrivateSummary, ShareSource, Transfer, User } from "./api";
 import { MAX_IMAGE_BYTES } from "./attachment-media";
 import { Avatar, Blank, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName, messageTimeLabel, startsTimeGroup, usePage } from "./common";
-import { useMenu } from "./context-menu";
+import { copyText, useMenu } from "./context-menu";
 import { FilesView, TransferList, useAttachmentSave } from "./files";
 import { ChatAttachment, MediaHistory, MediaViewer } from "./chat-media";
 import { privatePhaseLabel, privateTitle } from "./private-chat";
@@ -352,7 +352,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
               ...(file && !expiredFile && (!download || download.status === "complete") ? [{ label: "Save attachment", icon: <Download size={15} />,
                 disabled: saving, action: () => void save(file.id) }] : []),
               ...(copy ? [{ label: "Copy", icon: <Copy size={15} />, action: () => {
-                void navigator.clipboard.writeText(copy).catch(error => setRecallError(errorMessage(error)));
+                void copyText(copy).catch(error => setRecallError(errorMessage(error)));
               } }] : []),
               ...(message && message.seq > 0 && !message.recalled && !message.expired && !expiredFile ? [{ label: "Quote", icon: <Reply size={15} />, action: () => {
                 setDraft(previous => ({ ...previous, quote: message, nonce: undefined }));

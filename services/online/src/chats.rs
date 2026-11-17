@@ -25,7 +25,7 @@ struct ChatRow {
 pub(crate) async fn directory(db: &mut PgConnection, account: Uuid) -> Result<Directory> {
     let contacts = sqlx::query_as::<_, (Uuid, String, String)>(
         "SELECT a.id, a.handle, c.remark FROM contacts c JOIN accounts a ON a.id = c.contact_id
-         WHERE c.owner_id = $1 ORDER BY a.handle",
+         WHERE c.owner_id = $1 AND a.revoked_at IS NULL ORDER BY a.handle",
     )
     .bind(account)
     .fetch_all(&mut *db)
@@ -35,7 +35,7 @@ pub(crate) async fn directory(db: &mut PgConnection, account: Uuid) -> Result<Di
                 CASE WHEN r.greeting_expires_at > statement_timestamp() THEN r.greeting ELSE '' END
          FROM contact_requests r
          JOIN accounts a ON a.id = CASE WHEN r.recipient_id = $1 THEN r.requester_id ELSE r.recipient_id END
-         WHERE r.requester_id = $1 OR r.recipient_id = $1 ORDER BY a.handle",
+         WHERE (r.requester_id = $1 OR r.recipient_id = $1) AND a.revoked_at IS NULL ORDER BY a.handle",
     )
     .bind(account)
     .fetch_all(&mut *db)
@@ -67,7 +67,14 @@ pub(crate) async fn directory(db: &mut PgConnection, account: Uuid) -> Result<Di
     let avatars = sqlx::query_as::<_, (Uuid, Uuid)>(
         "SELECT account_id, version FROM profile_images WHERE kind = 'avatar' AND account_id = ANY($1)",
     ).bind(&people).fetch_all(&mut *db).await?;
+    let names = sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT id, display_name FROM accounts WHERE id = ANY($1) AND display_name <> ''",
+    )
+    .bind(&people)
+    .fetch_all(&mut *db)
+    .await?;
     Ok(Directory {
+        names: names.into_iter().collect(),
         contacts: contacts
             .iter()
             .map(|(id, handle, _)| User {

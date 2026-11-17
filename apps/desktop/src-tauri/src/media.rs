@@ -2,8 +2,12 @@ use crate::commands::{Desktop, Result as CommandResult};
 use crate::images;
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
+#[cfg(not(target_os = "ios"))]
+use std::io::Read;
+#[cfg(not(target_os = "ios"))]
+use tauri_plugin_dialog::DialogExt;
 use tauri::{
-    AppHandle, Manager, State, UriSchemeContext, UriSchemeResponder, Wry,
+    AppHandle, Manager, State, UriSchemeContext, UriSchemeResponder, WebviewWindow, Wry,
     http::{Method, Request, Response, StatusCode, header, response::Builder},
     ipc::InvokeBody,
 };
@@ -39,10 +43,46 @@ async fn process_upload<T: Send + 'static>(
 }
 
 #[tauri::command]
+pub(crate) async fn pick_profile_image(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+) -> CommandResult<tauri::ipc::Response> {
+    if window.label() != "main" {
+        return Err(anyhow::anyhow!("Open the profile in the main window").into());
+    }
+    let client = state.client().await?;
+    #[cfg(target_os = "ios")]
+    let selected = crate::ios::pick_photo().await?;
+    #[cfg(not(target_os = "ios"))]
+    let selected = tauri::async_runtime::spawn_blocking(move || -> Result<Option<Vec<u8>>> {
+        let picker = window.dialog().file()
+            .set_title("Choose a profile image")
+            .add_filter("Images", &["png", "apng", "jpg", "jpeg", "webp", "gif", "bmp"]);
+        #[cfg(desktop)]
+        let picker = picker.set_parent(&window);
+        let Some(path) = picker.blocking_pick_file() else { return Ok(None) };
+        let file = std::fs::File::open(path.into_path()?).context("Could not open the selected image")?;
+        let metadata = file.metadata()?;
+        ensure!(metadata.is_file() && metadata.len() <= MAX_PASTED_IMAGE_BYTES as u64,
+            "Choose an image up to 16 MiB");
+        let mut bytes = Vec::new();
+        file.take(MAX_PASTED_IMAGE_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+        Ok(Some(bytes))
+    }).await.context("Image picker was interrupted")??;
+    let Some(bytes) = selected else { return Ok(tauri::ipc::Response::new(Vec::<u8>::new())) };
+    let body = InvokeBody::Raw(bytes);
+    let png = process_upload(&body, |bytes| images::profile_png(&bytes)).await?;
+    if !state.is_current(&client).await {
+        return Err(anyhow::anyhow!("The session has ended").into());
+    }
+    Ok(tauri::ipc::Response::new(png))
+}
+
+#[tauri::command]
 pub(crate) async fn set_profile_image(
     state: State<'_, Desktop>,
     request: tauri::ipc::Request<'_>,
-) -> CommandResult<()> {
+) -> CommandResult<Uuid> {
     let kind = match request
         .headers()
         .get("zibblu-profile-image")
@@ -63,11 +103,11 @@ pub(crate) async fn set_profile_image(
         Ok((png, thumbnail))
     })
     .await?;
-    client.set_profile_image(kind, png).await?;
+    let version = client.set_profile_image(kind, png).await?;
     if let Some(thumbnail) = thumbnail {
         state.remember_avatar(&client, thumbnail).await;
     }
-    Ok(())
+    Ok(version)
 }
 
 #[tauri::command]
@@ -150,6 +190,7 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Re
             .profile_image(Uuid::parse_str(id)?, Uuid::parse_str(version)?)
             .await?;
         images::check_stored_profile(&bytes)?;
+        ensure!(app.state::<Desktop>().is_current(&client).await, "The session has ended");
         return Ok(preview_headers("image/png")
             .header(header::CONTENT_LENGTH, bytes.len())
             .body(if *request.method() == Method::HEAD {
