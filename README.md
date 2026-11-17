@@ -2,24 +2,24 @@
 
 **Chat freely. Share privately.**
 
-[![Windows v0.1.5](https://img.shields.io/badge/Windows-v0.1.5-5b37a5)](https://github.com/openUrain/Zibblu/releases/tag/v0.1.5)
-[![iOS test build](https://img.shields.io/badge/iOS-v0.1.5%20preview-6941b9)](https://github.com/openUrain/Zibblu/actions/workflows/ios.yml)
+[![Windows v0.1.5](https://img.shields.io/badge/Windows-v0.1.5-5b37a5)](https://download.openurain.com/zibblu/windows/v0.1.5/Zibblu_0.1.5_x64_Client_Setup.exe)
+[![iOS test build](https://img.shields.io/badge/iOS-v0.1.5%20preview-6941b9)](https://download.openurain.com/zibblu/ios/v0.1.5/Zibblu-iOS-arm64-unsigned.ipa)
 [![Enterprise Self-Hosting](https://img.shields.io/badge/Enterprise-Self--Hosting-5b37a5)](#enterprise-self-hosting)
 [![Private LAN Chat](https://img.shields.io/badge/Private-LAN%20Chat-463076)](#private-lan-chat)
 [![Zibblu CI](https://github.com/openUrain/Zibblu/actions/workflows/ci.yml/badge.svg)](https://github.com/openUrain/Zibblu/actions/workflows/ci.yml)
 
 Zibblu is a messenger for **Windows** with an **iPhone testing preview**, **enterprise self-hosting** and a separate **private LAN chat** mode. Keep received chat history on your device, share files that can resume after an interruption, and choose exactly what an AI assistant can read.
 
-[Windows installer · v0.1.5](https://github.com/openUrain/Zibblu/releases/download/v0.1.5/Zibblu_0.1.5_x64_Client_Setup.exe) · [iPhone unsigned test IPA · GitHub Actions](https://github.com/openUrain/Zibblu/actions/workflows/ios.yml) · [Product website](https://zibblu.openurain.com/) · [Self-hosting guide](docs/ONLINE_DEPLOYMENT.md#enterprise-self-hosting)
+[Windows installer · v0.1.5 (R2)](https://download.openurain.com/zibblu/windows/v0.1.5/Zibblu_0.1.5_x64_Client_Setup.exe) · [iPhone unsigned test IPA · v0.1.5 (R2)](https://download.openurain.com/zibblu/ios/v0.1.5/Zibblu-iOS-arm64-unsigned.ipa) · [Product website](https://zibblu.openurain.com/) · [Self-hosting guide](docs/ONLINE_DEPLOYMENT.md#enterprise-self-hosting)
 
 ## Downloads by platform
 
 | Platform | Status and build | How to get it |
 | --- | --- | --- |
-| **Windows 10 / 11 · x64** | **v0.1.5 stable installer** · `Zibblu_0.1.5_x64_Client_Setup.exe` | [Download EXE](https://github.com/openUrain/Zibblu/releases/download/v0.1.5/Zibblu_0.1.5_x64_Client_Setup.exe) · [Release checksums](https://github.com/openUrain/Zibblu/releases/tag/v0.1.5) |
-| **iPhone · iOS 16.4+** | **v0.1.5 testing preview** · `Zibblu-iOS-arm64-unsigned.ipa` | [GitHub Actions artifacts](https://github.com/openUrain/Zibblu/actions/workflows/ios.yml) · [Free personal installation instructions](#test-on-your-iphone-from-windows-11) |
+| **Windows 10 / 11 · x64** | **v0.1.5 installer** · `Zibblu_0.1.5_x64_Client_Setup.exe` | [Download EXE from R2](https://download.openurain.com/zibblu/windows/v0.1.5/Zibblu_0.1.5_x64_Client_Setup.exe) · [R2 SHA-256](https://download.openurain.com/zibblu/windows/v0.1.5/SHA256SUMS.txt) · [GitHub Release (repository access required)](https://github.com/openUrain/Zibblu/releases/tag/v0.1.5) |
+| **iPhone · iOS 16.4+** | **v0.1.5 unsigned testing preview** · `Zibblu-iOS-arm64-unsigned.ipa` | [Download IPA from R2](https://download.openurain.com/zibblu/ios/v0.1.5/Zibblu-iOS-arm64-unsigned.ipa) · [Free personal installation guide](#test-on-your-iphone-from-windows-11) · [GitHub Actions (repository access required)](https://github.com/openUrain/Zibblu/actions/workflows/ios.yml) |
 
-**Important:** The iOS build is an **unsigned development artifact**, not an App Store or TestFlight release. Download it from a successful iOS workflow run (repository access required), then sign and install it yourself, for example using Sideloadly and a free Apple Account. Do not expect the IPA to install by tapping the file on an iPhone. Public iOS distribution and physical-device testing are not yet complete.
+**Important:** The iOS build is an **unsigned development artifact**, not an App Store or TestFlight release. Download the unsigned IPA from openUrain R2, then sign and install it yourself, for example using Sideloadly and a free Apple Account. The same build process can be inspected in GitHub Actions by people with repository access. Do not expect the IPA to install by tapping the file on an iPhone. Public iOS distribution and physical-device testing are not yet complete.
 
 ![Zibblu Windows client showing messages and file cards in a test conversation](docs/windows-feedback/issue35/chat-files.png)
 
@@ -64,7 +64,7 @@ flowchart LR
 
 ## Install Zibblu on Windows
 
-1. On Windows 10 or 11 x64, run the installer from the [v0.1.5 release](https://github.com/openUrain/Zibblu/releases/tag/v0.1.5). Verify the installer against the published SHA-256 checksum. The installer is unsigned and can install Microsoft WebView2 if needed.
+1. On Windows 10 or 11 x64, download the [v0.1.5 installer from openUrain R2](https://download.openurain.com/zibblu/windows/v0.1.5/Zibblu_0.1.5_x64_Client_Setup.exe) (or use the [GitHub Release](https://github.com/openUrain/Zibblu/releases/tag/v0.1.5) if you have repository access) and run it. Verify the installer against the published SHA-256 checksum. The installer is unsigned and can install Microsoft WebView2 if needed.
 2. Start Zibblu. A fresh profile defaults to **Zibblu Online**. To use your organization’s compatible v2 service, select **Advanced** and enter its HTTPS origin without a path. Local development also supports `http://127.0.0.1:7841`.
 3. Create an account or sign in on that server. Find a friend by username in **Contacts** and send a request. Once accepted, start a chat and share files.
 
@@ -119,7 +119,7 @@ cargo test --locked -p zibblu-online --test m1 -- --nocapture
 
 You can install the iPhone build on a personal device running iOS 16.4 or later with Windows 11, [Sideloadly](https://sideloadly.io/), and a free Apple Account. GitHub Actions builds the app on macOS, so you do not need your own Mac or a paid Apple Developer Program membership.
 
-1. Sign in to GitHub with repository read access. Open a successful [**Zibblu iOS** Actions run](https://github.com/openUrain/Zibblu/actions/workflows/ios.yml) for the commit you want to test. In **Artifacts**, download `Zibblu-iOS-arm64-unsigned` and extract the outer ZIP to get `Zibblu-iOS-arm64-unsigned.ipa`. To start a new run once the workflow is on `main`, users with write access can choose **Run workflow** and select `unsigned-ipa`.
+1. [Download the v0.1.5 unsigned iPhone IPA from openUrain R2](https://download.openurain.com/zibblu/ios/v0.1.5/Zibblu-iOS-arm64-unsigned.ipa) to your Windows PC. Repository collaborators can alternatively open a successful [**Zibblu iOS** Actions run](https://github.com/openUrain/Zibblu/actions/workflows/ios.yml) and download its `Zibblu-iOS-arm64-unsigned` artifact (extract the outer ZIP to obtain the IPA). To build another test version, users with write access can select **Run workflow → unsigned-ipa**.
 2. On Windows, install Sideloadly and the desktop (web) versions of iTunes and iCloud linked from its site. Connect the unlocked iPhone by USB and confirm **Trust This Computer** on the phone.
 3. In Sideloadly, select the iPhone, add the `.ipa`, enter your Apple Account, and click **Start** to sign and install. Complete any Apple sign-in prompts in Sideloadly. GitHub Actions does not use your Apple credentials for this build.
 4. On the iPhone, open **Settings → Privacy & Security → Developer Mode**, turn it on, restart, and confirm after unlocking. If iOS reports an untrusted developer, open **Settings → General → VPN & Device Management** and trust the developer profile for your account. Then open Zibblu.
