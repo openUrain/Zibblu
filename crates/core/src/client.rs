@@ -454,16 +454,24 @@ impl Client {
 
     pub async fn profile_image(&self, id: Uuid, version: Uuid) -> Result<Vec<u8>> {
         self.ensure_open()?;
-        if let Some(bytes) = self.cached_profile_image(id, version).await {
-            return Ok(bytes);
-        }
-        let response = self
+        let response = match self
             .api
             .send(
                 self.api
                     .request(Method::GET, &format!("/v1/profiles/{id}/images/{version}")),
             )
-            .await?;
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                if matches!(&error, OnlineError::Rejected { status, .. }
+                    if matches!(*status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND))
+                {
+                    self.forget_profile_image(id, version).await;
+                }
+                return Err(error.into());
+            }
+        };
         ensure!(
             response
                 .headers()

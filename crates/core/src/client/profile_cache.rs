@@ -90,6 +90,14 @@ impl Client {
         .ok()?
     }
 
+    pub(super) async fn forget_profile_image(&self, id: Uuid, version: Uuid) {
+        let _ = sqlx::query("DELETE FROM cached_profile_images WHERE user_id = ? AND version = ?")
+            .bind(id.to_string())
+            .bind(version.to_string())
+            .execute(&self.db)
+            .await;
+    }
+
     pub(super) async fn remember_profile_image(&self, id: Uuid, version: Uuid, bytes: &[u8]) {
         let now = unix_millis();
         let Ok(mut tx) = self.db.begin().await else { return };
