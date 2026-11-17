@@ -186,9 +186,12 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Re
         .strip_prefix("profile_")
         .and_then(|path| path.split_once('_'))
     {
-        let bytes = client
-            .profile_image(Uuid::parse_str(id)?, Uuid::parse_str(version)?)
-            .await?;
+        let id = Uuid::parse_str(id)?;
+        let version = Uuid::parse_str(version)?;
+        let bytes = match client.cached_profile_image(id, version).await {
+            Some(bytes) => bytes,
+            None => client.profile_image(id, version).await?,
+        };
         images::check_stored_profile(&bytes)?;
         ensure!(app.state::<Desktop>().is_current(&client).await, "The session has ended");
         return Ok(preview_headers("image/png")
