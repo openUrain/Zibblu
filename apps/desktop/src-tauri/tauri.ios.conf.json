@@ -1,0 +1,11 @@
+{
+  "identifier": "com.zibblu.ios",
+  "version": "0.1.5",
+  "bundle": {
+    "targets": "all",
+    "iOS": {
+      "bundleVersion": "1",
+      "minimumSystemVersion": "16.4"
+    }
+  }
+}

@@ -31,6 +31,8 @@ pub(crate) struct Desktop {
     pub(crate) private: Mutex<Option<Arc<PrivateLobby>>>,
     pub(crate) discovery: StdMutex<DiscoveryStatus>,
     pub(crate) dismissed_rooms: DismissedRooms,
+    #[cfg(target_os = "ios")]
+    pub(crate) private_generation: std::sync::atomic::AtomicU64,
     private_worker: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub drop: StdMutex<Option<(Uuid, PathBuf)>>,
 }
@@ -46,6 +48,8 @@ impl Desktop {
             private: Mutex::new(None),
             discovery: StdMutex::new(DiscoveryStatus::Starting),
             dismissed_rooms: DismissedRooms::default(),
+            #[cfg(target_os = "ios")]
+            private_generation: std::sync::atomic::AtomicU64::new(0),
             private_worker: Mutex::new(None),
             drop: StdMutex::new(None),
         }
@@ -91,13 +95,23 @@ impl Desktop {
         *self.discovery.lock().expect("discovery status") = DiscoveryStatus::Starting;
     }
 
+    pub(crate) fn private_available(&self) -> bool {
+        #[cfg(target_os = "ios")]
+        return crate::ios::allows_private(self.private_generation.load(std::sync::atomic::Ordering::Acquire));
+        #[cfg(not(target_os = "ios"))]
+        true
+    }
+
     async fn lobby(&self) -> Result<Arc<PrivateLobby>> {
-        Ok(self
-            .private
-            .lock()
-            .await
-            .clone()
-            .context("Private chat is unavailable. Check the local network and sign-in.")?)
+        let private = self.private.lock().await;
+        let lobby = self
+            .private_available()
+            .then(|| private.clone())
+            .flatten()
+            .context("Private chat is unavailable. Check the local network and sign-in.")?;
+        #[cfg(target_os = "ios")]
+        ensure!(lobby.lan_ready(), "Private chat is unavailable. Allow Local Network access for Zibblu and check Wi-Fi.");
+        Ok(lobby)
     }
 
     pub(crate) fn private_quiet(&self) -> bool {
@@ -397,7 +411,7 @@ pub(crate) async fn login(
     let address_saved = state
         .update_preferences(|value| value.server = client.server().into())
         .is_ok();
-    let notice = if cfg!(windows) {
+    let notice = if cfg!(any(windows, target_os = "ios")) {
         let avatar = tokio::time::timeout(Duration::from_secs(2), async {
             let profile = client.profile(client.user.id).await.ok()?;
             if profile.user.id != client.user.id
@@ -729,6 +743,9 @@ pub(crate) async fn private_start(
 
 #[tauri::command]
 pub(crate) async fn private_nearby(state: State<'_, Desktop>) -> Result<NearbyDevices> {
+    if !state.private_available() {
+        return Ok(NearbyDevices { status: DiscoveryStatus::NetworkUnavailable, devices: Vec::new() });
+    }
     let lobby = state.private.lock().await.clone();
     Ok(match lobby {
         Some(lobby) => lobby.nearby_devices().await,
@@ -762,6 +779,9 @@ pub(crate) async fn private_list(
     app: AppHandle,
     window: WebviewWindow,
 ) -> Result<PrivateList> {
+    if !state.private_available() {
+        return Ok(PrivateList { rooms: Vec::new(), prompt: None });
+    }
     let rooms = state
         .private
         .lock()
@@ -883,14 +903,18 @@ pub(crate) async fn share(
             offer.take().map(|(_, path)| path)
         }
         source => tauri::async_runtime::spawn_blocking(move || {
-            let dialog = window.dialog().file().set_parent(&window);
-            match source {
+            let dialog = window.dialog().file();
+            #[cfg(desktop)]
+            let dialog = dialog.set_parent(&window);
+            let chosen = match source {
                 ShareSource::File => dialog.set_title("Share a file").blocking_pick_file(),
+                #[cfg(desktop)]
                 ShareSource::Folder => dialog.set_title("Share a folder").blocking_pick_folder(),
+                #[cfg(mobile)]
+                ShareSource::Folder => anyhow::bail!("Choose a file or ZIP archive on iOS."),
                 ShareSource::Dropped { .. } => unreachable!(),
-            }
-            .map(|path| path.into_path())
-            .transpose()
+            };
+            Ok::<_, anyhow::Error>(chosen.map(|path| path.into_path()).transpose()?)
         })
         .await
         .context("File picker was interrupted")?
@@ -914,6 +938,30 @@ pub(crate) async fn save_attachment(
         .attachment
         .filter(|file| file.is_valid())
         .context("Invalid attachment")?;
+    #[cfg(target_os = "ios")]
+    {
+        let _ = window;
+        let directory = client.profile_dir().join("downloads").join(id.to_string());
+        tokio::fs::create_dir_all(&directory).await.context("Could not prepare the app's download folder")?;
+        let path = directory.join(&attachment.name);
+        if path.is_file() {
+            tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<()> {
+                use sha2::{Digest, Sha256};
+                use std::io::Read;
+                let file = std::fs::File::open(&path)?;
+                ensure!(file.metadata()?.is_file(), "The saved attachment is unavailable.");
+                let mut hash = Sha256::new();
+                let size = std::io::copy(&mut file.take(attachment.size + 1), &mut hash)?;
+                ensure!(size == attachment.size && format!("{:x}", hash.finalize()) == attachment.sha256,
+                    "The saved file no longer matches this attachment.");
+                crate::ios::share_file(&path)
+            }).await.context("File sharing was interrupted")??;
+            return Ok(None);
+        }
+        Ok(Some(client.queue_download(id, path).await?))
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
     let path = tauri::async_runtime::spawn_blocking(move || {
         window
             .dialog()
@@ -931,6 +979,7 @@ pub(crate) async fn save_attachment(
     match path {
         Some(path) => Ok(Some(client.queue_download(id, path).await?)),
         None => Ok(None),
+    }
     }
 }
 

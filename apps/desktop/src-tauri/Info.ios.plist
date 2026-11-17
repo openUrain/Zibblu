@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Find other Zibblu devices on your local network and connect directly when both people accept a private chat.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_zibblu-private._udp</string>
+    </array>
+    <key>NSCameraUsageDescription</key>
+    <string>Scan a Zibblu contact, group or private chat QR code when you open the camera.</string>
+    <key>UIStatusBarStyle</key>
+    <string>UIStatusBarStyleDarkContent</string>
+    <key>UIViewControllerBasedStatusBarAppearance</key>
+    <false/>
+</dict>
+</plist>

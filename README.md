@@ -105,6 +105,22 @@ $env:ZIBBLU_TEST_DATABASE_URL = 'postgres://zibblu:<password>@127.0.0.1:5432/zib
 cargo test --locked -p zibblu-online --test m1 -- --nocapture
 ```
 
+### Build for iPhone and TestFlight
+
+The iPhone target uses the v0.1.5 client interface and supports iOS 16.4 or later. From a Mac with Xcode 26 or later, Node 22, Rust, and XcodeGen installed:
+
+```bash
+cd apps/desktop
+npm ci
+rustup target add aarch64-apple-ios
+bash src-tauri/ios/prepare.sh --ci --skip-targets-install
+npm run tauri -- ios build --ci --target aarch64 --no-sign --archive-only -- --locked
+```
+
+For TestFlight, enroll an [Apple Developer Program team](https://developer.apple.com/programs/enroll/), register the explicit Bundle ID `com.zibblu.ios`, and create the matching iOS app in App Store Connect. Save the Apple Developer Team ID as the Actions variable `APPLE_DEVELOPMENT_TEAM`. Save the App Store Connect team API key's issuer ID, key ID, and full `.p8` contents as Actions secrets `APPLE_API_ISSUER`, `APPLE_API_KEY`, and `APPLE_API_KEY_P8`. Run **Zibblu iOS** from the Actions tab after the workflow is on `main`. After Apple finishes processing, complete any requested export-compliance information, assign the build to an [internal testing group](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers), then install it in TestFlight on the iPhone.
+
+Use a second signed-in Zibblu device and two accounts for device acceptance. Verify offline delivery after reconnecting, a resumed file download with a matching SHA-256 and **Share → Save to Files**, and one AI request with an explicitly chosen scope. On the same Wi-Fi, open **Nearby devices**, send a private invite, accept it on the second device, then exchange text. Repeat with Local Network denied, Wi-Fi disabled, and the iPhone sent to the background. The device should close or block the private session and show no transcript after reopening.
+
 ## Try a private LAN chat
 
 Use the same Zibblu HTTPS server on two Windows devices signed in to different test accounts. On a trusted home or office subnet, allow Zibblu through Windows Defender Firewall for the Private profile. Discovery needs mDNS (UDP 5353) or configured site DNS-SD, and private chat needs direct UDP. Open **Nearby devices** on both devices before adding contacts. Each device should appear with its identity unverified. Create a shared conversation and select the matching account to invite. Check that both devices appear again after switching between Wi-Fi and Ethernet. Move one device outside the allowed LAN and check that a new private connection fails.

@@ -91,6 +91,8 @@ pub struct NearbyDevice {
 pub enum DiscoveryStatus {
     Starting,
     NetworkUnavailable,
+    #[cfg(target_os = "ios")]
+    PermissionDenied,
     DiscoveryFailed,
     Ready,
 }
@@ -420,6 +422,11 @@ impl PrivateLobby {
         Scope::current().is_ok_and(|scope| self.engine.lan.scope == scope)
     }
 
+    #[cfg(target_os = "ios")]
+    pub fn lan_ready(&self) -> bool {
+        self.network_matches() && matches!(self.engine.lan.discovery_status(), DiscoveryStatus::Ready)
+    }
+
     pub fn renew(&self, key: DeviceKey, credential: LanCredential) -> Result<()> {
         let identity = Identity::new(self.engine.own.id, key, credential)?;
         self.engine.lan.set_identity(&identity);
@@ -445,11 +452,11 @@ impl PrivateLobby {
             status,
             devices: Vec::new(),
         };
-        let records = if lan.discovery_available() {
-            lan.nearby(None).await
-        } else {
-            return unavailable(DiscoveryStatus::DiscoveryFailed);
-        };
+        let status = lan.discovery_status();
+        if !matches!(status, DiscoveryStatus::Ready) {
+            return unavailable(status);
+        }
+        let records = lan.nearby(None).await;
         match Scope::current() {
             Ok(scope) if scope == lan.scope => {}
             Ok(_) => return unavailable(DiscoveryStatus::Starting),

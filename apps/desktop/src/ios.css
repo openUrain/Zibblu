@@ -1,0 +1,88 @@
+.ios {
+  --phone-top: env(safe-area-inset-top);
+  --phone-bottom: env(safe-area-inset-bottom);
+}
+.ios-keyboard { --phone-bottom: 0px; }
+
+.ios .shell {
+  display: flex;
+  flex-direction: column;
+  height: var(--ios-height, 100dvh);
+  padding: var(--phone-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+.ios .shell-main { flex: 1; }
+.ios .rail, .ios .conversation-open .topbar { display: none; }
+.ios .chat-layout { grid-template-columns: minmax(0, 1fr); }
+.ios .chat-layout:not(.mobile-chat-open) > :is(.chat-view, .chat-blank),
+.ios .chat-layout.mobile-chat-open > .chat-list { display: none; }
+.ios .chat-list { border: 0; }
+.ios .chat-header .mobile-back { display: inline-flex; }
+.ios .topbar { min-height: 54px; }
+.ios .app-name { font-size: 19px; app-region: no-drag; }
+.ios .chat-view { padding-bottom: var(--phone-bottom); }
+.ios .chat-list-head { padding: 15px 16px 10px; }
+.ios .chat-list h1 { font-size: 27px; }
+.ios .chat-list > .search { margin-inline: 16px; }
+.ios .message-row :is(.bubble, .media-tile, .file-main),
+.ios .private-chat textarea { -webkit-touch-callout: none; }
+.ios .message-row .bubble, .ios .private-chat .messages {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.phone-tabs {
+  order: 1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 4px 8px max(4px, var(--phone-bottom));
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+.phone-tabs button {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 3px;
+  min-height: 48px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+}
+.phone-tabs [aria-current="page"] { color: var(--primary); font-weight: 650; }
+.ios .conversation-open .phone-tabs, .ios-keyboard .phone-tabs { display: none; }
+.ios .settings-heading { display: flex; align-items: center; gap: 6px; }
+.ios .settings-heading .icon-button { margin-inline-start: -10px; }
+.ios .phone-profile { min-height: 62px; border-bottom: 1px solid var(--line); }
+.ios .phone-profile strong { flex: 1; overflow-wrap: anywhere; }
+.ios .phone-me-actions { margin-block: 12px 20px; border-bottom: 1px solid var(--line); }
+.ios .phone-me-actions .drawer-action svg:last-child { margin-left: auto; color: var(--muted); }
+
+.ios :is(input:not([type="checkbox"], [type="radio"], [type="range"]), select, textarea) { font-size: 16px; }
+.ios textarea { resize: none; }
+.ios :is(.topbar, .chat-header, .chat-list-head, .composer-bar, .dialog-head) :is(.icon-button, .square-primary),
+.ios :is(.dialog-actions, .private-actions, .drawer-actions, .phone-me) button,
+.ios .app-menu button { min-height: 44px; }
+.ios :is(.topbar, .chat-header, .chat-list-head, .composer-bar, .dialog-head) :is(.icon-button, .square-primary) { min-width: 44px; }
+.ios .composer { padding: 6px 12px 8px; }
+.ios .composer textarea { min-height: 52px; }
+.ios .send-button { min-height: 44px; }
+.ios .chat-header { gap: 6px; padding-inline: 8px 12px; }
+.ios .chat-header .button { min-height: 44px; }
+
+.ios .signin {
+  display: block;
+  height: var(--ios-height, 100dvh);
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: var(--phone-bottom);
+}
+.ios .signin-brand { padding: calc(var(--phone-top) + 20px) 24px 24px; gap: 14px; }
+.ios .signin-form { padding: 24px 24px 32px; }
+.ios .signin-message h1 { font-size: 29px; }
+.ios dialog {
+  width: min(530px, calc(100vw - 24px));
+  max-height: calc(var(--ios-height, 100dvh) - var(--phone-top) - var(--phone-bottom) - 24px);
+  padding: 16px;
+}
+.ios .app-menu { max-height: calc(var(--ios-height, 100dvh) - 16px); overflow: auto; }

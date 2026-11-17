@@ -16,7 +16,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use zibblu_core::assistant::{AiFile, AiProvider};
 
-const MAX_FILE_BYTES: u64 = 32 * 1024;
+use super::MAX_FILE_BYTES;
 
 pub(super) fn protect_key(provider: AiProvider, key: &[u8], encrypt: bool) -> Result<Vec<u8>> {
     // Keep the original DPAPI entropy so existing credentials still decrypt.

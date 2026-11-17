@@ -1,9 +1,10 @@
-import { Archive, ArrowDown, ArrowUp, Check, Download, File, FolderOpen, Pause, Play, RotateCcw, Search, Trash2 } from "lucide-react";
+import { Archive, ArrowDown, ArrowUp, Check, Download, File, FolderOpen, Pause, Play, RotateCcw, Search, Share, Trash2 } from "lucide-react";
 import { useCallback, useContext, useState } from "react";
 import { api, errorMessage, fileExpired } from "./api";
 import type { Attachment, FileFilter, Message, Transfer, User } from "./api";
 import { mediaKind, readAttachmentPage } from "./attachment-media";
 import { Blank, Choice, People, PersonAvatar, bytes, dateTimeLabel, displayName, usePage } from "./common";
+import { ios } from "./ios";
 
 export function FileIcon({ file }: { file: Attachment }) {
   const Icon = file.kind === "folder" ? FolderOpen : file.name.toLowerCase().endsWith(".zip") ? Archive : File;
@@ -59,15 +60,17 @@ export function AttachmentDownload({ file, transfer, onChanged, hideSave = false
   file: Attachment; transfer?: Transfer; onChanged: () => void; hideSave?: boolean;
 }) {
   const { save, saving, failure } = useAttachmentSave(onChanged);
+  const share = ios && transfer?.status === "complete";
+  const action = ios ? (share ? "Share" : "Download") : transfer ? "Save again" : "Save";
   return <div className="attachment-download">
     {(!transfer || transfer.status === "complete") && (!hideSave || transfer) && <div className="file-download-actions">
       {transfer && <span className="verified"><Check size={14} /> Download verified</span>}
-      {!hideSave && <button className="button subtle small" onClick={() => void save(file.id)} disabled={saving} aria-label={`Save ${file.name}`}>
-        <Download size={15} /> {saving ? "Choosing…" : transfer ? "Save again" : "Save"}
+      {!hideSave && <button className="button subtle small" onClick={() => void save(file.id)} disabled={saving} aria-label={`${action} ${file.name}`}>
+        {share ? <Share size={15} /> : <Download size={15} />} {saving ? (ios ? "Preparing…" : "Choosing…") : action}
       </button>}
     </div>}
     {transfer && transfer.status !== "complete" &&
-      <TransferProgress transfer={transfer} onChanged={onChanged} chooseNew={() => void save(file.id)} choosing={saving} />}
+      <TransferProgress transfer={transfer} onChanged={onChanged} chooseNew={ios ? undefined : () => void save(file.id)} choosing={saving} />}
     {failure && <p className="inline-error" role="alert">{failure}</p>}
   </div>;
 }

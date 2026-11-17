@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   ArrowRight, CircleUserRound, FolderOpen, Info, LogOut, Menu, MessageCircle, MessageSquare,
   Radar, ScanLine, Search, Settings, UserRoundMinus, UsersRound, X,
+  ChevronLeft, ChevronRight, UserRound,
 } from "lucide-react";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
@@ -20,12 +21,13 @@ import type { SharedCode } from "./qr";
 import { ProfileView } from "./profile";
 import { useMenu, useMenuAnchor } from "./context-menu";
 import { CloseActionChoices, WindowControls, windows } from "./window-chrome";
+import { ios } from "./ios";
 
 const pages = [
   { name: "Chats", Icon: MessageSquare }, { name: "Contacts", Icon: UsersRound },
   { name: "Files", Icon: FolderOpen },
 ] as const;
-type Navigation = typeof pages[number]["name"] | "Settings";
+type Navigation = typeof pages[number]["name"] | "Me" | "Settings";
 
 export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction, setCloseAction, signedOut }: {
   session: Session; signedOut: (notice?: string) => void;
@@ -70,6 +72,25 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [sharing, setSharing] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const signingOut = useRef(false);
+
+  useEffect(() => {
+    if (!ios) return;
+    function clearPrivateView() {
+      setPrivateId(undefined);
+      setPrivateTargets(undefined);
+      setScanning(false);
+      setNearby(false);
+      setShareCode(code => code?.kind === "private" ? undefined : code);
+      setDrafts(previous => Object.fromEntries(Object.entries(previous).filter(([key]) => !key.startsWith("private/"))));
+    }
+    const invalidated = listen("ios-private-reset", clearPrivateView);
+    const visibility = () => { if (document.hidden) clearPrivateView(); };
+    document.addEventListener("visibilitychange", visibility);
+    return () => {
+      document.removeEventListener("visibilitychange", visibility);
+      void invalidated.then(unlisten => unlisten());
+    };
+  }, []);
 
   useEffect(() => {
     if (!profileNotice) return;
@@ -323,7 +344,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     Files: transfers.some(transfer => transfer.status !== "complete") ? "Unfinished transfers" : undefined,
   };
 
-  return <People.Provider value={{ remarks: directory.remarks, avatars: directory.avatars, open: setProfile }}><main className="shell">
+  const conversationOpen = nav === "Chats" && mobileChat && (!!active || privateOpen);
+  return <People.Provider value={{ remarks: directory.remarks, avatars: directory.avatars, open: setProfile }}><main className={"shell" + (conversationOpen ? " conversation-open" : "")}>
     <nav className="rail" aria-label="Main navigation">
       <button className="rail-brand icon-button" aria-label="Your profile" aria-haspopup="dialog" title="Your profile"
         onClick={() => setProfile(session.user)}><Brand /></button>
@@ -335,9 +357,6 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             {attention[name] && <span className="rail-dot" aria-hidden="true" />}
           </span><span>{name}</span>
         </button>)}</div>
-      <div className="sr-only" aria-live="polite" aria-atomic="true">
-        {pages.map(({ name }) => <span key={name} id={`rail-status-${name}`}>{attention[name] && `${attention[name]}. `}</span>)}
-      </div>
       <button className="rail-menu icon-button" ref={railMenu} title="Menu" aria-label="Menu" aria-haspopup="menu"
         aria-expanded={menuAnchor !== undefined && menuAnchor === railMenu.current}
         onClick={event => openMenu(event.currentTarget, [
@@ -347,6 +366,21 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           { label: "Sign out", icon: <LogOut size={17} />, action: () => void signOut(), disabled: leaving },
         ])}><Menu size={23} /></button>
     </nav>
+    {ios && <nav className="phone-tabs" aria-label="Main navigation">
+      {[...pages, { name: "Me", Icon: UserRound } as const].map(({ name, Icon }) => {
+        const selectedTab = name === nav || (name === "Me" && nav === "Settings");
+        return <button key={name} aria-current={selectedTab ? "page" : undefined}
+          aria-describedby={attention[name] ? `rail-status-${name}` : undefined} onClick={() => navigate(name)}>
+          <span className="rail-icon">{selectedTab && name !== "Me" ? <ActiveRailIcon name={name} />
+            : <Icon size={22} fill={selectedTab ? "currentColor" : "none"} />}
+            {attention[name] && <span className="rail-dot" aria-hidden="true" />}
+          </span><span>{name}</span>
+        </button>;
+      })}
+    </nav>}
+    <div className="sr-only" aria-live="polite" aria-atomic="true">
+      {pages.map(({ name }) => <span key={name} id={`rail-status-${name}`}>{attention[name] && `${attention[name]}. `}</span>)}
+    </div>
     <div className="shell-main">
       <header className={"topbar" + (windows ? " windows-topbar" : "")}>
         <div className="app-name window-drag" data-tauri-drag-region={windows ? "" : undefined}>Zibblu</div>
@@ -390,7 +424,19 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       </div>}
       {nav === "Contacts" && <Contacts own={session.user} directory={directory} selected={profile?.id} refresh={refresh} create={create} />}
       {nav === "Files" && <FilesView people={people} revision={revision} recalled={recalled} hidden={hidden} transfers={transfers} onChanged={changed} />}
+      {nav === "Me" && <section className="settings-page phone-me">
+        <header className="workspace-heading"><h1>Me</h1></header>
+        <button className="phone-profile drawer-action" onClick={() => setProfile(session.user)}>
+          <PersonAvatar user={session.user} /><strong>{session.user.handle}</strong><ChevronRight size={18} />
+        </button>
+        <div className="phone-me-actions">
+          <button className="drawer-action" onClick={() => navigate("Settings")}><Settings size={19} /> Settings <ChevronRight size={17} /></button>
+          <button className="drawer-action" onClick={() => setAbout(true)}><Info size={19} /> About Zibblu <ChevronRight size={17} /></button>
+        </div>
+        <button className="drawer-action danger" disabled={leaving} onClick={() => void signOut()}><LogOut size={19} /> Sign out</button>
+      </section>}
       {nav === "Settings" && <SettingsView {...{ session, privateQuiet, setPrivateQuiet, closeAction, setCloseAction }}
+        back={ios ? () => navigate("Me") : undefined}
         readReceipts={directory.read_receipts} setReadReceipts={async enabled => {
           await api.setReadReceipts(enabled);
           await refreshInFlight.current;
@@ -593,12 +639,13 @@ function NewChat({ contacts, create, close, findPeople }: {
   </Dialog>;
 }
 
-function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, setReadReceipts, closeAction, setCloseAction, assistantSettings }: {
+function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, setReadReceipts, closeAction, setCloseAction, assistantSettings, back }: {
   session: Session;
   closeAction?: CloseAction; setCloseAction: (action: CloseAction) => Promise<void>;
   privateQuiet: boolean; setPrivateQuiet: (quiet: boolean) => Promise<void>;
   readReceipts: boolean; setReadReceipts: (enabled: boolean) => Promise<void>;
   assistantSettings: ReactNode;
+  back?: () => void;
 }) {
   const [failure, setFailure] = useState("");
   const [saving, setSaving] = useState(false);
@@ -611,7 +658,10 @@ function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, se
     finally { setSaving(false); }
   }
   return <section className="settings-page">
-    <header className="workspace-heading"><h1>Settings</h1></header>
+    <header className="workspace-heading settings-heading">
+      {back && <button className="icon-button" aria-label="Back to Me" onClick={back}><ChevronLeft size={23} /></button>}
+      <h1>Settings</h1>
+    </header>
     <div className="surface settings-card">
       <h2><CircleUserRound size={20} /> Account</h2>
       <p className="muted server-address">{session.server}</p>

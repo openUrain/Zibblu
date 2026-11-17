@@ -55,7 +55,7 @@ pub(crate) async fn set_profile_image(
     let client = state.client().await?;
     let (png, thumbnail) = process_upload(request.body(), move |bytes| {
         let png = images::profile_png(&bytes)?;
-        let thumbnail = if cfg!(windows) && matches!(kind, ProfileImage::Avatar) {
+        let thumbnail = if cfg!(any(windows, target_os = "ios")) && matches!(kind, ProfileImage::Avatar) {
             images::saved_avatar(&png).ok()
         } else {
             None

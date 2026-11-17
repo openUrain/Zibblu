@@ -1,0 +1,73 @@
+name: Zibblu iOS
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/desktop/**'
+      - 'crates/core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/ios.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ios:
+    name: iOS device build
+    runs-on: macos-26
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - name: Prepare Xcode project
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          command -v xcodegen || brew install xcodegen
+          npm ci
+          bash src-tauri/ios/prepare.sh --ci --skip-targets-install
+      - name: Archive unsigned iPhone app
+        if: github.event_name == 'pull_request'
+        run: npm run tauri -- ios build --ci --target aarch64 --no-sign --archive-only -- --locked
+      - name: Sign and upload to TestFlight
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_DEVELOPMENT_TEAM }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          : "${APPLE_DEVELOPMENT_TEAM:?Set the Apple Developer Team ID in Actions variables}"
+          : "${APPLE_API_ISSUER:?Set the App Store Connect Issuer ID in Actions secrets}"
+          : "${APPLE_API_KEY:?Set the App Store Connect Key ID in Actions secrets}"
+          : "${APPLE_API_KEY_P8:?Set the App Store Connect .p8 content in Actions secrets}"
+          umask 077
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          export APPLE_API_KEY_PATH="$RUNNER_TEMP/private_keys/AuthKey_$APPLE_API_KEY.p8"
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$APPLE_API_KEY_PATH"
+          unset APPLE_API_KEY_P8
+          trap 'rm -f "$APPLE_API_KEY_PATH"' EXIT
+          build_number=$((GITHUB_RUN_NUMBER * 100 + GITHUB_RUN_ATTEMPT))
+          npm run tauri -- ios build --ci --target aarch64 --export-method app-store-connect \
+            --config "{\"bundle\":{\"iOS\":{\"bundleVersion\":\"$build_number\"}}}" -- --locked
+          shopt -s nullglob
+          ipas=(src-tauri/gen/apple/build/arm64/*.ipa)
+          [[ ${#ipas[@]} == 1 ]]
+          ipa="$PWD/${ipas[0]}"
+          cd "$RUNNER_TEMP"
+          xcrun altool --upload-app --type ios --file "$ipa" --apiKey "$APPLE_API_KEY" --apiIssuer "$APPLE_API_ISSUER"

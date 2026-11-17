@@ -18,17 +18,22 @@ mod windows;
 #[cfg(windows)]
 use windows::{protect_key, read_text_file};
 
-#[cfg(not(windows))]
+#[cfg(target_os = "ios")]
+use crate::ios::{delete_key, protect_key, read_text_file};
+
+#[cfg(not(any(windows, target_os = "ios")))]
 fn protect_key(_: AiProvider, _: &[u8], _: bool) -> Result<Vec<u8>> {
-    anyhow::bail!("AI assistants require Windows credential protection")
+    anyhow::bail!("AI assistants require secure OS credential storage")
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "ios")))]
 fn read_text_file(_: &Path) -> Result<AiFile> {
-    anyhow::bail!("AI file selection is available on Windows")
+    anyhow::bail!("AI file selection is unavailable on this platform")
 }
 
 const MAX_FILES: usize = 3;
+#[cfg(any(windows, target_os = "ios"))]
+pub(crate) const MAX_FILE_BYTES: u64 = 32 * 1024;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Assistant {
@@ -116,6 +121,9 @@ pub(crate) async fn ai_save_assistant(
                 .protected_key
                 .clone()
         };
+        #[cfg(target_os = "ios")]
+        let rotated = assistants.iter().find(|entry| entry.info.provider == provider)
+            .filter(|_| key.is_some()).map(|entry| entry.protected_key.clone());
         assistants.retain(|entry| entry.info.provider != provider);
         assistants.push(StoredAssistant {
             info: Assistant {
@@ -126,7 +134,16 @@ pub(crate) async fn ai_save_assistant(
             },
             protected_key,
         });
-        store_assistants(client.profile_dir(), &assistants)
+        let stored = store_assistants(client.profile_dir(), &assistants);
+        #[cfg(target_os = "ios")]
+        if key.is_some() {
+            if stored.is_err() {
+                delete_key(provider, &assistants.last().expect("new assistant").protected_key);
+            } else if let Some(previous) = rotated {
+                delete_key(provider, &previous);
+            }
+        }
+        stored
     })();
     Ok(result?)
 }
@@ -187,8 +204,16 @@ pub(crate) async fn ai_remove_assistant(
     let client = state.client().await?;
     let _settings = state.ai.lock().expect("AI state");
     let mut assistants = load_assistants(client.profile_dir())?;
+    #[cfg(target_os = "ios")]
+    let removed = assistants.iter().find(|entry| entry.info.provider == provider)
+        .map(|entry| entry.protected_key.clone());
     assistants.retain(|entry| entry.info.provider != provider);
-    Ok(store_assistants(client.profile_dir(), &assistants)?)
+    let stored = store_assistants(client.profile_dir(), &assistants)?;
+    #[cfg(target_os = "ios")]
+    if let Some(reference) = removed {
+        delete_key(provider, &reference);
+    }
+    Ok(stored)
 }
 
 #[derive(Default)]
@@ -318,10 +343,10 @@ pub(crate) async fn ai_pick_file(
     };
     client.ai_messages(conversation, AiScope::Prompt).await?;
     let chosen = tauri::async_runtime::spawn_blocking(move || -> Result<Option<AiFile>> {
-        let Some(path) = window
-            .dialog()
-            .file()
-            .set_parent(&window)
+        let dialog = window.dialog().file();
+        #[cfg(desktop)]
+        let dialog = dialog.set_parent(&window);
+        let Some(path) = dialog
             .set_title("Choose a text file for this AI request")
             .blocking_pick_file()
         else {

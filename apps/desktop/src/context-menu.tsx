@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState
 import type { MouseEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ClipboardPaste, Copy, TextCursorInput } from "lucide-react";
+import { ios } from "./ios";
 
 export type MenuItem = { label: string; action: () => void; disabled?: boolean; icon?: ReactNode };
 type Menu = { x: number; y: number; anchor: HTMLElement; items: MenuItem[]; restoreFocus: HTMLElement | null };
@@ -63,10 +64,11 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
 
   function context(event: MouseEvent<HTMLDivElement>) {
     if (event.defaultPrevented || !(event.target instanceof Element)) return;
-    event.preventDefault();
     const target = event.target instanceof HTMLElement ? event.target : event.target.parentElement ?? event.currentTarget;
     const privateChat = !!target.closest(".private-chat");
     const field = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ? target : undefined;
+    if (ios && field && !privateChat) return;
+    event.preventDefault();
     const editable = field && !field.readOnly && !field.disabled
       && (field instanceof HTMLTextAreaElement || /^(text|search|url|tel|email|password)$/.test(field.type));
     const password = field instanceof HTMLInputElement && (field.type === "password" || field.hasAttribute("data-password"));

@@ -37,7 +37,7 @@ impl Drop for SavedSession {
 const FILE: &str = "saved-session.bin";
 #[cfg(windows)]
 const SCOPE: &[u8] = b"Zibblu saved sign-in v1";
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "ios"))]
 const MAX_BYTES: usize = 256 * 1024;
 
 #[cfg(windows)]
@@ -77,15 +77,37 @@ pub(crate) fn clear(data: &Path) -> Result<()> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "ios")]
+const ACCOUNT: &str = "saved-sign-in";
+
+#[cfg(target_os = "ios")]
+pub(crate) fn load(_: &Path) -> Result<Option<SavedSession>> {
+    zibblu_core::keychain::read_secret(ACCOUNT, MAX_BYTES)?
+        .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
+        .transpose()
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn save(_: &Path, session: &SavedSession) -> Result<()> {
+    let bytes = zeroize::Zeroizing::new(serde_json::to_vec(session)?);
+    anyhow::ensure!(bytes.len() <= MAX_BYTES, "Saved sign-in is too large");
+    zibblu_core::keychain::store_secret(ACCOUNT, &bytes)
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn clear(_: &Path) -> Result<()> {
+    zibblu_core::keychain::delete_secret(ACCOUNT)
+}
+
+#[cfg(not(any(windows, target_os = "ios")))]
 pub(crate) fn load(_: &Path) -> Result<Option<SavedSession>> {
     Ok(None)
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "ios")))]
 pub(crate) fn save(_: &Path, _: &SavedSession) -> Result<()> {
     Ok(())
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "ios")))]
 pub(crate) fn clear(_: &Path) -> Result<()> {
     Ok(())
 }
