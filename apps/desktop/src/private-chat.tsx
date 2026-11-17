@@ -297,7 +297,7 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
       <div className="chat-heading">
         <h2>{room ? privateTitle(room, own.id, remarks) : "Private chat"}</h2>
         <span role="status">{connected ? "Verified private connection" : failed ? "Connection failed" : terminal ? "Session ended" : "LAN only"}
-          {connected ? " · LAN only" : ""}{room?.open && !terminal ? " · QR access" : ""}</span>
+          {connected && ios ? " · LAN only" : ""}{room?.open && !terminal ? " · QR access" : ""}</span>
       </div>
       {!terminal && room?.open && room.hosted && <button className="icon-button" title="Share private QR code"
         aria-label="Share private QR code" onClick={() => void act(() => showCode(id))}><QrCode size={20} /></button>}

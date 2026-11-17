@@ -500,7 +500,7 @@ impl PrivateLobby {
         );
         let lan = &self.engine.lan;
         ensure!(
-            lan.discovery_available(),
+            matches!(lan.discovery_status(), DiscoveryStatus::Ready),
             "Nearby discovery is unavailable."
         );
         let record = lan

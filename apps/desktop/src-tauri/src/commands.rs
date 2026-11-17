@@ -110,7 +110,9 @@ impl Desktop {
             .flatten()
             .context("Private chat is unavailable. Check the local network and sign-in.")?;
         #[cfg(target_os = "ios")]
-        ensure!(lobby.lan_ready(), "Private chat is unavailable. Allow Local Network access for Zibblu and check Wi-Fi.");
+        if !lobby.lan_ready() {
+            return Err(anyhow!("Private chat is unavailable. Allow Local Network access for Zibblu and check Wi-Fi.").into());
+        }
         Ok(lobby)
     }
 
