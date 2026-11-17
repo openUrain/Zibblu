@@ -2,14 +2,24 @@
 
 **Chat freely. Share privately.**
 
-[![Windows v0.1.4](https://img.shields.io/badge/Windows-v0.1.4-5b37a5)](https://github.com/openUrain/Zibblu/releases/tag/v0.1.4)
+[![Windows v0.1.5](https://img.shields.io/badge/Windows-v0.1.5-5b37a5)](https://github.com/openUrain/Zibblu/releases/tag/v0.1.5)
+[![iOS test build](https://img.shields.io/badge/iOS-v0.1.5%20preview-6941b9)](https://github.com/openUrain/Zibblu/actions/workflows/ios.yml)
 [![Enterprise Self-Hosting](https://img.shields.io/badge/Enterprise-Self--Hosting-5b37a5)](#enterprise-self-hosting)
 [![Private LAN Chat](https://img.shields.io/badge/Private-LAN%20Chat-463076)](#private-lan-chat)
 [![Zibblu CI](https://github.com/openUrain/Zibblu/actions/workflows/ci.yml/badge.svg)](https://github.com/openUrain/Zibblu/actions/workflows/ci.yml)
 
-Zibblu is a Windows messenger with **enterprise self-hosting** and a separate **private LAN chat** mode. Keep received chat history on your device, share files that can resume after an interruption, and choose exactly what an AI assistant can read.
+Zibblu is a messenger for **Windows** with an **iPhone testing preview**, **enterprise self-hosting** and a separate **private LAN chat** mode. Keep received chat history on your device, share files that can resume after an interruption, and choose exactly what an AI assistant can read.
 
-[Download for Windows x64](https://github.com/openUrain/Zibblu/releases/download/v0.1.4/Zibblu_0.1.4_x64_Client_Setup.exe) · [Product website](https://zibblu.openurain.com/) · [Deploy your own server](docs/ONLINE_DEPLOYMENT.md#enterprise-self-hosting)
+[Windows installer · v0.1.5](https://github.com/openUrain/Zibblu/releases/download/v0.1.5/Zibblu_0.1.5_x64_Client_Setup.exe) · [iPhone unsigned test IPA · GitHub Actions](https://github.com/openUrain/Zibblu/actions/workflows/ios.yml) · [Product website](https://zibblu.openurain.com/) · [Self-hosting guide](docs/ONLINE_DEPLOYMENT.md#enterprise-self-hosting)
+
+## Downloads by platform
+
+| Platform | Status and build | How to get it |
+| --- | --- | --- |
+| **Windows 10 / 11 · x64** | **v0.1.5 stable installer** · `Zibblu_0.1.5_x64_Client_Setup.exe` | [Download EXE](https://github.com/openUrain/Zibblu/releases/download/v0.1.5/Zibblu_0.1.5_x64_Client_Setup.exe) · [Release checksums](https://github.com/openUrain/Zibblu/releases/tag/v0.1.5) |
+| **iPhone · iOS 16.4+** | **v0.1.5 testing preview** · `Zibblu-iOS-arm64-unsigned.ipa` | [GitHub Actions artifacts](https://github.com/openUrain/Zibblu/actions/workflows/ios.yml) · [Free personal installation instructions](#test-on-your-iphone-from-windows-11) |
+
+**Important:** The iOS build is an **unsigned development artifact**, not an App Store or TestFlight release. Download it from a successful iOS workflow run (repository access required), then sign and install it yourself, for example using Sideloadly and a free Apple Account. Do not expect the IPA to install by tapping the file on an iPhone. Public iOS distribution and physical-device testing are not yet complete.
 
 ![Zibblu Windows client showing messages and file cards in a test conversation](docs/windows-feedback/issue35/chat-files.png)
 
@@ -54,7 +64,7 @@ flowchart LR
 
 ## Install Zibblu on Windows
 
-1. On Windows 10 or 11 x64, run the installer from the [v0.1.4 release](https://github.com/openUrain/Zibblu/releases/tag/v0.1.4). Verify the installer against the published SHA-256 checksum. The installer is unsigned and can install Microsoft WebView2 if needed.
+1. On Windows 10 or 11 x64, run the installer from the [v0.1.5 release](https://github.com/openUrain/Zibblu/releases/tag/v0.1.5). Verify the installer against the published SHA-256 checksum. The installer is unsigned and can install Microsoft WebView2 if needed.
 2. Start Zibblu. A fresh profile defaults to **Zibblu Online**. To use your organization’s compatible v2 service, select **Advanced** and enter its HTTPS origin without a path. Local development also supports `http://127.0.0.1:7841`.
 3. Create an account or sign in on that server. Find a friend by username in **Contacts** and send a request. Once accepted, start a chat and share files.
 
@@ -94,7 +104,7 @@ npm ci
 npm run tauri build -- --bundles nsis --target x86_64-pc-windows-msvc -- --locked
 ```
 
-The build writes the setup executable to `target/x86_64-pc-windows-msvc/release/bundle/nsis`. The published v0.1.4 asset is named `Zibblu_0.1.4_x64_Client_Setup.exe`. The installer preserves the existing Windows installer identity and defaults to the data directory `%LOCALAPPDATA%\com.zibblu.desktop`, separate from the installed executable.
+The build writes the setup executable to `target/x86_64-pc-windows-msvc/release/bundle/nsis`. The published v0.1.5 Windows asset is named `Zibblu_0.1.5_x64_Client_Setup.exe`. The installer preserves the existing Windows installer identity and defaults to the data directory `%LOCALAPPDATA%\com.zibblu.desktop`, separate from the installed executable.
 
 On a clean Windows 10 or 11 system, install and sign in with a test account. Change the theme, open a normal chat and save an attachment. Minimize and restore the app from the taskbar, then close it with **X** and start it again. Sign in and check that the server, theme and chat history are still available. With the app closed, run setup again and repeat that check. Uninstall without selecting the option to delete app data, reinstall, and check that the profile is still present. Use a small display or higher DPI to check that the native file and invitation controls remain reachable.
 
