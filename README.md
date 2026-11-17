@@ -46,8 +46,8 @@ The account service issues device credentials used to verify identities. Private
 ```mermaid
 flowchart LR
     subgraph Online["Ordinary chat · self-hosted"]
-        A["Windows client<br/>Local SQLite history"] <--> S["Your HTTPS server<br/>Accounts and delivery"]
-        S <--> B["Windows client<br/>Local SQLite history"]
+        A["Zibblu client<br/>Local SQLite history"] <--> S["Your HTTPS server<br/>Accounts and delivery"]
+        S <--> B["Zibblu client<br/>Local SQLite history"]
     end
     subgraph LAN["Private LAN chat · separate session"]
         C["Consenting device"] <-->|"Authenticated, encrypted QUIC"| D["Consenting device"]
