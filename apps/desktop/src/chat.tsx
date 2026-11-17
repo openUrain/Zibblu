@@ -15,6 +15,7 @@ import { useMenu } from "./context-menu";
 import { FilesView, TransferList, useAttachmentSave } from "./files";
 import { ChatAttachment, MediaHistory, MediaViewer } from "./chat-media";
 import { privatePhaseLabel, privateTitle } from "./private-chat";
+import { ios } from "./ios";
 
 export function ChatList({ chats, own, selected, open, newChat, rooms, activePrivate, openPrivate, createQr }: {
   chats: Conversation[]; own: User; selected?: string; open: (id: string) => void; newChat: () => void;
@@ -344,6 +345,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
           const file = message?.attachment;
           const download = file ? downloads.get(file.id) : undefined;
           const expiredFile = !!message && (fileExpired(message, now) || download?.status === "expired");
+          const touchMenu = !!file || ios;
           function actions(selection?: string) {
             const copy = selection || text;
             return [
@@ -371,11 +373,13 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                 if (!openedByPress(event.currentTarget)) openMenu(event.currentTarget, actions(selection),
                   event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : undefined);
               }}
-              onPointerDown={file ? event => {
+              onPointerDown={touchMenu ? event => {
                 window.clearTimeout(press.current?.timer);
                 press.current = undefined;
                 if (event.pointerType === "mouse" || !event.isPrimary
-                  || !(event.target instanceof Element && event.target.closest(".media-tile, .file-main"))) return;
+                  || !(event.target instanceof Element && event.target.closest(
+                    ios ? ".bubble, .media-tile, .file-main" : ".media-tile, .file-main"
+                  ))) return;
                 const anchor = event.currentTarget;
                 const point = { x: event.clientX, y: event.clientY };
                 const timer = window.setTimeout(() => {
@@ -385,22 +389,22 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                 }, 550);
                 press.current = { ...point, anchor, timer, opened: false };
               } : undefined}
-              onPointerMove={file ? event => {
+              onPointerMove={touchMenu ? event => {
                 const active = press.current;
                 if (active && Math.hypot(event.clientX - active.x, event.clientY - active.y) > 10) window.clearTimeout(active.timer);
               } : undefined}
-              onPointerUp={file ? () => {
+              onPointerUp={touchMenu ? () => {
                 if (press.current) {
                   window.clearTimeout(press.current.timer);
                   press.current.released = Date.now();
                 }
               } : undefined}
-              onPointerLeave={file ? () => window.clearTimeout(press.current?.timer) : undefined}
-              onPointerCancel={file ? () => {
+              onPointerLeave={touchMenu ? () => window.clearTimeout(press.current?.timer) : undefined}
+              onPointerCancel={touchMenu ? () => {
                 window.clearTimeout(press.current?.timer);
                 press.current = undefined;
               } : undefined}
-              onClickCapture={file ? event => {
+              onClickCapture={touchMenu ? event => {
                 if (openedByPress(event.currentTarget) && event.detail > 0) {
                   event.preventDefault();
                   event.stopPropagation();
@@ -639,7 +643,7 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
               const step = event.key === "ArrowDown" ? 1 : -1;
               setMenuIndex(index => (index + step + suggestions.length) % suggestions.length);
             }
-            if (event.key === "Enter" && !event.shiftKey) {
+            if (!ios && event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
               if (menu && activeOption) choose(activeOption);
               else event.currentTarget.form?.requestSubmit();
@@ -660,8 +664,8 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
             {assistant ? <span className="ai-composer-target"><ProviderLogo provider={assistant.provider} /> @{assistant.name}</span> : <>
               <button className="icon-button" type="button" aria-label="Attach a file" title="Attach a file"
                 onClick={() => void pick("file")} disabled={preparing}><Paperclip size={20} /></button>
-              <button className="icon-button" type="button" aria-label="Attach a folder" title="Attach a folder"
-                onClick={() => void pick("folder")} disabled={preparing}><FilePlus2 size={20} /></button>
+              {!ios && <button className="icon-button" type="button" aria-label="Attach a folder" title="Attach a folder"
+                onClick={() => void pick("folder")} disabled={preparing}><FilePlus2 size={20} /></button>}
             </>}
             <button className="icon-button ai-mention-button" type="button" aria-label="Mention an AI assistant"
               aria-controls={menu ? menuId : undefined} aria-expanded={menu} title="Mention an AI assistant" onClick={() => {

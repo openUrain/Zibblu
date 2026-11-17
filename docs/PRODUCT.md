@@ -33,6 +33,8 @@ On Windows, the standalone client defaults to **Zibblu Online** on a fresh profi
 
 On Windows, a normal app exit leaves the last successful sign-in available. On the next start, select the saved account card to ask its server to restore the session, or choose **Use another account** for password sign-in. The card uses the last locally saved avatar or an initial. A network failure allows a retry. An expired or revoked session returns to password sign-in. **Sign out** removes the saved sign-in from this device. Settings lists the account’s active devices and can retire another installation.
 
+The iPhone target uses the same sign-in and sync flows with four bottom tabs. Choose a file from the system document picker. Downloads stay in the app sandbox until you choose **Share** to export a verified file. To share a directory, zip it and choose the archive in Files.
+
 Registration asks for the new password twice. On Windows, the main window starts centered in the work area of its initial display. The first close asks whether to exit or hide to the system tray. Settings lets you change this local preference. Minimize still uses the taskbar. The tray can show the same window or exit the app. Launching again with the same data directory restores its window. Separate directories can run independent clients.
 
 **User flow:** sign in → find a username → send a contact request → wait for approval → send messages or start a group → share files and find them in Files.
@@ -72,6 +74,7 @@ Rules:
 - No server relay, online forwarding or unnoticed switch back to normal mode. Connection failure means private mode is unavailable.
 - No private messages or attachments written to normal chat history. MVP private mode supports **text**; private file transfer requires a separate later decision.
 - Switching views keeps the private session available alongside ordinary chats. Ending the session or quitting the host closes the channel and clears the in-memory conversation.
+- On iPhone, invitations appear inside the foreground app. Going to the background or losing the current Wi-Fi path ends the local private session. Nearby discovery resumes when Wi-Fi is available in the app again.
 - No cloud AI, push-notification excerpts, search indexing, previews, analytics payloads or logging of private content.
 - The app cannot retract screenshots, recipient copies or guarantee removal of OS memory/swap remnants. UX copy must not claim absolute erasure.
 

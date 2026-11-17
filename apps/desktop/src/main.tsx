@@ -7,10 +7,12 @@ import { api, errorMessage, isExpired } from "./api";
 import type { CloseAction, Preferences, SavedAccount, Session } from "./api";
 import { Avatar, Brand } from "./common";
 import { DesktopMenus } from "./context-menu";
+import { setupIosLayout } from "./ios";
 import { Workspace } from "./workspace";
 import { PrivateInvitationWindow } from "./private-chat";
 import { WindowControls, WindowClosePrompt, windows } from "./window-chrome";
 import "./style.css";
+import "./ios.css";
 
 function App() {
   const [preferences, setPreferences] = useState<Preferences>();
@@ -239,6 +241,7 @@ function SignIn({ initialServer, officialServer, initialAccount, notice, signedI
   </main>;
 }
 
+setupIosLayout();
 const invitation = getCurrentWindow().label === "private-invitation";
 createRoot(document.getElementById("root")!).render(<DesktopMenus>
   {invitation ? <PrivateInvitationWindow /> : <App />}

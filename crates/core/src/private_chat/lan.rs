@@ -1,4 +1,5 @@
 use super::identity::Identity;
+use super::DiscoveryStatus;
 use crate::lan_peer_name;
 use anyhow::{Context, Result, ensure};
 use hickory_resolver::{
@@ -7,6 +8,7 @@ use hickory_resolver::{
 };
 use if_addrs::{IfAddr, Interface};
 use ipnet::Ipv4Net;
+#[cfg(not(target_os = "ios"))]
 use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
 use quinn::{
     AsyncUdpSocket, Connection, Endpoint, Runtime, TokioRuntime, TransportConfig, UdpPoller,
@@ -16,14 +18,20 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     io::{self, IoSliceMut},
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
+    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context as TaskContext, Poll, ready},
     time::Duration,
 };
-use tokio::{task::JoinHandle, time::timeout};
+use tokio::time::timeout;
 use uuid::Uuid;
+
+#[cfg(not(target_os = "ios"))]
+use {std::net::SocketAddrV4, tokio::task::JoinHandle};
+
+#[cfg(target_os = "ios")]
+mod bonjour;
 
 const SERVICE: &str = "_zibblu-private._udp.local.";
 const ATTEMPT: Duration = Duration::from_secs(3);
@@ -40,6 +48,8 @@ pub(super) struct Scope {
     enterprise: Vec<Ipv4Net>,
     dns_domain: Option<String>,
     port: u16,
+    #[cfg(target_os = "ios")]
+    wifi: u64,
 }
 
 #[derive(Debug)]
@@ -55,6 +65,10 @@ impl std::error::Error for NoLanInterface {}
 
 impl Scope {
     pub fn current() -> Result<Self> {
+        #[cfg(target_os = "ios")]
+        let wifi = bonjour::wifi();
+        #[cfg(target_os = "ios")]
+        ensure!(wifi as u32 != 0, NoLanInterface);
         let enterprise = match std::env::var("ZIBBLU_LAN_SITE_SUBNETS") {
             Ok(value) => value
                 .split(',')
@@ -104,6 +118,12 @@ impl Scope {
         let mut interfaces: Vec<_> = if_addrs::get_if_addrs()?
             .into_iter()
             .filter(|interface| interface.is_oper_up() && !interface.is_p2p())
+            .filter(|_interface| {
+                #[cfg(target_os = "ios")]
+                return _interface.index == Some(wifi as u32);
+                #[cfg(not(target_os = "ios"))]
+                true
+            })
             .filter(|interface| {
                 let IfAddr::V4(ip) = &interface.addr else {
                     return false;
@@ -125,10 +145,16 @@ impl Scope {
             enterprise,
             dns_domain,
             port,
+            #[cfg(target_os = "ios")]
+            wifi,
         })
     }
 
     fn allows(&self, peer: SocketAddr) -> bool {
+        #[cfg(target_os = "ios")]
+        if self.wifi != bonjour::wifi() {
+            return false;
+        }
         let SocketAddr::V4(peer) = peer else {
             return false;
         };
@@ -162,9 +188,13 @@ pub(super) struct Lan {
     origin: String,
     bound: Vec<SocketAddr>,
     records: Records,
+    #[cfg(not(target_os = "ios"))]
     daemon: ServiceDaemon,
     service_name: String,
+    #[cfg(not(target_os = "ios"))]
     task: JoinHandle<()>,
+    #[cfg(target_os = "ios")]
+    bonjour: bonjour::Bonjour,
     resolver: Option<TokioResolver>,
 }
 
@@ -176,6 +206,8 @@ impl Lan {
             scope.interfaces[0].ip()
         };
         let socket = UdpSocket::bind((bind, scope.port))?;
+        #[cfg(target_os = "ios")]
+        bonjour::bind_to_wifi(&socket, scope.wifi as u32)?;
         socket.set_ttl(if scope.enterprise.is_empty() { 1 } else { 16 })?;
         let runtime = Arc::new(TokioRuntime);
         let udp = Arc::new(LanSocket {
@@ -205,8 +237,16 @@ impl Lan {
             .as_ref()
             .map(|_| TokioResolver::builder_tokio().map(|builder| builder.build()))
             .transpose()?;
-        let daemon = ServiceDaemon::new()?;
         let device = discovery_instance(&identity.device).simple().to_string();
+        let records = Records::default();
+        #[cfg(target_os = "ios")]
+        let (bonjour, service_name) = (
+            bonjour::Bonjour::new(&device, &account_tag(&origin, account), port, scope.wifi),
+            format!("{device}.{SERVICE}"),
+        );
+        #[cfg(not(target_os = "ios"))]
+        let (daemon, task, service_name) = {
+        let daemon = ServiceDaemon::new()?;
         let props = [("account", account_tag(&origin, account))];
         let info = ServiceInfo::new(
             SERVICE,
@@ -231,7 +271,6 @@ impl Lan {
                 return Err(error.into());
             }
         };
-        let records = Records::default();
         let discovered = records.clone();
         let task = tokio::spawn(async move {
             while let Ok(event) = events.recv_async().await {
@@ -267,15 +306,21 @@ impl Lan {
                 }
             }
         });
+        (daemon, task, service_name)
+        };
         Ok(Self {
             endpoint,
             scope,
             origin,
             bound,
             records,
+            #[cfg(not(target_os = "ios"))]
             daemon,
             service_name,
+            #[cfg(not(target_os = "ios"))]
             task,
+            #[cfg(target_os = "ios")]
+            bonjour,
             resolver,
         })
     }
@@ -289,11 +334,21 @@ impl Lan {
             .set_server_config(Some(server_config(identity)));
     }
 
-    pub fn discovery_available(&self) -> bool {
-        !self.task.is_finished()
+    pub fn discovery_status(&self) -> DiscoveryStatus {
+        #[cfg(target_os = "ios")]
+        return self.bonjour.status();
+        #[cfg(not(target_os = "ios"))]
+        if self.task.is_finished() {
+            DiscoveryStatus::DiscoveryFailed
+        } else {
+            DiscoveryStatus::Ready
+        }
     }
 
     pub async fn announce_departure(&self) {
+        #[cfg(target_os = "ios")]
+        self.bonjour.stop();
+        #[cfg(not(target_os = "ios"))]
         if let Ok(unregistered) = self.daemon.unregister(&self.service_name) {
             let _ = unregistered.recv_async().await;
         }
@@ -304,6 +359,8 @@ impl Lan {
     }
 
     pub async fn nearby(&self, selected: Option<Uuid>) -> Result<HashMap<Uuid, NearbyRecord>> {
+        #[cfg(target_os = "ios")]
+        self.bonjour.refresh(&self.records);
         let own = service_instance(&self.service_name, SERVICE);
         let device = |name: &str, service: &str| {
             service_instance(name, service)
@@ -365,6 +422,8 @@ impl Lan {
     }
 
     pub async fn candidates(&self, accounts: &[Uuid]) -> Vec<(Uuid, SocketAddr)> {
+        #[cfg(target_os = "ios")]
+        self.bonjour.refresh(&self.records);
         let tags: HashMap<_, _> = accounts
             .iter()
             .map(|&account| (self.tag(account), account))
@@ -423,9 +482,12 @@ impl Lan {
 impl Drop for Lan {
     fn drop(&mut self) {
         self.endpoint.close(0_u32.into(), b"");
+        #[cfg(not(target_os = "ios"))]
+        {
         self.task.abort();
         let _ = self.daemon.unregister(&self.service_name);
         let _ = self.daemon.shutdown();
+        }
     }
 }
 
@@ -609,6 +671,8 @@ mod tests {
             enterprise: Vec::new(),
             dns_domain: None,
             port: 0,
+            #[cfg(target_os = "ios")]
+            wifi: bonjour::wifi(),
         };
         assert!(scope.allows("192.168.20.3:1234".parse().unwrap()));
         assert!(!scope.allows("192.168.21.3:1234".parse().unwrap()));
@@ -637,6 +701,8 @@ mod tests {
             enterprise: Vec::new(),
             dns_domain: None,
             port: 0,
+            #[cfg(target_os = "ios")]
+            wifi: bonjour::wifi(),
         };
         let wifi = Scope {
             interfaces: vec![interface(2, ip)],

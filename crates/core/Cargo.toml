@@ -11,7 +11,7 @@ client = [
   "dep:rustls", "dep:tempfile", "dep:thiserror", "dep:tokio", "dep:walkdir", "dep:windows-sys", "dep:zeroize", "dep:zip",
 ]
 private-chat = [
-  "dep:anyhow", "dep:hickory-resolver", "dep:if-addrs", "dep:ipnet", "dep:mdns-sd",
+  "dep:anyhow", "dep:hickory-resolver", "dep:if-addrs", "dep:ipnet", "dep:libc", "dep:mdns-sd",
   "dep:quinn", "dep:rcgen", "dep:ring", "dep:serde_json", "dep:sha2",
   "dep:tokio", "dep:x509-parser", "tokio/net", "tokio/time",
 ]
@@ -21,7 +21,6 @@ anyhow = { workspace = true, optional = true }
 hickory-resolver = { version = "0.25", default-features = false, features = ["tokio", "system-config"], optional = true }
 if-addrs = { version = "0.15", optional = true }
 ipnet = { version = "2", optional = true }
-mdns-sd = { version = "0.21", default-features = false, features = ["async"], optional = true }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
 rcgen = { version = "0.14", default-features = false, features = ["ring"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json"], optional = true }
@@ -42,3 +41,9 @@ zip = { version = "4.6", default-features = false, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"], optional = true }
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+mdns-sd = { version = "0.21", default-features = false, features = ["async"], optional = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+libc = { version = "0.2", optional = true }

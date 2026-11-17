@@ -1,1 +1,2 @@
 services/online/migrations/*.sql text eol=lf
+apps/desktop/src-tauri/ios/prepare.sh text eol=lf

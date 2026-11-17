@@ -57,7 +57,7 @@ export type PrivateSummary = {
 };
 export type PrivateList = { rooms: PrivateSummary[]; prompt: string | null };
 export type NearbyDevice = { id: string; matched_account: User | null };
-export type Discovery = { status: "starting" | "network_unavailable" | "discovery_failed" | "ready"; devices: NearbyDevice[] };
+export type Discovery = { status: "starting" | "network_unavailable" | "permission_denied" | "discovery_failed" | "ready"; devices: NearbyDevice[] };
 export type PrivateMessage = { seq: number; sender: User; text: string; created_at: number };
 export type PrivateCode = { room: string; host: string; addresses: string[]; secret: string; expires_at: number };
 type PrivateView = PrivateSummary & { connection: string; messages: PrivateMessage[] };

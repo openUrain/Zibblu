@@ -1,7 +1,9 @@
 import { ArrowDown, ArrowLeft, Ghost, QrCode, Send, UserPlus } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import { Fragment, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, errorMessage } from "./api";
+import { ios } from "./ios";
 import type { Directory, Discovery, NearbyDevice, PrivateList, PrivateMessage, PrivateSummary, User } from "./api";
 import { Avatar, Blank, Choice, Dialog, People, PersonAvatar, displayName, messageTimeLabel, startsTimeGroup } from "./common";
 
@@ -9,19 +11,25 @@ export function usePrivateRooms() {
   const [list, setList] = useState<PrivateList>({ rooms: [], prompt: null });
   useEffect(() => {
     let disposed = false;
+    let generation = 0;
     let timer: number | undefined;
+    const reset = ios ? listen("ios-private-reset", () => {
+      generation += 1;
+      setList({ rooms: [], prompt: null });
+    }) : undefined;
     async function refresh() {
+      const current = generation;
       try {
         const next = await api.privateRooms();
-        if (!disposed) setList(next);
+        if (!disposed && current === generation) setList(next);
       } catch {
-        if (!disposed) setList({ rooms: [], prompt: null });
+        if (!disposed && current === generation) setList({ rooms: [], prompt: null });
       } finally {
         if (!disposed) timer = window.setTimeout(refresh, 500);
       }
     }
     void refresh();
-    return () => { disposed = true; window.clearTimeout(timer); };
+    return () => { disposed = true; window.clearTimeout(timer); void reset?.then(unlisten => unlisten()); };
   }, []);
   return list;
 }
@@ -166,7 +174,9 @@ export function NearbyDevices({ own, close, invited }: {
       </Choice>)}
     </fieldset> : <p className="muted" role="status">
       {status === "starting" ? "Starting LAN discovery…"
-        : status === "network_unavailable" ? "No approved IPv4 LAN is available. Connect to an allowed Wi-Fi or Ethernet network."
+        : status === "network_unavailable" ? (ios ? "Connect to an allowed Wi-Fi network to find nearby devices."
+          : "No approved IPv4 LAN is available. Connect to an allowed Wi-Fi or Ethernet network.")
+        : status === "permission_denied" ? "Allow Zibblu to use the Local Network in iOS Settings, then return here."
         : status === "discovery_failed" ? "LAN discovery could not start or the configured discovery service failed."
         : "No Zibblu devices found. Keep both clients open and signed in on the same allowed network."}
     </p>}
@@ -176,7 +186,8 @@ export function NearbyDevices({ own, close, invited }: {
     {failure && <p className="inline-error" role="alert">{failure}</p>}
     {((status === "ready" && devices.length === 0) || status === "discovery_failed" || failure) && <details className="nearby-help">
       <summary className="muted">Troubleshooting tips</summary>
-      <p className="muted">Check that Windows Defender Firewall allows Zibblu on the Private profile. For managed networks, ensure mDNS and direct UDP are permitted.</p>
+      <p className="muted">{ios ? "Check Local Network access in iOS Settings and make sure Wi-Fi allows devices to communicate."
+        : "Check that Windows Defender Firewall allows Zibblu on the Private profile. For managed networks, ensure mDNS and direct UDP are permitted."}</p>
     </details>}
     <div className="dialog-actions">
       <button className="button subtle" disabled={busy} onClick={close}>Close</button>
@@ -286,7 +297,7 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
       <div className="chat-heading">
         <h2>{room ? privateTitle(room, own.id, remarks) : "Private chat"}</h2>
         <span role="status">{connected ? "Verified private connection" : failed ? "Connection failed" : terminal ? "Session ended" : "LAN only"}
-          {room?.open && !terminal ? " · QR access" : ""}</span>
+          {connected && ios ? " · LAN only" : ""}{room?.open && !terminal ? " · QR access" : ""}</span>
       </div>
       {!terminal && room?.open && room.hosted && <button className="icon-button" title="Share private QR code"
         aria-label="Share private QR code" onClick={() => void act(() => showCode(id))}><QrCode size={20} /></button>}
@@ -337,7 +348,7 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
           <textarea id={inputId} aria-label="Private message" rows={2} autoComplete="off"
             spellCheck={false} value={draft} onChange={event => { const value = event.target.value; setDraft(() => value); }}
             onKeyDown={event => {
-              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              if (!ios && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
                 event.currentTarget.form?.requestSubmit();
               }

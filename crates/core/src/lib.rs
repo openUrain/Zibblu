@@ -9,6 +9,9 @@ pub use client::*;
 #[cfg(all(windows, feature = "client"))]
 pub mod dpapi;
 
+#[cfg(all(feature = "client", target_os = "ios"))]
+pub mod keychain;
+
 #[cfg(feature = "private-chat")]
 pub mod private_chat;
 

@@ -6,12 +6,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::{ErrorKind, Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
+
+#[cfg(not(target_os = "ios"))]
+use std::io::{ErrorKind, Read, Write};
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct Installation {
@@ -32,7 +34,7 @@ fn protect(bytes: &[u8], encrypt: bool, scope: &[u8]) -> Result<Vec<u8>> {
     crate::dpapi::transform(bytes, scope, encrypt)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "ios")))]
 fn protect(bytes: &[u8], _: bool, _: &[u8]) -> Result<Vec<u8>> {
     Ok(bytes.to_vec())
 }
@@ -45,6 +47,7 @@ impl Installation {
         }
     }
 
+    #[cfg(not(target_os = "ios"))]
     fn load(path: &Path, scope: &[u8]) -> Result<Option<Self>> {
         let file = match fs::File::open(path) {
             Ok(file) => file,
@@ -58,6 +61,7 @@ impl Installation {
         Ok(Some(serde_json::from_slice(&plain)?))
     }
 
+    #[cfg(not(target_os = "ios"))]
     fn save(&self, path: &Path, scope: &[u8]) -> Result<()> {
         let plain = Zeroizing::new(serde_json::to_vec(self)?);
         let sealed = Zeroizing::new(protect(&plain, true, scope)?);
@@ -67,6 +71,21 @@ impl Installation {
         file.as_file().sync_all()?;
         file.persist(path)?;
         Ok(())
+    }
+
+    #[cfg(target_os = "ios")]
+    fn load(_: &Path, scope: &[u8]) -> Result<Option<Self>> {
+        let account = format!("installation/{:x}", Sha256::digest(scope));
+        crate::keychain::read_secret(&account, 4096)?
+            .map(|plain| serde_json::from_slice(&plain).map_err(Into::into))
+            .transpose()
+    }
+
+    #[cfg(target_os = "ios")]
+    fn save(&self, _: &Path, scope: &[u8]) -> Result<()> {
+        let account = format!("installation/{:x}", Sha256::digest(scope));
+        let plain = Zeroizing::new(serde_json::to_vec(self)?);
+        crate::keychain::store_secret(&account, &plain)
     }
 }
 

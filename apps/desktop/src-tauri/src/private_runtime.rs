@@ -4,15 +4,18 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tauri::{
-    AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl,
-    WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Manager};
+#[cfg(not(target_os = "ios"))]
+use tauri::{LogicalSize, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
+#[cfg(target_os = "ios")]
+use tauri::Emitter;
 use uuid::Uuid;
 use zibblu_core::{
     Client, Directory, LanCredential, User,
-    private_chat::{DeviceKey, DiscoveryStatus, Phase, PrivateLobby},
+    private_chat::{DeviceKey, DiscoveryStatus, PrivateLobby},
 };
+#[cfg(not(target_os = "ios"))]
+use zibblu_core::private_chat::Phase;
 
 pub(crate) const INVITATION: &str = "private-invitation";
 
@@ -25,7 +28,7 @@ pub(crate) fn memberships(directory: &Directory) -> HashMap<Uuid, Vec<User>> {
 }
 
 pub(crate) fn prompt_window(app: &AppHandle, desktop: &Desktop) -> Option<&'static str> {
-    if desktop.private_quiet() || !notifications_allowed() {
+    if !desktop.private_available() || desktop.private_quiet() || !notifications_allowed() {
         return None;
     }
     let main = app.get_webview_window("main")?;
@@ -39,8 +42,34 @@ pub(crate) fn prompt_window(app: &AppHandle, desktop: &Desktop) -> Option<&'stat
     })
 }
 
+#[cfg(not(target_os = "ios"))]
 pub(crate) async fn run(app: AppHandle, client: Arc<Client>) {
     tokio::join!(maintain_lobby(&app, &client), run_prompts(&app));
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) async fn run(app: AppHandle, client: Arc<Client>) {
+    use std::sync::atomic::Ordering;
+    let desktop = app.state::<Desktop>();
+    let mut network = crate::ios::network();
+    loop {
+        let current = *network.borrow_and_update();
+        desktop.private_generation.store(current.generation, Ordering::Release);
+        if current.available {
+            tokio::select! {
+                biased;
+                _ = network.changed() => {}
+                _ = maintain_lobby(&app, &client) => { let _ = network.changed().await; }
+            }
+        } else if network.changed().await.is_err() {
+            return;
+        }
+        if let Some(lobby) = desktop.private.lock().await.take() {
+            lobby.shutdown();
+        }
+        *desktop.discovery.lock().expect("discovery status") = DiscoveryStatus::Starting;
+        let _ = app.emit("ios-private-reset", ());
+    }
 }
 
 async fn maintain_lobby(app: &AppHandle, client: &Client) {
@@ -122,6 +151,7 @@ async fn maintain_lobby(app: &AppHandle, client: &Client) {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 async fn run_prompts(app: &AppHandle) {
     let desktop = app.state::<Desktop>();
     let mut shown = None;
@@ -159,6 +189,7 @@ async fn run_prompts(app: &AppHandle) {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 fn show_desktop_prompt(
     app: &AppHandle,
     desktop: &Desktop,
@@ -224,7 +255,7 @@ fn show_without_activation(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "ios")))]
 fn show_without_activation(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     window.show()
 }
