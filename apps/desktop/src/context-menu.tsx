@@ -3,7 +3,7 @@ import type { MouseEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ClipboardPaste, Copy, TextCursorInput } from "lucide-react";
 import { api, errorMessage } from "./api";
-import { ios } from "./ios";
+import { ios, useIosBack } from "./ios";
 import { t } from "./locale";
 
 const windows = navigator.userAgent.includes("Windows");
@@ -18,6 +18,50 @@ const OpenMenu = createContext<(anchor: HTMLElement, items: MenuItem[], point?: 
 const MenuAnchor = createContext<HTMLElement | undefined>(undefined);
 export const useMenu = () => useContext(OpenMenu);
 export const useMenuAnchor = () => useContext(MenuAnchor);
+
+export function useRowMenu() {
+  const open = useMenu();
+  const press = useRef<{ target: HTMLElement; x: number; y: number; timer: number; opened: boolean }>(undefined);
+  const release = () => { window.clearTimeout(press.current?.timer); };
+  useEffect(() => release, []);
+
+  return (items: MenuItem[]): React.HTMLAttributes<HTMLButtonElement> => ({
+    onContextMenu(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (press.current?.opened && press.current.target === event.currentTarget) return;
+      open(event.currentTarget, items, event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : undefined);
+    },
+    onPointerDown(event) {
+      release();
+      press.current = undefined;
+      if (event.pointerType !== "touch") return;
+      const target = event.currentTarget;
+      const x = event.clientX;
+      const y = event.clientY;
+      const timer = window.setTimeout(() => {
+        if (!press.current || !target.isConnected) return;
+        press.current.opened = true;
+        open(target, items, { x, y });
+      }, 480);
+      press.current = { target, x, y, timer, opened: false };
+    },
+    onPointerMove(event) {
+      const active = press.current;
+      if (active && Math.hypot(active.x - event.clientX, active.y - event.clientY) > 10) release();
+    },
+    onPointerUp: release,
+    onPointerCancel: release,
+    onPointerLeave: release,
+    onClickCapture(event) {
+      if (event.detail && press.current?.opened && press.current.target === event.currentTarget) {
+        event.preventDefault();
+        event.stopPropagation();
+        press.current = undefined;
+      }
+    },
+  });
+}
 
 export function DesktopMenus({ children }: { children: ReactNode }) {
   const [menu, setMenu] = useState<Menu>();
@@ -40,6 +84,7 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     setMenu(undefined);
     if (restore) menu?.restoreFocus?.focus({ preventScroll: true });
   }
+  useIosBack(menu ? () => close(true) : undefined, 30);
 
   useLayoutEffect(() => {
     const element = panel.current;
@@ -115,7 +160,7 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
 
   return <OpenMenu.Provider value={open}><MenuAnchor.Provider value={menu?.anchor}><div onContextMenu={context}>
     {children}
-    {failure && createPortal(<div className="clipboard-error inline-error" role="alert" onClick={() => setFailure("")}>
+    {failure && createPortal(<div className="clipboard-error inline-error" role="alert">
       {failure}<button type="button" className="text-button" onClick={() => setFailure("")}>{t("Dismiss", "关闭")}</button>
     </div>, document.querySelector("dialog[open], .private-chat") ?? document.body)}
     {menu && createPortal(<div className="app-menu" ref={panel} role="menu" aria-label="Actions" tabIndex={-1}

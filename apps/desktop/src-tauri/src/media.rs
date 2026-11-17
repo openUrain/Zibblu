@@ -43,20 +43,24 @@ async fn process_upload<T: Send + 'static>(
 }
 
 #[tauri::command]
-pub(crate) async fn pick_profile_image(
+pub(crate) async fn pick_image(
     window: WebviewWindow,
     state: State<'_, Desktop>,
+    for_profile: bool,
 ) -> CommandResult<tauri::ipc::Response> {
     if window.label() != "main" {
         return Err(anyhow::anyhow!("Open the profile in the main window").into());
     }
     let client = state.client().await?;
     #[cfg(target_os = "ios")]
-    let selected = crate::ios::pick_photo().await?;
+    let selected = {
+        let _ = for_profile;
+        crate::ios::pick_photo().await?
+    };
     #[cfg(not(target_os = "ios"))]
     let selected = tauri::async_runtime::spawn_blocking(move || -> Result<Option<Vec<u8>>> {
         let picker = window.dialog().file()
-            .set_title("Choose a profile image")
+            .set_title(if for_profile { "Choose a profile image" } else { "Choose a QR image" })
             .add_filter("Images", &["png", "apng", "jpg", "jpeg", "webp", "gif", "bmp"]);
         #[cfg(desktop)]
         let picker = picker.set_parent(&window);

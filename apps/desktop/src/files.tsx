@@ -5,6 +5,7 @@ import type { Attachment, FileFilter, Message, Transfer, User } from "./api";
 import { mediaKind, readAttachmentPage } from "./attachment-media";
 import { Blank, Choice, People, PersonAvatar, bytes, dateTimeLabel, displayName, usePage } from "./common";
 import { ios } from "./ios";
+import { actions, t } from "./locale";
 
 export function FileIcon({ file }: { file: Attachment }) {
   const Icon = file.kind === "folder" ? FolderOpen : file.name.toLowerCase().endsWith(".zip") ? Archive : File;
@@ -61,12 +62,12 @@ export function AttachmentDownload({ file, transfer, onChanged, hideSave = false
 }) {
   const { save, saving, failure } = useAttachmentSave(onChanged);
   const share = ios && transfer?.status === "complete";
-  const action = ios ? (share ? "Share" : "Download") : transfer ? "Save again" : "Save";
+  const action = ios ? (share ? t("Share", "分享") : t("Download", "下载")) : actions.save;
   return <div className="attachment-download">
     {(!transfer || transfer.status === "complete") && (!hideSave || transfer) && <div className="file-download-actions">
-      {transfer && <span className="verified"><Check size={14} /> Download verified</span>}
+      {transfer && <span className="verified"><Check size={14} /> {actions.saved}</span>}
       {!hideSave && <button className="button subtle small" onClick={() => void save(file.id)} disabled={saving} aria-label={`${action} ${file.name}`}>
-        {share ? <Share size={15} /> : <Download size={15} />} {saving ? (ios ? "Preparing…" : "Choosing…") : action}
+        {share ? <Share size={15} /> : <Download size={15} />} {saving ? actions.saving : failure ? actions.retry : action}
       </button>}
     </div>}
     {transfer && transfer.status !== "complete" &&
@@ -87,7 +88,7 @@ function TransferProgress({ transfer, onChanged, chooseNew, choosing }: {
   const complete = transfer.status === "complete";
   const total = transfer.attachment.size;
   const percentage = total > 0 ? Math.floor(transfer.received * 100 / total) : complete ? 100 : 0;
-  const status = complete ? (transfer.direction === "upload" ? "Shared and verified" : "Download verified")
+  const status = complete ? (transfer.direction === "upload" ? t("Shared", "已发送") : actions.saved)
     : expired ? "Expired" : failed ? "Failed" : running
       ? percentage === 100 ? "Verifying…" : transfer.direction === "upload" ? "Uploading" : "Downloading"
       : queued ? "Queued" : "Paused";
@@ -114,7 +115,9 @@ function TransferProgress({ transfer, onChanged, chooseNew, choosing }: {
             {!expired && <button className="button subtle small" onClick={() => void action("resume")} disabled={busy}>
               {failed ? <RotateCcw size={14} /> : <Play size={14} />}{failed ? "Retry" : "Resume"}
             </button>}
-            {chooseNew && !expired && <button className="button subtle small" disabled={busy || choosing} onClick={chooseNew}>Save as…</button>}
+            {chooseNew && !expired && <button className="button subtle small" disabled={busy || choosing} onClick={chooseNew}>
+              {choosing ? actions.saving : t("Save as…", "另存为…")}
+            </button>}
             <button className="icon-button danger" aria-label={"Discard transfer for " + transfer.attachment.name}
               title="Discard partial transfer" onClick={() => void action("discard")} disabled={busy}><Trash2 size={15} /></button>
           </>}

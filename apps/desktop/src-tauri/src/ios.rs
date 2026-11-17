@@ -7,18 +7,50 @@ use std::{
     path::{Path, PathBuf},
 };
 use tokio::sync::{oneshot, watch};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use zibblu_core::assistant::{AiFile, AiProvider};
 use zibblu_core::keychain::{delete_secret, read_secret, store_secret};
+
+type SelectionCallback = extern "C" fn(*mut c_void, i32, *const u8, usize);
 
 unsafe extern "C" {
     fn zibblu_ios_install(network_changed: extern "C" fn(bool));
     fn zibblu_ios_share(path: *const std::ffi::c_char) -> bool;
     fn zibblu_ios_data_dir(buffer: *mut u8, capacity: usize) -> usize;
     fn zibblu_ios_copy_text(text: *const c_char) -> bool;
-    fn zibblu_ios_pick_photo(
-        context: *mut c_void,
-        callback: extern "C" fn(*mut c_void, i32, *const u8, usize),
+    fn zibblu_ios_pick_photo(context: *mut c_void, callback: SelectionCallback);
+    fn zibblu_ios_scan_qr(context: *mut c_void, callback: SelectionCallback);
+    fn zibblu_ios_install_layout(
+        view: *mut c_void, changed: extern "C" fn(f64, f64), back: extern "C" fn(),
     );
+    fn zibblu_ios_publish_layout();
+    fn zibblu_ios_back_enabled(enabled: bool);
+}
+
+static LAYOUT_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
+
+pub(crate) fn install_layout(window: &WebviewWindow) -> tauri::Result<()> {
+    extern "C" fn changed(inset: f64, text_scale: f64) {
+        if let Some(app) = LAYOUT_APP.get() {
+            let _ = app.emit_to("main", "ios-input-layout", (inset, text_scale));
+        }
+    }
+    extern "C" fn back() {
+        if let Some(app) = LAYOUT_APP.get() {
+            let _ = app.emit_to("main", "ios-back", ());
+        }
+    }
+    let _ = LAYOUT_APP.set(window.app_handle().clone());
+    window.with_webview(|view| unsafe { zibblu_ios_install_layout(view.inner(), changed, back) })
+}
+
+pub(crate) fn request_layout(back_enabled: Option<bool>) {
+    unsafe {
+        if let Some(enabled) = back_enabled {
+            zibblu_ios_back_enabled(enabled);
+        }
+        zibblu_ios_publish_layout();
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -66,21 +98,32 @@ pub(crate) fn copy_text(text: &str) -> Result<()> {
 }
 
 pub(crate) async fn pick_photo() -> Result<Option<Vec<u8>>> {
-    type Reply = oneshot::Sender<Result<Option<Vec<u8>>>>;
+    select_bytes(zibblu_ios_pick_photo, zibblu_core::MAX_PASTED_IMAGE_BYTES).await
+        .context("Could not open the selected photo. Choose an image up to 16 MiB.")
+}
+
+pub(crate) async fn scan_qr() -> Result<Option<String>> {
+    let bytes = select_bytes(zibblu_ios_scan_qr, 4096).await
+        .context("Could not use the camera. Allow camera access in Settings or choose a QR image.")?;
+    Ok(bytes.map(String::from_utf8).transpose()?)
+}
+
+async fn select_bytes(start: unsafe extern "C" fn(*mut c_void, SelectionCallback), limit: usize) -> Result<Option<Vec<u8>>> {
+    type Reply = (usize, oneshot::Sender<Result<Option<Vec<u8>>>>);
     extern "C" fn selected(context: *mut c_void, status: i32, bytes: *const u8, length: usize) {
-        let sender = unsafe { Box::from_raw(context.cast::<Reply>()) };
+        let (limit, sender) = *unsafe { Box::from_raw(context.cast::<Reply>()) };
         let result = match status {
             0 => Ok(None),
-            1 if !bytes.is_null() && length <= zibblu_core::MAX_PASTED_IMAGE_BYTES => {
+            1 if !bytes.is_null() && length <= limit => {
                 Ok(Some(unsafe { std::slice::from_raw_parts(bytes, length) }.to_vec()))
             }
-            _ => Err(anyhow::anyhow!("Could not open the selected photo. Choose an image up to 16 MiB.")),
+            _ => Err(anyhow::anyhow!("The selected data is unavailable")),
         };
         let _ = sender.send(result);
     }
     let (sender, receiver) = oneshot::channel();
-    unsafe { zibblu_ios_pick_photo(Box::into_raw(Box::new(sender)).cast(), selected) };
-    receiver.await.context("Photo picker was interrupted")?
+    unsafe { start(Box::into_raw(Box::new((limit, sender))).cast(), selected) };
+    receiver.await.context("The selection was interrupted")?
 }
 
 pub(crate) fn data_directory() -> Result<PathBuf> {

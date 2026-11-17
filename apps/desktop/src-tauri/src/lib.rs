@@ -81,7 +81,9 @@ pub fn run() {
                 windows_shell::create_tray(app.handle())?;
                 window.show()?;
             }
-            #[cfg(not(windows))]
+            #[cfg(target_os = "ios")]
+            ios::install_layout(&builder.build()?)?;
+            #[cfg(not(any(windows, target_os = "ios")))]
             builder.build()?;
             Ok(())
         })
@@ -120,6 +122,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             clipboard::copy_text,
             clipboard::paste_text,
+            commands::ios_layout,
+            commands::ios_scan_qr,
             commands::preferences,
             commands::set_close_action,
             commands::login,
@@ -141,7 +145,7 @@ pub fn run() {
             commands::set_display_name,
             commands::set_bio,
             commands::set_contact_notes,
-            media::pick_profile_image,
+            media::pick_image,
             media::set_profile_image,
             commands::set_read_receipts,
             commands::read_update,

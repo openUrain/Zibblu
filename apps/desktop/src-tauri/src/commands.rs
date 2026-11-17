@@ -355,6 +355,37 @@ fn invalid_saved_session() -> CommandError {
 
 pub(crate) type Result<T> = std::result::Result<T, CommandError>;
 
+#[tauri::command]
+pub(crate) fn ios_layout(window: WebviewWindow, back_enabled: Option<bool>) {
+    #[cfg(target_os = "ios")]
+    if window.label() == "main" {
+        crate::ios::request_layout(back_enabled);
+    }
+    #[cfg(not(target_os = "ios"))]
+    let _ = (window, back_enabled);
+}
+
+#[tauri::command]
+pub(crate) async fn ios_scan_qr(window: WebviewWindow, state: State<'_, Desktop>) -> Result<Option<String>> {
+    #[cfg(target_os = "ios")]
+    {
+        if window.label() != "main" {
+            return Err(anyhow!("Open the QR scanner in the main window").into());
+        }
+        let client = state.client().await?;
+        let code = crate::ios::scan_qr().await?;
+        if !state.is_current(&client).await {
+            return Err(anyhow!("The session has ended").into());
+        }
+        Ok(code)
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        let _ = (window, state);
+        Err(anyhow!("Use your device's available camera").into())
+    }
+}
+
 #[derive(Serialize)]
 pub(crate) struct SignedIn {
     user: User,

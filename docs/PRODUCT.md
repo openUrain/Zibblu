@@ -13,13 +13,13 @@ The selected server handles accounts, contacts, groups, devices and delivery. It
 
 ## Interface
 
-**Authoritative cross-platform UI/UX design:** [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) (Owner-approved, 2026-11-14). The following are **target design rules**, not a claim that all v0.1.1 screens already comply.
+The [cross-platform design system](DESIGN_SYSTEM.md) records the Owner's interface requirements from [Issue #54](https://github.com/openUrain/Zibblu/issues/54).
 
-- Chat behavior, chat-list hierarchy, profile and settings organization follow **WeChat**. File operation capabilities and media viewer follow **QQ**. Visual polish is **iMessage-first** with subtle **Snapchat** playfulness; overall presentation is Apple-like restraint.
-- Main desktop navigation has three panes (nav / conversation list / content). **Chats · Contacts · Files** are direct entries. The top-left logo opens your profile. The bottom-left menu contains Settings, About, Feedback availability and Sign out. Phone uses four bottom tabs **Chats · Contacts · Files · Me**. Tablet uses a two-pane adaptive layout.
-- Chat: retain **current message bubble visuals unchanged**. Use WeChat-style chat list and contextual operations (desktop right-click; mobile long-press). Composer uses WeChat functionality and iMessage visual treatment. Show only necessary message states.
-- Files: the **Files view only lists ordinary attachments that cannot be directly previewed inside chat and must be downloaded**. Pictures and videos stay in **per-conversation chat/media history and media search**, with in-chat previews when supported. Ordinary file messages use **WeChat-style cards** with **progress directly in chat**. File actions and batch management follow QQ; the media viewer supports QQ-style navigation and save operations where available.
-- Profile: concise WeChat-like summary, extended info at a second level. Settings: desktop split-panel, phone hierarchical lists.
+- Windows, iPhone and iPad each follow WeChat on that platform for navigation, chat, profile and settings. Zibblu uses its own imagery and Lavender accents.
+- Desktop has three panes for navigation, conversation list and content. **Chats · Contacts · Files** are direct entries. The signed-in user's avatar opens their profile. The bottom-left menu contains Settings, About, Feedback availability and Sign out. iPhone uses **Chats · Contacts · Files · Me**. iPad uses list and detail panes when the window fits and pushes detail onto the navigation stack in narrow windows.
+- Chat shows the live group roster count in the group heading. Actions open by right-click on desktop and long press on touch. Only the active input area and related scroll region adjust to the keyboard.
+- Files lists ordinary attachments that require a download. Chat previews and conversation media history contain pictures and videos. Transfer progress, save and retry stay with the chat attachment. System pickers and export sheets handle file access.
+- Profile has a page for personal information and a separate page for each editor. Select and crop a photo before confirming. Display names are editable while the sign-in handle stays stable. Profile, image and contact data render from the signed-in account's cache first and update in the background.
 - Normal app/chat uses a lightly lavender-tinted **light theme**. M2 private chat **keeps its existing separate dark theme**, same core controls and explicit LAN-only indicators. AI stays inside normal chat as an opt-in `@name` flow with conspicuous per-request authorization.
 - Shared semantic tokens, system fonts, linear icons with filled selected state, small radii, mostly flat surfaces (glass only on temporary overlays), balanced density and natural moderate motion. Never use excessive decoration, crowded controls or inconsistent cross-platform interactions.
 - The first visible message has a local 24-hour time label. A new label appears when consecutive messages cross a local date boundary or are more than 10 minutes apart.
@@ -33,7 +33,7 @@ On Windows, the standalone client defaults to **Zibblu Online** on a fresh profi
 
 On Windows, a normal app exit leaves the last successful sign-in available. On the next start, select the saved account card to ask its server to restore the session, or choose **Use another account** for password sign-in. The card uses the last locally saved avatar or an initial. A network failure allows a retry. An expired or revoked session returns to password sign-in. **Sign out** removes the saved sign-in from this device. Settings lists the account’s active devices and can retire another installation.
 
-The iPhone target uses the same sign-in and sync flows with four bottom tabs. Choose a file from the system document picker. Downloads stay in the app sandbox until you choose **Share** to export a verified file. To share a directory, zip it and choose the archive in Files.
+iPhone and iPad use the same sign-in and sync flows. Choose a file from the system document picker and profile images from the system photo picker. Downloads stay in the app sandbox until you choose **Share** to export a verified file. To share a directory, zip it and choose the archive in Files.
 
 Registration asks for the new password twice. On Windows, the main window starts centered in the work area of its initial display. The first close asks whether to exit or hide to the system tray. Settings lets you change this local preference. Minimize still uses the taskbar. The tray can show the same window or exit the app. Launching again with the same data directory restores its window. Separate directories can run independent clients.
 
@@ -96,13 +96,12 @@ Rules:
 ## Brand
 
 Name: **Zibblu**. Tagline: **Chat freely. Share privately.**  
-Personality: **Apple-like restraint, warm and precise, lightly playful without visual clutter.**
+Personality: **Warm, precise and familiar in everyday use.**
 
 - **Main hue:** Lavender. **Exact HEX is not yet Owner-approved**; candidate prototypes are listed in [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) and must be reviewed for accessible contrast before being frozen.
 - **Normal mode:** light surfaces with very subtle lavender tint, flat presentation and restrained accents.
 - **Private LAN mode:** preserve independent dark theme; use explicit text/icon security states instead of relying on color as a privacy claim.
-- **Reference hierarchy:** WeChat for chat/profiles/settings; QQ for files and media controls; iMessage for visual effects, Snapchat for small touches of personality.
-- **Exceptions:** existing message bubbles remain unchanged; the file/media separation and in-chat progress are non-negotiable without a new Owner decision.
+- **Interface reference:** Windows WeChat, iPhone WeChat and iPad WeChat for their respective platforms. Keep file and media organization and transfer progress as described above.
 
 
 ## Success definition

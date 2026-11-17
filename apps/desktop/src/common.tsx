@@ -1,8 +1,10 @@
-import { Circle, CircleCheck, UsersRound, X } from "lucide-react";
+import { Check, ChevronLeft, Circle, CircleCheck, UsersRound, X } from "lucide-react";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ComponentPropsWithoutRef, KeyboardEventHandler, ReactNode } from "react";
 import { api, errorMessage } from "./api";
 import type { Conversation, Directory, Message, Page, User } from "./api";
+import { ios, useIosBack } from "./ios";
+import { actions, t } from "./locale";
 
 export const People = createContext<Pick<Directory, "remarks" | "avatars"> & { online?: boolean; open?: (user: User) => void }>({ remarks: {}, avatars: {} });
 
@@ -59,13 +61,14 @@ export function Choice({ children, className = "", type = "checkbox", ...input }
   return <label className={`choice ${className}`}>
     <input type={type} {...input} />
     {children}
-    <Indicator className="choice-indicator" size={16} aria-hidden="true" />
+    {ios ? input.checked && <Check className="choice-indicator" size={22} aria-hidden="true" />
+      : <Indicator className="choice-indicator" size={16} aria-hidden="true" />}
   </label>;
 }
 
-export function Dialog({ title, close, children, className, onKeyDown, closeDisabled }: {
+export function Dialog({ title, close, children, className, onKeyDown, closeDisabled, mobilePage }: {
   title: string; close: () => void; children: ReactNode; className?: string;
-  onKeyDown?: KeyboardEventHandler<HTMLDialogElement>; closeDisabled?: boolean;
+  onKeyDown?: KeyboardEventHandler<HTMLDialogElement>; closeDisabled?: boolean; mobilePage?: boolean;
 }) {
   const element = useRef<HTMLDialogElement>(null);
   useLayoutEffect(() => {
@@ -73,12 +76,18 @@ export function Dialog({ title, close, children, className, onKeyDown, closeDisa
     dialog?.showModal();
     return () => dialog?.close();
   }, []);
-  return <dialog ref={element} className={className} onCancel={event => { event.preventDefault(); if (!closeDisabled) close(); }}
+  useIosBack(() => { if (!closeDisabled) close(); }, 20);
+  const page = ios && mobilePage;
+  return <dialog ref={element} className={(className ?? "") + (page ? " dialog-page" : "")}
+    onCancel={event => { event.preventDefault(); if (!closeDisabled) close(); }}
     onKeyDown={onKeyDown} aria-label={title}>
-    <div className="dialog-head"><h2>{title}</h2>
-      <button className="icon-button" aria-label="Close dialog" onClick={close} disabled={closeDisabled}><X size={19} /></button>
+    <div className="dialog-head">
+      {!page && <h2>{title}</h2>}
+      <button className="icon-button" type="button" aria-label={page ? actions.back : t("Close dialog", "关闭")}
+        onClick={close} disabled={closeDisabled}>{page ? <ChevronLeft size={25} /> : <X size={19} />}</button>
+      {page && <h2>{title}</h2>}
     </div>
-    {children}
+    {page ? <div className="dialog-page-body">{children}</div> : children}
   </dialog>;
 }
 

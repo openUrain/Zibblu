@@ -1,40 +1,42 @@
 .ios {
+  font-size: calc(16px * var(--ios-text-scale, 1));
   --phone-top: env(safe-area-inset-top);
+  --phone-right: env(safe-area-inset-right);
   --phone-bottom: env(safe-area-inset-bottom);
+  --phone-left: env(safe-area-inset-left);
+  --keyboard-inset: 0px;
+  --input-bottom: max(var(--phone-bottom), var(--keyboard-inset));
 }
-.ios-keyboard { --phone-bottom: 0px; }
-
+.ios body { font-size: 1rem; }
 .ios .shell {
   display: flex;
   flex-direction: column;
-  height: var(--ios-height, 100dvh);
-  padding: var(--phone-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+  height: 100lvh;
+  padding: var(--phone-top) var(--phone-right) 0 var(--phone-left);
 }
 .ios .shell-main { flex: 1; }
-.ios .rail, .ios .conversation-open .topbar { display: none; }
+.ios :is(.rail, .topbar) { display: none; }
+.ios .mobile-connection { padding: 5px 12px; color: var(--amber); background: var(--amber-bg); font-size: .8125rem; }
 .ios .chat-layout { grid-template-columns: minmax(0, 1fr); }
-.ios .chat-layout:not(.mobile-chat-open) > :is(.chat-view, .chat-blank),
+.ios .chat-layout:not(.mobile-chat-open) > :is(.chat-view, .chat-blank, .private-chat),
 .ios .chat-layout.mobile-chat-open > .chat-list { display: none; }
-.ios .chat-list { border: 0; }
-.ios .chat-header .mobile-back { display: inline-flex; }
-.ios .topbar { min-height: 54px; }
-.ios .app-name { font-size: 19px; app-region: no-drag; }
-.ios .chat-view { padding-bottom: var(--phone-bottom); }
-.ios .chat-list-head { padding: 15px 16px 10px; }
-.ios .chat-list h1 { font-size: 27px; }
-.ios .chat-list > .search { margin-inline: 16px; }
-.ios .message-row :is(.bubble, .media-tile, .file-main),
-.ios .private-chat textarea { -webkit-touch-callout: none; }
-.ios .message-row .bubble, .ios .private-chat .messages {
-  -webkit-user-select: none;
-  user-select: none;
-}
+.ios .shell:not(.ipad-split) .chat-profile-open > .chat-list { display: none; }
+.ios .chat-list { border: 0; background: var(--panel); }
+.ios .chat-header .mobile-back, .ios .private-header .mobile-back { display: inline-flex; }
+.ios .chat-view, .ios .private-chat { padding-bottom: var(--input-bottom); }
+.ios .chat-list-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 12px 4px 16px; }
+.ios .chat-list-title h1 { font-size: 1.25rem; }
+.ios .chat-list-head { padding: 4px 12px 8px; }
+.ios .chat-list:focus-within, .ios .contacts-screen:focus-within { padding-bottom: var(--keyboard-inset); }
+.ios .chat-row { min-height: 64px; }
+.ios .chat-row strong, .ios .chat-heading h2 { font-size: 1rem; }
+.ios .chat-row small, .ios .chat-row time { font-size: .8125rem; }
 
 .phone-tabs {
   order: 1;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  padding: 4px 8px max(4px, var(--phone-bottom));
+  padding: 2px 2px max(2px, var(--phone-bottom));
   background: var(--panel);
   border-top: 1px solid var(--line);
 }
@@ -43,50 +45,124 @@
   place-items: center;
   align-content: center;
   gap: 3px;
-  min-height: 48px;
+  min-width: 44px;
+  min-height: 51px;
   border: 0;
   background: transparent;
   color: var(--muted);
-  font-size: 11px;
+  font-size: .75rem;
 }
+.phone-tabs .rail-icon > svg { width: 26px; height: 26px; }
 .phone-tabs [aria-current="page"] { color: var(--primary); font-weight: 650; }
-.ios .conversation-open .phone-tabs, .ios-keyboard .phone-tabs { display: none; }
+.ios-keyboard .phone-tabs,
+.ios .shell:not(.ipad-split):is(.conversation-open, .profile-open, :has(.settings-screen)) .phone-tabs { display: none; }
+
+.ios .ipad-split {
+  --split-width: clamp(260px, 33vw, 350px);
+  --tabs-space: calc(54px + var(--phone-bottom));
+  display: grid;
+  grid-template-columns: var(--split-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+.ios-keyboard .ipad-split { --tabs-space: 0px; }
+.ios .ipad-split .shell-main { grid-area: 1 / 1 / -1 / -1; }
+.ipad-split .phone-tabs { grid-area: 2 / 1; border-inline-end: 1px solid var(--line); z-index: 1; }
+.ios .ipad-split :is(.chat-layout, .ipad-profile-layout) { display: grid; grid-template-columns: var(--split-width) minmax(0, 1fr); }
+.ios .ipad-split :is(.chat-list, .ipad-profile-layout > .settings-page) {
+  display: flex; flex-direction: column; min-height: 0; min-width: 0;
+  padding-bottom: var(--tabs-space); border-inline-end: 1px solid var(--line);
+}
+.ios .ipad-split .ipad-profile-layout > .settings-page:focus-within {
+  padding-bottom: max(var(--tabs-space), var(--keyboard-inset));
+}
+.ios .ipad-split .workspace-content > :is(.files-view, .settings-screen) { padding-bottom: var(--tabs-space); }
+.ios .ipad-split .chat-layout:not(.chat-profile-open) > :is(.chat-view, .chat-blank, .private-chat) { display: flex; }
+.ios .ipad-split :is(.chat-header, .private-header) .mobile-back { display: none; }
+
 .ios .settings-heading { display: flex; align-items: center; gap: 6px; }
-.ios .settings-heading .icon-button { margin-inline-start: -10px; }
-.ios .phone-profile { min-height: 62px; border-bottom: 1px solid var(--line); }
-.ios .phone-profile strong { flex: 1; overflow-wrap: anywhere; }
-.ios .phone-profile > span:nth-child(2) { flex: 1; display: grid; gap: 3px; }
-.ios .profile-open :is(.phone-tabs, .topbar) { display: none; }
-.ios .profile-content { padding-bottom: max(16px, var(--phone-bottom)); }
-.ios .profile-content .button { min-height: 44px; }
+.ios .settings-heading h1 { font-size: 1.125rem; }
+.ios .settings-screen { display: flex; flex-direction: column; }
+.ios .settings-screen .settings-nav { border-right: 0; }
+.ios .settings-detail-open .settings-nav { display: none; }
+.ios .settings-detail { flex: 1; }
+.ios .settings-detail:focus-within { padding-bottom: var(--input-bottom); }
+.ios .phone-profile { min-height: 82px; border-bottom: 1px solid var(--line); }
+.ios .phone-profile > span:nth-child(2) { flex: 1; min-width: 0; display: grid; gap: 3px; overflow-wrap: anywhere; }
 .ios .phone-me-actions { margin-block: 12px 20px; border-bottom: 1px solid var(--line); }
 .ios .phone-me-actions .drawer-action svg:last-child { margin-left: auto; color: var(--muted); }
+.ios .contact-name { min-height: 48px; }
+.ios .contact-name > svg:last-child { margin-inline-start: auto; }
+.ios .profile-content { padding: 12px 0 max(16px, var(--input-bottom)); }
+.ios .profile-content:focus-within { margin-bottom: var(--keyboard-inset); padding-bottom: 16px; }
+.ios .profile-content > :not(.profile-rows, .profile-cover) { margin-inline: 16px; }
 
-.ios :is(input:not([type="checkbox"], [type="radio"], [type="range"]), select, textarea) { font-size: 16px; }
+.ios :is(input:not([type="checkbox"], [type="radio"], [type="range"]), select, textarea) { font-size: max(16px, 1rem); }
 .ios textarea { resize: none; }
-.ios :is(.topbar, .chat-header, .chat-list-head, .composer-bar, .dialog-head) :is(.icon-button, .square-primary),
+.ios :is(.chat-header, .chat-list-head, .composer-bar, .dialog-head, .profile-header, .chat-list-title, .settings-heading) :is(.icon-button, .square-primary),
 .ios :is(.dialog-actions, .private-actions, .drawer-actions, .phone-me) button,
-.ios .app-menu button { min-height: 44px; }
-.ios :is(.topbar, .chat-header, .chat-list-head, .composer-bar, .dialog-head) :is(.icon-button, .square-primary) { min-width: 44px; }
-.ios .composer { padding: 6px 12px 8px; }
-.ios .composer textarea { min-height: 52px; }
+.ios :is(.choice, .drawer-action, .pick-contact, .ai-settings-row, .ai-mention-option, .app-menu button, .ai-file-chips .icon-button, .profile-content .button) {
+  min-height: 44px;
+}
+.ios :is(.chat-header, .chat-list-head, .composer-bar, .dialog-head, .chat-list-title, .settings-heading) :is(.icon-button, .square-primary),
+.ios .ai-file-chips .icon-button { min-width: 44px; }
+.ios .choice-indicator { width: 22px; }
+.ios .choice { border-radius: 4px; }
+.ios .choice > span { flex: 1; }
+.ios .setting-switch > .switch-track { flex: none; width: 51px; height: 31px; }
+.ios .switch-track::before { width: 27px; height: 27px; }
+.ios .setting-switch:has(input:checked) .switch-track::before { transform: translateX(20px); }
+.ios .message-row :is(.bubble, .media-tile, .file-main), .ios .private-chat textarea { -webkit-touch-callout: none; }
+.ios .message-row .bubble, .ios .private-chat .messages { -webkit-user-select: none; user-select: none; }
+
+.ios .composer { padding: 5px 8px; border-top: 1px solid var(--line); background: var(--bg); }
+.ios .composer-box { padding: 0; border: 0; box-shadow: none; background: transparent; }
+.ios .composer-box:focus-within { box-shadow: none; }
+.ios .composer textarea { min-height: 44px; max-height: 28lvh; padding: 10px; border-radius: 5px; background: var(--panel); }
+.ios .composer-label { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden; }
+.ios .composer-bar { padding: 2px 0; }
+.ios .composer-box:not(.ai-composer, :has(.composer-quote, .pasted-image, .drop-hint)) {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: end; gap: 4px;
+}
+.ios .composer-box:not(.ai-composer, :has(.composer-quote, .pasted-image, .drop-hint)) .composer-bar { display: contents; }
+.ios .composer-bar .send-button:has(span) > svg { display: none; }
 .ios .send-button { min-height: 44px; }
-.ios .chat-header { gap: 6px; padding-inline: 8px 12px; }
+.ios .chat-header { min-height: 52px; gap: 4px; padding-inline: 6px 8px; }
 .ios .chat-header .button { min-height: 44px; }
 
 .ios .signin {
   display: block;
-  height: var(--ios-height, 100dvh);
+  height: calc(100lvh - var(--keyboard-inset));
   min-height: 0;
   overflow: auto;
   padding-bottom: var(--phone-bottom);
 }
-.ios .signin-brand { padding: calc(var(--phone-top) + 20px) 24px 24px; gap: 14px; }
-.ios .signin-form { padding: 24px 24px 32px; }
-.ios .signin-message h1 { font-size: 29px; }
+.ios .signin-brand { padding: calc(var(--phone-top) + 16px) 20px 20px; gap: 12px; }
+.ios .signin-message h1 { font-size: 1.75rem; }
+.ios .signin-form { padding: 20px 24px 30px; }
 .ios dialog {
+  inset-block-end: var(--keyboard-inset);
   width: min(530px, calc(100vw - 24px));
-  max-height: calc(var(--ios-height, 100dvh) - var(--phone-top) - var(--phone-bottom) - 24px);
+  max-height: calc(100lvh - var(--phone-top) - var(--input-bottom) - 24px);
   padding: 16px;
 }
-.ios .app-menu { max-height: calc(var(--ios-height, 100dvh) - 16px); overflow: auto; }
+.ios dialog.dialog-page[open] {
+  display: flex; flex-direction: column; position: fixed; margin: 0;
+  inset: var(--phone-top) var(--phone-right) var(--input-bottom) var(--phone-left);
+  width: auto; height: auto; max-width: none; max-height: none;
+  padding: 0; border: 0; border-radius: 0; box-shadow: none;
+}
+.ios .dialog-page > .dialog-head {
+  display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: 8px;
+  margin: 0; padding: 4px 8px; text-align: center; background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.ios .dialog-page .dialog-head h2 { min-width: 0; font-size: 1.125rem; overflow-wrap: anywhere; }
+.ios .dialog-page-body { flex: 1; min-height: 0; padding: 14px 16px; overflow: auto; }
+.ios dialog.dialog-page .ai-snapshot { max-height: none; overflow: visible; }
+.ios .app-menu { max-height: calc(100lvh - var(--input-bottom) - 16px); overflow: auto; }
+.ios .app-menu button svg { width: 20px; height: 20px; }
+.ios .drawer-members ul { display: grid; grid-template-columns: repeat(auto-fill, minmax(70px, 1fr)); }
+.ios .drawer-members .drawer-action:has(.avatar) {
+  display: grid; justify-items: center; gap: 4px; text-align: center; overflow-wrap: anywhere;
+}
+
+.ios .ipad-split dialog.dialog-page[open] { inset-inline-start: calc(var(--phone-left) + var(--split-width)); }
