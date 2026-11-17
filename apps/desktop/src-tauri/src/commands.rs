@@ -135,6 +135,7 @@ impl Desktop {
             })
     }
 
+    #[cfg(not(target_os = "ios"))]
     pub(crate) fn webview_directory(&self) -> PathBuf {
         self.data.join("webview")
     }
@@ -810,7 +811,7 @@ pub(crate) async fn private_view(
 pub(crate) async fn private_respond(
     state: State<'_, Desktop>,
     app: AppHandle,
-    window: WebviewWindow,
+    _window: WebviewWindow,
     id: Uuid,
     accept: bool,
 ) -> Result<()> {
@@ -823,7 +824,8 @@ pub(crate) async fn private_respond(
             "private-invitation-accepted",
             serde_json::json!({ "id": id, "conversation": conversation }),
         );
-        if window.label() == crate::private_runtime::INVITATION {
+        #[cfg(desktop)]
+        if _window.label() == crate::private_runtime::INVITATION {
             let _ = main.unminimize();
             let _ = main.set_focus();
         }

@@ -824,6 +824,10 @@ impl PrivateLobby {
         self.task.abort();
         self.engine.lan.endpoint.close(code.into(), b"");
         let mut state = self.engine.state();
+        #[cfg(target_os = "ios")]
+        for &room in state.guests.keys() {
+            state.dismissed.record(room);
+        }
         state.hosted.clear();
         state.guests.clear();
     }
