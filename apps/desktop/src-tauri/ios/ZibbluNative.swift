@@ -197,13 +197,14 @@ private final class Bonjour: NSObject, NetServiceDelegate {
     }
 
     private func updateResults(_ results: Set<NWBrowser.Result>) {
-        let names = Set(results.compactMap { result -> String? in
+        let detected = results.compactMap { result -> String? in
             guard case let .service(name, _, _, _) = result.endpoint,
                   name != own.name, name.utf8.count == 32, name.allSatisfy(\.isHexDigit) else { return nil }
             return name
-        })
+        }
+        let names = Set(detected.sorted().prefix(512))
         for name in Set(resolving.keys).union(peers.keys).subtracting(names) { remove(name) }
-        for name in names.sorted().prefix(512) where resolving[name] == nil && peers[name] == nil {
+        for name in names where resolving[name] == nil && peers[name] == nil {
             let service = NetService(domain: "local.", type: serviceType + ".", name: name)
             service.delegate = self
             resolving[name] = service
