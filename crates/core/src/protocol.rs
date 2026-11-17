@@ -109,6 +109,8 @@ pub enum ProfileRelation {
 #[derive(Serialize, Deserialize)]
 pub struct Profile {
     pub user: User,
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub relation: ProfileRelation,
     pub avatar: Option<Uuid>,
     pub cover: Option<Uuid>,
@@ -408,6 +410,8 @@ pub struct UploadProgress {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Directory {
+    #[serde(default)]
+    pub names: std::collections::HashMap<Uuid, String>,
     pub contacts: Vec<User>,
     pub conversations: Vec<Conversation>,
     #[serde(default)]

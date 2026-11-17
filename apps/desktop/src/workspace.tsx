@@ -11,8 +11,9 @@ import { ai } from "./ai-api";
 import type { AiReply, Assistant } from "./ai-api";
 import { AssistantSettings } from "./ai";
 import { api, errorMessage, isExpired } from "./api";
-import type { CloseAction, Conversation, ConversationRequest, Device, Directory, Draft, DropOffer, Session, ShareSource, SyncUpdate, Transfer, User } from "./api";
+import type { CloseAction, Conversation, ConversationRequest, Device, Directory, Draft, DropOffer, Profile, Session, ShareSource, SyncUpdate, Transfer, User } from "./api";
 import { Blank, Brand, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName } from "./common";
+import { t } from "./locale";
 import { ChatList, ChatView } from "./chat";
 import { FilesView } from "./files";
 import { NearbyDevices, PrivateChatView, PrivateInvitationOverlay, PrivateTargets, usePrivateRooms } from "./private-chat";
@@ -42,12 +43,12 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [assistantFailure, setAssistantFailure] = useState("");
   const [aiReplies, setAiReplies] = useState<AiReply[]>([]);
-  const [directory, setDirectory] = useState<Directory>({ contacts: [], conversations: [], pending_contacts: [], remarks: {}, avatars: {}, read_receipts: false });
+  const [directory, setDirectory] = useState<Directory>({ contacts: [], conversations: [], pending_contacts: [], remarks: {}, names: {}, avatars: {}, read_receipts: false });
   const [recalled, setRecalled] = useState<ReadonlySet<number>>(new Set());
   const [hidden, setHidden] = useState<ReadonlySet<number>>(new Set());
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [profile, setProfile] = useState<User>();
-  const [profileNotice, setProfileNotice] = useState(0);
+  const profileTrigger = useRef<HTMLElement>(null);
   const refreshInFlight = useRef<Promise<void> | null>(null);
   const appliedRevision = useRef(0);
   const [clockOffset, setClockOffset] = useState(0);
@@ -92,11 +93,31 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     };
   }, []);
 
-  useEffect(() => {
-    if (!profileNotice) return;
-    const timer = window.setTimeout(() => setProfileNotice(0), 3000);
-    return () => window.clearTimeout(timer);
-  }, [profileNotice]);
+  function openProfile(user: User) {
+    if (document.activeElement instanceof HTMLElement) profileTrigger.current = document.activeElement;
+    setProfile(user);
+  }
+
+  function closeProfile() {
+    setProfile(undefined);
+    requestAnimationFrame(() => profileTrigger.current?.focus({ preventScroll: true }));
+  }
+
+  function profileEdited(id: string, patch: Partial<Profile>) {
+    setDirectory(previous => {
+      const next = { ...previous, names: { ...previous.names }, avatars: { ...previous.avatars }, remarks: { ...previous.remarks } };
+      if (patch.display_name !== undefined) {
+        if (patch.display_name) next.names[id] = patch.display_name;
+        else delete next.names[id];
+      }
+      if (patch.avatar) next.avatars[id] = patch.avatar;
+      if (patch.notes) {
+        if (patch.notes.remark) next.remarks[id] = patch.notes.remark;
+        else delete next.remarks[id];
+      }
+      return next;
+    });
+  }
 
   function setDraft(key: string, change: (draft: Draft) => Draft) {
     setDrafts(previous => {
@@ -138,9 +159,9 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }, []);
 
   const refresh = useCallback(() => {
-    void api.localUpdate().then(apply).catch(() => {});
     if (refreshInFlight.current) return refreshInFlight.current;
     const sync = async () => {
+      await api.localUpdate().then(apply).catch(() => {});
       try {
         apply(await api.sync());
         setConnection("Connected");
@@ -199,7 +220,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }, []);
 
   const active = directory.conversations.find(chat => chat.id === selected);
-  const activeId = nav === "Chats" && !privateOpen ? active?.id : undefined;
+  const activeId = nav === "Chats" && !privateOpen && !profile ? active?.id : undefined;
   useEffect(() => {
     const connected = privateRooms.filter(room => room.phase === "connected");
     const opened = connected.find(room => !joined.current.has(room.id) && room.conversation === selected);
@@ -224,12 +245,14 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }, [activeId, mobileChat, privateOpen]);
 
   function navigate(page: Navigation) {
+    setProfile(undefined);
     setPrivateId(undefined);
     setNav(page);
     if (page === "Chats") setMobileChat(false);
   }
 
   function selectChat(id: string) {
+    setProfile(undefined);
     setPrivateId(undefined);
     setSelected(id);
     setNav("Chats");
@@ -333,8 +356,9 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     catch (error) { signedOut(errorMessage(error)); }
   }
 
+  const names = { ...directory.names, ...directory.remarks };
   const people = [...new Map([session.user, ...directory.conversations.flatMap(chat => chat.members)]
-    .map(user => [user.id, user])).values()].sort((a, b) => displayName(a, directory.remarks).localeCompare(displayName(b, directory.remarks)));
+    .map(user => [user.id, user])).values()].sort((a, b) => displayName(a, names).localeCompare(displayName(b, names)));
   const offeredChat = directory.conversations.find(chat => chat.id === offer?.conversation);
   const connected = connection === "Connected";
   const invitation = privateRooms.find(room => room.id === prompt);
@@ -345,10 +369,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   };
 
   const conversationOpen = nav === "Chats" && mobileChat && (!!active || privateOpen);
-  return <People.Provider value={{ remarks: directory.remarks, avatars: directory.avatars, open: setProfile }}><main className={"shell" + (conversationOpen ? " conversation-open" : "")}>
+  return <People.Provider value={{ remarks: names, avatars: directory.avatars, online: connected, open: openProfile }}>
+  <main className={"shell" + (conversationOpen ? " conversation-open" : "") + (profile ? " profile-open" : "")}>
     <nav className="rail" aria-label="Main navigation">
-      <button className="rail-brand icon-button" aria-label="Your profile" aria-haspopup="dialog" title="Your profile"
-        onClick={() => setProfile(session.user)}><Brand /></button>
+      <button className="rail-brand icon-button" aria-label={t("Your profile", "我的资料")} title={t("Your profile", "我的资料")}
+        onClick={() => openProfile(session.user)}><PersonAvatar user={session.user} /></button>
       <div className="rail-links">{pages.map(({ name, Icon }) =>
         <button key={name} aria-label={name}
           aria-describedby={attention[name] ? `rail-status-${name}` : undefined}
@@ -409,7 +434,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             back={() => { setPrivateId(undefined); if (!active) setMobileChat(false); }} showCode={showPrivateCode} />
           : active ? <ChatView key={active.id} chat={active} own={session.user} revision={revision}
             latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset}
-            hidden={hidden} hide={seq => hide(active.id, seq)} readReceipts={directory.read_receipts && connection === "Connected"}
+            hidden={hidden} hide={seq => hide(active.id, seq)} readReceipts={directory.read_receipts && connected && !profile}
             draft={drafts[active.id] ?? { text: "" }} setDraft={change => setDraft(active.id, change)}
             transfers={transfers} changed={changed} refresh={refresh} back={() => setMobileChat(false)}
             share={source => share(active.id, source)} openPrivate={() => void invitePrivate(active)}
@@ -426,8 +451,9 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       {nav === "Files" && <FilesView people={people} revision={revision} recalled={recalled} hidden={hidden} transfers={transfers} onChanged={changed} />}
       {nav === "Me" && <section className="settings-page phone-me">
         <header className="workspace-heading"><h1>Me</h1></header>
-        <button className="phone-profile drawer-action" onClick={() => setProfile(session.user)}>
-          <PersonAvatar user={session.user} /><strong>{session.user.handle}</strong><ChevronRight size={18} />
+        <button className="phone-profile drawer-action" onClick={() => openProfile(session.user)}>
+          <PersonAvatar user={session.user} large />
+          <span><strong>{displayName(session.user, names)}</strong><small className="muted">@{session.user.handle}</small></span><ChevronRight size={20} />
         </button>
         <div className="phone-me-actions">
           <button className="drawer-action" onClick={() => navigate("Settings")}><Settings size={19} /> Settings <ChevronRight size={17} /></button>
@@ -447,6 +473,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           setAssistants(next);
           setAssistantFailure("");
         }} />} />}
+      {profile && <ProfileView key={profile.id} user={profile} session={session} reconnecting={connection === "Reconnecting"}
+        relationVersion={directory.contacts.some(person => person.id === profile.id) ? "contact"
+          : directory.pending_contacts.find(request => request.user.id === profile.id)?.request_id ?? "other"}
+        refresh={refresh} close={closeProfile} edited={profileEdited}
+        message={() => create({ kind: "direct", contact_id: profile.id })} />}
     </div>
     {about && <About close={() => setAbout(false)} />}
     {privateTargets && <PrivateTargets people={privateTargets.members.filter(user => user.id !== session.user.id)}
@@ -457,14 +488,14 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     }} />}
     {shareCode && <ShareQr code={shareCode} server={session.server} close={() => setShareCode(undefined)} />}
     {scanning && <ScanQr session={session} close={() => setScanning(false)}
-      contactFound={user => { setScanning(false); setProfile(user); }}
+      contactFound={user => { setScanning(false); openProfile(user); }}
       groupJoined={id => { setScanning(false); selectChat(id); void refresh(); }}
       privateJoined={id => { setScanning(false); selectPrivate(id); }} />}
     {newChat && <NewChat contacts={directory.contacts} create={create} close={() => setNewChat(false)} findPeople={() => {
       setNewChat(false); navigate("Contacts");
     }} />}
     {!privateOpen && offer && offeredChat && <Dialog title="Share this attachment?" close={() => { if (!sharing) setOffer(undefined); }}>
-      <p className="drop-confirm"><strong>{offer.name}</strong> will be shared in <strong>{chatName(offeredChat, session.user.id, directory.remarks)}</strong>.</p>
+      <p className="drop-confirm"><strong>{offer.name}</strong> will be shared in <strong>{chatName(offeredChat, session.user.id, names)}</strong>.</p>
       <div className="dialog-actions">
         <button className="button subtle" onClick={() => setOffer(undefined)} disabled={sharing}>Cancel</button>
         <button className="button primary" disabled={sharing} onClick={async () => {
@@ -475,17 +506,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
         }}>{sharing ? "Preparing…" : "Share"}</button>
       </div>
     </Dialog>}
-    {profile && <ProfileView key={profile.id} user={profile}
-      relationVersion={directory.contacts.some(person => person.id === profile.id) ? "contact"
-        : directory.pending_contacts.find(request => request.user.id === profile.id)?.request_id ?? "other"}
-      refresh={refresh} close={() => setProfile(undefined)} saved={() => {
-        setProfile(current => current?.id === profile.id ? undefined : current);
-        setProfileNotice(Date.now());
-      }}
-      message={async () => { await create({ kind: "direct", contact_id: profile.id }); setProfile(undefined); }}
-      code={() => { setProfile(undefined); setShareCode({ kind: "contact", name: "Your contact QR code", value: session.user.handle }); }} />}
     {invitation && <PrivateInvitationOverlay key={invitation.id} room={invitation} />}
-    <div className="profile-notice" role="status">{profileNotice > 0 && <span key={profileNotice} lang="zh-Hans">信息已更新</span>}</div>
   </main></People.Provider>;
 }
 

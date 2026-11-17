@@ -2,7 +2,15 @@ import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState
 import type { MouseEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ClipboardPaste, Copy, TextCursorInput } from "lucide-react";
+import { api, errorMessage } from "./api";
 import { ios } from "./ios";
+import { t } from "./locale";
+
+const windows = navigator.userAgent.includes("Windows");
+
+export function copyText(text: string) {
+  return ios || windows ? api.copyText(text) : navigator.clipboard.writeText(text);
+}
 
 export type MenuItem = { label: string; action: () => void; disabled?: boolean; icon?: ReactNode };
 type Menu = { x: number; y: number; anchor: HTMLElement; items: MenuItem[]; restoreFocus: HTMLElement | null };
@@ -13,9 +21,11 @@ export const useMenuAnchor = () => useContext(MenuAnchor);
 
 export function DesktopMenus({ children }: { children: ReactNode }) {
   const [menu, setMenu] = useState<Menu>();
+  const [failure, setFailure] = useState("");
   const panel = useRef<HTMLDivElement>(null);
 
   function open(anchor: HTMLElement, items: MenuItem[], point?: { x: number; y: number }) {
+    setFailure("");
     if (menu?.anchor === anchor && !point) { close(true); return; }
     if (!items.some(item => !item.disabled)) { setMenu(undefined); return; }
     const rect = anchor.getBoundingClientRect();
@@ -67,7 +77,7 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     const target = event.target instanceof HTMLElement ? event.target : event.target.parentElement ?? event.currentTarget;
     const privateChat = !!target.closest(".private-chat");
     const field = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ? target : undefined;
-    if (ios && field && !privateChat) return;
+    if (!windows && field && !privateChat) return;
     event.preventDefault();
     const editable = field && !field.readOnly && !field.disabled
       && (field instanceof HTMLTextAreaElement || /^(text|search|url|tel|email|password)$/.test(field.type));
@@ -78,20 +88,26 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     if (!privateChat && !password) {
       const text = field ? start !== null && end !== null ? field.value.slice(start, end) : "" : window.getSelection()?.toString();
       if (text) items.push({
-        label: "Copy", icon: <Copy size={15} />, action: () => { void navigator.clipboard.writeText(text).catch(() => {}); },
+        label: t("Copy", "复制"), icon: <Copy size={15} />,
+        action: () => { void copyText(text).catch(error => setFailure(errorMessage(error))); },
       });
     }
-    if (editable) items.push({
-      label: "Paste", icon: <ClipboardPaste size={15} />, action: () => {
+    if (editable && windows) items.push({
+      label: t("Paste", "粘贴"), icon: <ClipboardPaste size={15} />, action: () => {
         field.focus({ preventScroll: true });
         if (start !== null && end !== null) field.setSelectionRange(start, end);
-        void navigator.clipboard.readText().then(value => {
-          if (field.isConnected && document.activeElement === field) document.execCommand("insertText", false, value);
-        }).catch(() => {});
+        void api.pasteText().then(value => {
+          if (!field.isConnected || document.activeElement !== field) return;
+          if (value === null) {
+            setFailure(t("Use Ctrl+V to paste an image.", "按 Ctrl+V 粘贴图片。"));
+            return;
+          }
+          document.execCommand("insertText", false, value);
+        }).catch(error => setFailure(errorMessage(error)));
       },
     });
     if (editable || (field && start !== null && !privateChat)) {
-      items.push({ label: "Select all", icon: <TextCursorInput size={15} />, action: () => field.select() });
+      items.push({ label: t("Select all", "全选"), icon: <TextCursorInput size={15} />, action: () => field.select() });
     }
     open(target, items,
       event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : undefined);
@@ -99,6 +115,9 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
 
   return <OpenMenu.Provider value={open}><MenuAnchor.Provider value={menu?.anchor}><div onContextMenu={context}>
     {children}
+    {failure && createPortal(<div className="clipboard-error inline-error" role="alert" onClick={() => setFailure("")}>
+      {failure}<button type="button" className="text-button" onClick={() => setFailure("")}>{t("Dismiss", "关闭")}</button>
+    </div>, document.querySelector("dialog[open], .private-chat") ?? document.body)}
     {menu && createPortal(<div className="app-menu" ref={panel} role="menu" aria-label="Actions" tabIndex={-1}
       onContextMenu={event => { event.preventDefault(); event.stopPropagation(); }}
       onKeyDown={event => {

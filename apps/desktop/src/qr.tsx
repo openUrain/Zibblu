@@ -14,6 +14,10 @@ export type SharedCode = {
 };
 
 export function ShareQr({ code, server, close }: { code: SharedCode; server: string; close: () => void }) {
+  return <Dialog title={code.name} close={close}><QrContent code={code} server={server} /></Dialog>;
+}
+
+export function QrContent({ code, server }: { code: SharedCode; server: string }) {
   const [image, setImage] = useState("");
   const [error, setError] = useState("");
   const [now, setNow] = useState(Date.now);
@@ -29,8 +33,7 @@ export function ShareQr({ code, server, close }: { code: SharedCode; server: str
     return () => { current = false; window.clearInterval(tick); };
   }, [code, server]);
   const expired = code.expiresAt !== undefined && now >= code.expiresAt;
-  return <Dialog title={code.name} close={close}>
-    <div className="qr-content">
+  return <div className="qr-content">
       {error && <p className="inline-error" role="alert">{error}</p>}
       {expired
         ? <p role="status">This QR code expired.</p>
@@ -40,8 +43,7 @@ export function ShareQr({ code, server, close }: { code: SharedCode; server: str
       {code.expiresAt && !expired && <p className="muted">
         Expires {code.kind === "private" ? messageTimeLabel(code.expiresAt) : dateTimeLabel(code.expiresAt)}
       </p>}
-    </div>
-  </Dialog>;
+  </div>;
 }
 
 type ScanResult =

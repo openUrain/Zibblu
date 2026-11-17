@@ -1,8 +1,11 @@
 import Darwin
 import Foundation
+import ImageIO
 import Network
+import PhotosUI
 import Security
 import UIKit
+import UniformTypeIdentifiers
 import dnssd
 
 private let serviceType = "_zibblu-private._udp"
@@ -343,4 +346,80 @@ func zibbluShare(_ path: UnsafePointer<CChar>) -> Bool {
         return true
     }
     return Thread.isMainThread ? present() : DispatchQueue.main.sync(execute: present)
+}
+
+@_cdecl("zibblu_ios_copy_text")
+func zibbluCopyText(_ text: UnsafePointer<CChar>) -> Bool {
+    let value = String(cString: text)
+    let copy = {
+        guard UIApplication.shared.applicationState == .active else { return false }
+        UIPasteboard.general.string = value
+        return true
+    }
+    return Thread.isMainThread ? copy() : DispatchQueue.main.sync(execute: copy)
+}
+
+typealias PhotoCallback = @convention(c) (UnsafeMutableRawPointer, Int32, UnsafePointer<UInt8>?, Int) -> Void
+
+private final class PhotoPicker: NSObject, PHPickerViewControllerDelegate {
+    static var active: PhotoPicker?
+    let context: UnsafeMutableRawPointer
+    let callback: PhotoCallback
+
+    init(_ context: UnsafeMutableRawPointer, _ callback: @escaping PhotoCallback) {
+        self.context = context
+        self.callback = callback
+    }
+
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        picker.dismiss(animated: true)
+        guard let item = results.first?.itemProvider else { return finish(0) }
+        guard let type = item.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) == true })
+            else { return finish(-1) }
+        item.loadFileRepresentation(forTypeIdentifier: type) { url, _ in
+            let data = url.flatMap(Self.preview)
+            DispatchQueue.main.async {
+                if let data = data { self.finish(1, data) }
+                else { self.finish(-1) }
+            }
+        }
+    }
+
+    private static func preview(_ url: URL) -> Data? {
+        let limit = 16 * 1024 * 1024
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= limit,
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil)
+            else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 2048,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+            else { return nil }
+        return UIImage(cgImage: image).pngData()
+    }
+
+    private func finish(_ status: Int32, _ data: Data = Data()) {
+        Self.active = nil
+        data.withUnsafeBytes { callback(context, status, $0.bindMemory(to: UInt8.self).baseAddress, $0.count) }
+    }
+}
+
+@_cdecl("zibblu_ios_pick_photo")
+func zibbluPickPhoto(_ context: UnsafeMutableRawPointer, _ callback: @escaping PhotoCallback) {
+    DispatchQueue.main.async {
+        guard PhotoPicker.active == nil, UIApplication.shared.applicationState == .active,
+              var controller = appWindow()?.rootViewController else { return callback(context, -1, nil, 0) }
+        while let shown = controller.presentedViewController { controller = shown }
+        var config = PHPickerConfiguration()
+        config.filter = .images
+        config.selectionLimit = 1
+        let picker = PHPickerViewController(configuration: config)
+        let delegate = PhotoPicker(context, callback)
+        PhotoPicker.active = delegate
+        picker.delegate = delegate
+        picker.isModalInPresentation = true
+        controller.present(picker, animated: true)
+    }
 }

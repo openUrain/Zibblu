@@ -1,4 +1,5 @@
 mod ai;
+mod clipboard;
 mod commands;
 #[cfg(windows)]
 mod dpapi;
@@ -117,6 +118,8 @@ pub fn run() {
             let _ = window.emit("attachment-drop", DropOffer { ticket, name });
         })
         .invoke_handler(tauri::generate_handler![
+            clipboard::copy_text,
+            clipboard::paste_text,
             commands::preferences,
             commands::set_close_action,
             commands::login,
@@ -134,8 +137,11 @@ pub fn run() {
             commands::respond_contact,
             commands::remove_contact,
             commands::profile,
+            commands::cached_profile,
+            commands::set_display_name,
             commands::set_bio,
             commands::set_contact_notes,
+            media::pick_profile_image,
             media::set_profile_image,
             commands::set_read_receipts,
             commands::read_update,

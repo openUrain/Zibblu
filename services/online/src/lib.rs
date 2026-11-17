@@ -63,6 +63,7 @@ pub async fn router_with_retention(
         )
         .route("/v1/profiles/{id}", get(profiles::profile))
         .route("/v1/profiles/me/bio", put(profiles::set_bio))
+        .route("/v1/profiles/me/name", put(profiles::set_name))
         .route("/v1/profiles/{id}/images/{version}", get(profiles::image))
         .route(
             "/v1/contacts/{id}/decision",

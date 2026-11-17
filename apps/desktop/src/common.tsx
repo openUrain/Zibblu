@@ -4,17 +4,17 @@ import type { ComponentPropsWithoutRef, KeyboardEventHandler, ReactNode } from "
 import { api, errorMessage } from "./api";
 import type { Conversation, Directory, Message, Page, User } from "./api";
 
-export const People = createContext<Pick<Directory, "remarks" | "avatars"> & { open?: (user: User) => void }>({ remarks: {}, avatars: {} });
+export const People = createContext<Pick<Directory, "remarks" | "avatars"> & { online?: boolean; open?: (user: User) => void }>({ remarks: {}, avatars: {} });
 
 export function displayName(user: User, remarks: Directory["remarks"]) {
   return remarks[user.id] || user.handle;
 }
 
 export function PersonAvatar({ user, large, version }: { user: User; large?: boolean; version?: string | null }) {
-  const { remarks, avatars } = useContext(People);
+  const { remarks, avatars, online } = useContext(People);
   const name = displayName(user, remarks);
   const image = version === undefined ? avatars[user.id] : version;
-  return <Avatar name={name} large={large} src={image ? api.profileImageUrl(user.id, image) : undefined} />;
+  return <Avatar name={name} large={large} online={online} src={image ? api.profileImageUrl(user.id, image) : undefined} />;
 }
 
 export function Brand() {
@@ -22,14 +22,14 @@ export function Brand() {
     width={42} height={42} alt="Zibblu" />;
 }
 
-export function Avatar({ name, group = false, large = false, src }: { name: string; group?: boolean; large?: boolean; src?: string }) {
+export function Avatar({ name, group = false, large = false, src, online }: { name: string; group?: boolean; large?: boolean; src?: string; online?: boolean }) {
   const tones = ["violet", "mint", "peach", "blue", "rose"];
   const tone = Array.from(name).reduce((sum, character) => sum + (character.codePointAt(0) ?? 0), 0) % tones.length;
   const initial = Array.from(name)[0]?.toUpperCase() ?? "?";
-  const [failed, setFailed] = useState<string>();
+  const [failed, setFailed] = useState<{ src: string; online?: boolean }>();
   return <span aria-hidden="true" className={"avatar " + tones[tone] + (large ? " avatar-large" : "")}>
-    {group ? <UsersRound size={large ? 23 : 18} /> : src && failed !== src
-      ? <img src={src} alt="" loading="lazy" onError={() => setFailed(src)} /> : initial}
+    {group ? <UsersRound size={large ? 23 : 18} /> : src && (failed?.src !== src || failed.online !== online)
+      ? <img src={src} alt="" loading="lazy" onError={() => setFailed({ src, online })} /> : initial}
   </span>;
 }
 

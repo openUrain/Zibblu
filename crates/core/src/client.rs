@@ -2,10 +2,12 @@ mod ai_context;
 mod device;
 mod local_sync;
 mod outbox;
+mod profile_cache;
 mod staging;
 mod transfer;
 
 pub use ai_context::AiScope;
+pub use profile_cache::CachedProfile;
 pub use transfer::{Direction, Transfer, TransferStatus};
 
 use crate::protocol::*;
@@ -340,6 +342,7 @@ impl Client {
                     .request(Method::DELETE, &format!("/v1/contacts/{user_id}")),
             )
             .await?;
+        self.forget_profile(user_id).await;
         Ok(())
     }
 
@@ -364,7 +367,37 @@ impl Client {
     }
 
     pub async fn profile(&self, id: Uuid) -> Result<Profile> {
-        Ok(self.api.profile(id).await?)
+        self.ensure_open()?;
+        match self.api.profile(id).await {
+            Ok(profile) => {
+                ensure!(
+                    profile.user.id == id
+                        && matches!(profile.relation, ProfileRelation::Own) == (id == self.user.id),
+                    OnlineError::InvalidResponse
+                );
+                self.remember_profile(&profile).await;
+                Ok(profile)
+            }
+            Err(error) => {
+                if matches!(&error, OnlineError::Rejected { status, .. }
+                    if matches!(*status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND))
+                {
+                    self.forget_profile(id).await;
+                }
+                Err(error.into())
+            }
+        }
+    }
+
+    pub async fn set_display_name(&self, name: String) -> Result<()> {
+        let name = name.trim();
+        self.api
+            .send(self.api.request(Method::PUT, "/v1/profiles/me/name").json(&name))
+            .await?;
+        self.remember_profile_edit(
+            self.user.id, "display_name", (!name.is_empty()).then_some(name), Some("names"),
+        ).await;
+        Ok(())
     }
 
     pub async fn set_bio(&self, bio: String) -> Result<()> {
@@ -372,13 +405,18 @@ impl Client {
             .send(
                 self.api
                     .request(Method::PUT, "/v1/profiles/me/bio")
-                    .json(&ProfileBio { bio }),
+                    .json(&ProfileBio { bio: bio.trim().to_owned() }),
             )
             .await?;
+        self.remember_profile_edit(self.user.id, "bio", bio.trim(), None).await;
         Ok(())
     }
 
     pub async fn set_contact_notes(&self, id: Uuid, notes: ContactNotes) -> Result<()> {
+        let notes = ContactNotes {
+            remark: notes.remark.trim().to_owned(),
+            contact_info: notes.contact_info.trim().to_owned(),
+        };
         self.api
             .send(
                 self.api
@@ -386,36 +424,54 @@ impl Client {
                     .json(&notes),
             )
             .await?;
+        self.remember_profile_edit(id, "notes", &notes, None).await;
         Ok(())
     }
 
-    pub async fn set_profile_image(&self, kind: ProfileImage, bytes: Vec<u8>) -> Result<()> {
+    pub async fn set_profile_image(&self, kind: ProfileImage, bytes: Vec<u8>) -> Result<Uuid> {
         ensure!(
             bytes.len() <= MAX_PROFILE_IMAGE_BYTES,
             "Profile images can be up to 2 MiB"
         );
-        self.api
-            .send(
+        let version: Uuid = self.api
+            .json(
                 self.api
                     .request(
                         Method::PUT,
                         &format!("/v1/profiles/me/images/{}", kind.as_str()),
                     )
                     .header(reqwest::header::CONTENT_TYPE, "image/png")
-                    .body(bytes),
+                    .body(bytes.clone()),
             )
             .await?;
-        Ok(())
+        self.remember_profile_edit(
+            self.user.id, kind.as_str(), version,
+            matches!(kind, ProfileImage::Avatar).then_some("avatars"),
+        ).await;
+        self.remember_profile_image(self.user.id, version, &bytes).await;
+        Ok(version)
     }
 
     pub async fn profile_image(&self, id: Uuid, version: Uuid) -> Result<Vec<u8>> {
-        let response = self
+        self.ensure_open()?;
+        let response = match self
             .api
             .send(
                 self.api
                     .request(Method::GET, &format!("/v1/profiles/{id}/images/{version}")),
             )
-            .await?;
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                if matches!(&error, OnlineError::Rejected { status, .. }
+                    if matches!(*status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND))
+                {
+                    self.forget_profile_image(id, version).await;
+                }
+                return Err(error.into());
+            }
+        };
         ensure!(
             response
                 .headers()
@@ -423,7 +479,9 @@ impl Client {
                 .is_some_and(|value| value == "image/png"),
             OnlineError::InvalidResponse
         );
-        Ok(read_limited(response, MAX_PROFILE_IMAGE_BYTES).await?)
+        let bytes = read_limited(response, MAX_PROFILE_IMAGE_BYTES).await?;
+        self.remember_profile_image(id, version, &bytes).await;
+        Ok(bytes)
     }
 
     pub async fn set_read_receipts(&self, enabled: bool) -> Result<()> {

@@ -5,7 +5,6 @@ use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex},
-    time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
@@ -16,9 +15,9 @@ use zibblu_core::private_chat::{
     PrivateSummary, PrivateView,
 };
 use zibblu_core::{
-    Client, ContactNotes, ConversationRequest, Credentials, Device, Direction, Directory,
+    CachedProfile, Client, ContactNotes, ConversationRequest, Credentials, Device, Direction, Directory,
     FileFilter, GroupInvite, GroupInvitePreview, Message, MessageReceipt, OnlineError, Page,
-    Profile, ProfileRelation, PublishAiReply, ReadUpdate, SendMessage, SyncUpdate, Transfer, User,
+    PublishAiReply, ReadUpdate, SendMessage, SyncUpdate, Transfer, User,
 };
 
 const OFFICIAL_SERVER: &str = "https://zibblu-api.openurain.com";
@@ -76,6 +75,10 @@ impl Desktop {
             .await
             .clone()
             .context("Sign in to continue")?)
+    }
+
+    pub(crate) async fn is_current(&self, client: &Arc<Client>) -> bool {
+        self.session.lock().await.as_ref().is_some_and(|active| Arc::ptr_eq(active, client))
     }
 
     pub async fn close_private(&self, app: &AppHandle) {
@@ -182,6 +185,20 @@ impl Desktop {
             }),
         };
         *session = Some(client.clone());
+        #[cfg(any(windows, target_os = "ios"))]
+        {
+            let app = app.clone();
+            let client = client.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Ok(profile) = client.profile(client.user.id).await
+                    && let Some(version) = profile.avatar
+                    && let Ok(bytes) = client.profile_image(client.user.id, version).await
+                    && let Ok(avatar) = crate::images::saved_avatar(&bytes)
+                {
+                    app.state::<Desktop>().remember_avatar(&client, avatar).await;
+                }
+            });
+        }
         *self.private_worker.lock().await = Some(tauri::async_runtime::spawn(
             crate::private_runtime::run(app, client),
         ));
@@ -415,20 +432,11 @@ pub(crate) async fn login(
         .update_preferences(|value| value.server = client.server().into())
         .is_ok();
     let notice = if cfg!(any(windows, target_os = "ios")) {
-        let avatar = tokio::time::timeout(Duration::from_secs(2), async {
-            let profile = client.profile(client.user.id).await.ok()?;
-            if profile.user.id != client.user.id
-                || !matches!(profile.relation, ProfileRelation::Own)
-            {
-                return None;
-            }
-            let version = profile.avatar?;
-            let bytes = client.profile_image(client.user.id, version).await.ok()?;
+        let avatar = async {
+            let version = client.cached_profile(client.user.id).await?.profile.avatar?;
+            let bytes = client.cached_profile_image(client.user.id, version).await?;
             crate::images::saved_avatar(&bytes).ok()
-        })
-        .await
-        .ok()
-        .flatten();
+        }.await;
         if address_saved && state.remember(&client, avatar).is_ok() {
             None
         } else if saved_session::clear(&state.data).is_ok() {
@@ -613,8 +621,28 @@ pub(crate) async fn respond_contact(
 }
 
 #[tauri::command]
-pub(crate) async fn profile(state: State<'_, Desktop>, id: Uuid) -> Result<Profile> {
-    Ok(state.client().await?.profile(id).await?)
+pub(crate) async fn profile(state: State<'_, Desktop>, id: Uuid) -> Result<CachedProfile> {
+    let client = state.client().await?;
+    let profile = client.profile(id).await?;
+    if !state.is_current(&client).await {
+        return Err(anyhow!("The session has ended").into());
+    }
+    Ok(Client::fresh_profile(profile))
+}
+
+#[tauri::command]
+pub(crate) async fn cached_profile(state: State<'_, Desktop>, id: Uuid) -> Result<Option<CachedProfile>> {
+    let client = state.client().await?;
+    let profile = client.cached_profile(id).await;
+    if !state.is_current(&client).await {
+        return Err(anyhow!("The session has ended").into());
+    }
+    Ok(profile)
+}
+
+#[tauri::command]
+pub(crate) async fn set_display_name(state: State<'_, Desktop>, name: String) -> Result<()> {
+    Ok(state.client().await?.set_display_name(name).await?)
 }
 
 #[tauri::command]
