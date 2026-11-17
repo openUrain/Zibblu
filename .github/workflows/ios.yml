@@ -10,6 +10,14 @@ on:
       - 'Cargo.lock'
       - '.github/workflows/ios.yml'
   workflow_dispatch:
+    inputs:
+      distribution:
+        description: Build output
+        type: choice
+        default: testflight
+        options:
+          - testflight
+          - unsigned-ipa
 
 permissions:
   contents: read
@@ -41,10 +49,44 @@ jobs:
           npm ci
           bash src-tauri/ios/prepare.sh --ci --skip-targets-install
       - name: Archive unsigned iPhone app
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || inputs.distribution == 'unsigned-ipa'
         run: npm run tauri -- ios build --ci --target aarch64 --no-sign --archive-only -- --locked
+      - name: Package and verify unsigned IPA
+        if: github.event_name == 'pull_request' || inputs.distribution == 'unsigned-ipa'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apps=(src-tauri/gen/apple/build/*.xcarchive/Products/Applications/*.app)
+          if [[ ${#apps[@]} != 1 || ! -d ${apps[0]:-} ]]; then
+            echo 'Expected one iPhone .app inside the Xcode archive.' >&2
+            exit 1
+          fi
+
+          app="$PWD/${apps[0]}"
+          staging=$(mktemp -d "$RUNNER_TEMP/zibblu-ipa.XXXXXX")
+          ipa="$RUNNER_TEMP/Zibblu-iOS-arm64-unsigned.ipa"
+          mkdir "$staging/Payload"
+          ditto "$app" "$staging/Payload/${app##*/}"
+          cd "$staging"
+          zip -qry "$ipa" Payload
+
+          unzip -q "$ipa" -d verified
+          bundle="verified/Payload/${app##*/}"
+          diff -qr "$app" "$bundle"
+          executable=$(plutil -extract CFBundleExecutable raw -o - "$bundle/Info.plist")
+          test -x "$bundle/$executable"
+          xcrun lipo -verify_arch arm64 "$bundle/$executable"
+          echo "Verified Payload/${app##*/} with its arm64 executable and all archived bundle contents."
+      - name: Upload unsigned IPA
+        if: github.event_name == 'pull_request' || inputs.distribution == 'unsigned-ipa'
+        uses: actions/upload-artifact@v7
+        with:
+          name: Zibblu-iOS-arm64-unsigned
+          path: ${{ runner.temp }}/Zibblu-iOS-arm64-unsigned.ipa
+          if-no-files-found: error
+          compression-level: 0
       - name: Sign and upload to TestFlight
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.distribution == 'testflight'
         env:
           APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_DEVELOPMENT_TEAM }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
