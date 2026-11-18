@@ -241,6 +241,7 @@ function SignIn({ initialServer, officialServer, initialAccount, notice, signedI
   </main>;
 }
 
+document.body.classList.toggle("windows", windows);
 setupIosLayout();
 const invitation = getCurrentWindow().label === "private-invitation";
 createRoot(document.getElementById("root")!).render(<DesktopMenus>

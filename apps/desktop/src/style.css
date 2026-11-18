@@ -55,6 +55,19 @@
 *, *::before, *::after { box-sizing: border-box; }
 html, body { min-height: 100%; overflow-x: clip; overscroll-behavior: none; }
 body { margin: 0; min-width: 0; font-size: 14px; }
+/* Scope the policy to Windows and include menus portaled to body. */
+body.windows {
+  -webkit-user-select: none;
+  user-select: none;
+}
+body.windows :where(
+  input, textarea, [contenteditable=""], [contenteditable="true" i], [contenteditable="plaintext-only" i],
+  .message-row .bubble:not(.private-chat *, .recalled-message), .chat-search-results article > p,
+  .profile-bio, .ai-disclosure small, .ai-snapshot p, .inline-error
+) {
+  -webkit-user-select: text;
+  user-select: text;
+}
 * { overscroll-behavior-y: none; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
