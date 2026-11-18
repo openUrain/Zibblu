@@ -9,12 +9,11 @@ These are **vendored repository-scoped Agent Skills** for Codex cloud/CLI/IDE. T
 | [lennney/stop-that-shit](https://github.com/lennney/stop-that-shit) | `stop-that-shit` | Bounded changes/reviews and avoiding speculative work | Tag `0.2.5` |
 | [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) | `ponytail` | Smallest complete engineering change | `main` snapshot, 2026-11-11 |
 | [shadcn/improve](https://github.com/shadcn/improve) | `improve` | **On request only:** read-only codebase audit and implementation plans | `main` snapshot, 2026-11-11 |
-| [mattpocock/skills](https://github.com/mattpocock/skills) | `setup-matt-pocock-skills` | Optional one-time engineering workflow setup | `main` snapshot, 2026-11-11 |
 | [mattpocock/skills](https://github.com/mattpocock/skills) | `codebase-design` | Module and interface decisions when specifically needed | `main` snapshot, 2026-11-11 |
 | [mattpocock/skills](https://github.com/mattpocock/skills) | `diagnosing-bugs` | Reproduce and diagnose difficult bugs | `main` snapshot, 2026-11-11 |
 | [mattpocock/skills](https://github.com/mattpocock/skills) | `code-review` | Explicit PR/diff review, not automatic review agents | `main` snapshot, 2026-11-11 |
 
-**Matt Pocock is a collection, not a single skill named `matt-pocock`.** The four listed skills are a deliberate subset, not the whole collection. No other Matt Pocock skill was installed.
+**Matt Pocock is a collection, not a single skill named `matt-pocock`.** The three listed skills are a deliberate subset, not the whole collection. No other Matt Pocock skill was installed.
 
 Copied skill files were kept unchanged, including their local reference material and the optional diagnostic shell-script template. Snapshot versions are not automatically updated.
 
@@ -23,9 +22,15 @@ Copied skill files were kept unchanged, including their local reference material
 1. **User request + `AGENTS.md` + `docs/SECURITY.md` + module acceptance criteria** take priority when any bundled skill's generic workflow would add work or weaken a permission boundary.
 2. For normal M1 implementation, invoke `$stop-that-shit change -- ...`. Ponytail may help minimize implementation. Finish the complete assigned module; only then run the minimal module acceptance checks described in `docs/ROADMAP.md`. Correct and recheck actual failures.
 3. **Necessary integrity hashing is not waste:** M1 explicitly requires verifying resumed file transfers. Do not delete essential verification as “overengineering”.
-4. Do **not** invoke `improve`, `setup-matt-pocock-skills`, `code-review` or parallel agents automatically on every task. Use their prescribed flows when explicitly requested or the task actually calls for them. In particular, `improve` can create plans, and some upstream variants can dispatch agents; only do so with the requesting user's authorization.
+4. Do **not** invoke `improve`, `code-review` or parallel agents automatically on every task. Use their prescribed flows when explicitly requested or the task actually calls for them. In particular, `improve` can create plans, and some upstream variants can dispatch agents; only do so with the requesting user's authorization.
 5. Never execute a copied third-party script just because it exists. Inspect its behavior and confirm it is relevant before use.
 6. Codex may load a SKILL.md, but this does **not** install the source repository's Codex plugin or activate **stop-that-shit Guard** / **ponytail hooks**. Install and review those in a supported Codex host separately if runtime blocking is desired.
+
+## UI design skill policy
+
+- This repository does **not** vendor `impeccable` or `refactoring-ui` (RUI). **Do not invoke either one for Zibblu UI planning, implementation, or review**, even if available from the Agent's global/user-level skills. Do not install or add them back as part of UI work.
+- UI decisions must follow the Owner's approved project-specific constraints. Until a revised constraint document is supplied and committed, `docs/DESIGN_SYSTEM.md` remains the authoritative design reference. Do not invent its replacement or use a general-purpose design skill to override accepted Zibblu interactions or visual identity.
+- Engineering skills may assist with code correctness, debugging, review, and minimal changes; they do not choose UI aesthetics. Report conflicts between design constraints instead of silently normalizing the interface toward generic patterns.
 
 ## Third-party licenses
 
