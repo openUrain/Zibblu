@@ -1,6 +1,6 @@
 # Repository Skills
 
-These are **vendored repository-scoped Agent Skills** for Codex cloud/CLI/IDE. They are checked into `.agents/skills/`, so a Codex environment that checks out this repository can discover them. Installation of the repository files **does not mean their optional plugin hooks or guards are installed or active**. No hook is configured here, and the included diagnostic script is not auto-executed.
+These are **repository-scoped Agent Skills** for Codex cloud/CLI/IDE, including vendored third-party engineering skills and Owner-authored interaction rules. They are checked into `.agents/skills/`, so a Codex environment that checks out this repository can discover them. Installation of the repository files **does not mean their optional plugin hooks or guards are installed or active**. No hook is configured here, and the included diagnostic script is not auto-executed.
 
 ## Installed Skills
 
@@ -12,10 +12,11 @@ These are **vendored repository-scoped Agent Skills** for Codex cloud/CLI/IDE. T
 | [mattpocock/skills](https://github.com/mattpocock/skills) | `codebase-design` | Module and interface decisions when specifically needed | `main` snapshot, 2026-11-11 |
 | [mattpocock/skills](https://github.com/mattpocock/skills) | `diagnosing-bugs` | Reproduce and diagnose difficult bugs | `main` snapshot, 2026-11-11 |
 | [mattpocock/skills](https://github.com/mattpocock/skills) | `code-review` | Explicit PR/diff review, not automatic review agents | `main` snapshot, 2026-11-11 |
+| Owner-authored | `interaction-design-rules` | UI interaction detail rules and scoped UI review | Owner-uploaded `SKILL.md`, 2026-11-18 |
 
 **Matt Pocock is a collection, not a single skill named `matt-pocock`.** The three listed skills are a deliberate subset, not the whole collection. No other Matt Pocock skill was installed.
 
-Copied skill files were kept unchanged, including their local reference material and the optional diagnostic shell-script template. Snapshot versions are not automatically updated.
+Vendored third-party skill files were kept unchanged, including their local reference material and the optional diagnostic shell-script template. The Owner-authored `interaction-design-rules/SKILL.md` is added verbatim; it is not a third-party dependency. Snapshot versions are not automatically updated.
 
 ## Authority and usage for Zibblu
 
@@ -29,7 +30,8 @@ Copied skill files were kept unchanged, including their local reference material
 ## UI design skill policy
 
 - This repository does **not** vendor `impeccable` or `refactoring-ui` (RUI). **Do not invoke either one for Zibblu UI planning, implementation, or review**, even if available from the Agent's global/user-level skills. Do not install or add them back as part of UI work.
-- UI decisions must follow the Owner's approved project-specific constraints. Until a revised constraint document is supplied and committed, `docs/DESIGN_SYSTEM.md` remains the authoritative design reference. Do not invent its replacement or use a general-purpose design skill to override accepted Zibblu interactions or visual identity.
+- For UI design, implementation, and review, read `docs/DESIGN_SYSTEM.md` and use the Owner's `$interaction-design-rules` for applicable page/platform details. The design system remains authoritative for Zibblu identity, platform navigation, and product-specific interaction decisions; the Skill adds concrete interaction/visual constraints without replacing the design system.
+- Apply desktop-specific instructions only to desktop UI. When constraints conflict, do not silently redesign: prioritize security/privacy, accessibility, platform operability, and Owner-approved product decisions, and report the conflict. Keep changes inside the current Issue's authorized scope.
 - Engineering skills may assist with code correctness, debugging, review, and minimal changes; they do not choose UI aesthetics. Report conflicts between design constraints instead of silently normalizing the interface toward generic patterns.
 
 ## Third-party licenses
