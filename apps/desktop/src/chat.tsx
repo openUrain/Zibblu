@@ -1,6 +1,6 @@
 import {
   ArrowDown, ArrowLeft, ArrowRight, AtSign, Check, CheckCheck, Copy, Download, FilePlus2, FolderOpen, Ghost, LockKeyhole,
-  Image, LogOut, MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Radar, Reply, RotateCcw, ScanLine, Search, Send, Trash2, Undo2, UsersRound, X,
+  Image, LogOut, MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Radar, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, UserRoundPlus, UsersRound, X,
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
@@ -11,7 +11,7 @@ import { api, errorMessage, fileExpired } from "./api";
 import type { Conversation, Draft, Message, MessageReceipt, Page, PrivateSummary, ShareSource, Transfer, User } from "./api";
 import { MAX_IMAGE_BYTES } from "./attachment-media";
 import { Avatar, Blank, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName, messageTimeLabel, startsTimeGroup, usePage } from "./common";
-import { copyText, useMenu, useRowMenu } from "./context-menu";
+import { copyText, useMenu, useMenuAnchor, useRowMenu } from "./context-menu";
 import { FilesView, TransferList, useAttachmentSave } from "./files";
 import { ChatAttachment, MediaHistory, MediaViewer } from "./chat-media";
 import { privatePhaseLabel, privateTitle } from "./private-chat";
@@ -20,33 +20,41 @@ import { actions as actionLabels, t } from "./locale";
 
 type ChatPage = "details" | "search";
 
-export function ChatList({ chats, own, selected, open, newChat, rooms, activePrivate, openPrivate, createQr, nearby, scan }: {
+export function ChatList({ chats, own, selected, open, newChat, addContact, rooms, activePrivate, openPrivate, createQr, nearby, scan }: {
   chats: Conversation[]; own: User; selected?: string; open: (id: string, page?: ChatPage) => void; newChat: () => void;
+  addContact: () => void;
   rooms: PrivateSummary[]; activePrivate?: string; openPrivate: (id: string) => void; createQr: () => void;
   nearby: () => void; scan: () => void;
 }) {
   const { remarks } = useContext(People);
   const menu = useRowMenu();
+  const openMenu = useMenu();
+  const anchor = useMenuAnchor();
+  const plus = useRef<HTMLButtonElement>(null);
   const [search, setSearch] = useState("");
   const query = search.trim().toLocaleLowerCase();
   const filtered = chats.filter(chat => chatName(chat, own.id, remarks).toLocaleLowerCase().includes(query));
+  const add = <button className="icon-button new-conversation" type="button" ref={plus}
+    aria-label={t("Add", "添加")} title={t("Add", "添加")} aria-haspopup="menu" aria-expanded={!!anchor && anchor === plus.current}
+    onClick={event => openMenu(event.currentTarget, [
+      { label: t("New conversation", "发起聊天"), icon: <MessageCircle size={18} />, action: newChat },
+      { label: t("Add contact", "添加联系人"), icon: <UserRoundPlus size={18} />, action: addContact },
+      ...(ios ? [
+        { label: t("Scan QR code", "扫一扫"), icon: <ScanLine size={18} />, action: scan },
+        { label: t("Nearby devices", "附近设备"), icon: <Radar size={18} />, action: nearby },
+      ] : []),
+      { label: t("Start private QR chat", "发起扫码私聊"), icon: <QrCode size={18} />, action: createQr },
+    ])}><Plus size={22} /></button>;
   return <aside className="chat-list">
-    <header className="chat-list-title"><h1>{t("Chats", "聊天")}</h1>
-      {ios && <div className="chat-actions">
-        <button className="icon-button" aria-label={t("Nearby devices", "附近设备")} onClick={nearby}><Radar size={24} /></button>
-        <button className="icon-button" aria-label={t("Scan QR code", "扫一扫")} onClick={scan}><ScanLine size={24} /></button>
-      </div>}
-    </header>
-    <div className="chat-list-head">
+    {ios && <header className="chat-list-title"><h1>{t("Chats", "聊天")}</h1>{add}</header>}
+    <form className="chat-list-head" onSubmit={event => {
+      event.preventDefault();
+      if (query && filtered.length === 1) open(filtered[0].id);
+    }}>
       <label className="search"><Search size={18} /><input type="search" aria-label={t("Search chats", "搜索聊天")}
         placeholder={t("Search", "搜索")} value={search} onChange={event => setSearch(event.target.value)} /></label>
-      <div className="chat-actions">
-        <button className="icon-button" aria-label="Start private QR chat" title="Start private QR chat"
-          onClick={createQr}><QrCode size={22} /></button>
-        <button className="icon-button new-conversation" aria-label={t("New conversation", "发起聊天")}
-          title={t("New conversation", "发起聊天")} onClick={newChat}><Plus size={23} /></button>
-      </div>
-    </div>
+      {!ios && add}
+    </form>
     <div className="chat-rows">
       {filtered.map(chat => {
         const name = chatName(chat, own.id, remarks);
@@ -86,11 +94,11 @@ type ChatAssistants = {
 type ChatDraft = { draft: Draft; setDraft: (change: (draft: Draft) => Draft) => void };
 
 export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, back, share, openPrivate, groupCode, aiChat,
-  hidden, hide, readReceipts, draft, setDraft, profileOpen, requested }: {
+  hidden, hide, readReceipts, draft, setDraft, profileOpen, visibleOnNarrow, requested }: {
   chat: Conversation; own: User; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
   refresh: () => Promise<void>; back: () => void; share: (source: ShareSource) => Promise<void>; openPrivate: () => void;
   groupCode: () => void; aiChat: ChatAssistants; hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean;
-  profileOpen: boolean;
+  profileOpen: boolean; visibleOnNarrow: boolean;
   requested?: { page: ChatPage };
 } & ChatDraft) {
   const [showFiles, setShowFiles] = useState(false);
@@ -105,7 +113,14 @@ export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffs
   const count = new Intl.NumberFormat(navigator.language).format(chat.members.length);
   const heading = chat.title ? name + t(" (" + count + ")", "（" + count + "）") : name;
   const peer = chat.title ? undefined : chat.members.find(user => user.id !== own.id);
+  const chatView = useRef<HTMLElement>(null);
   useIosBack(showFiles && !profileOpen ? () => setShowFiles(false) : undefined, 5);
+
+  useEffect(() => {
+    if (ios || requested || profileOpen || !visibleOnNarrow) return;
+    const field = chatView.current?.querySelector<HTMLTextAreaElement>(".composer textarea");
+    if (field?.getClientRects().length) field.focus({ preventScroll: true });
+  }, [requested, profileOpen, visibleOnNarrow]);
 
   useEffect(() => {
     if (requested?.page === "details") setDrawer(true);
@@ -123,7 +138,7 @@ export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffs
     }
   }
 
-  return <section className="chat-view" aria-label={heading}>
+  return <section className="chat-view" ref={chatView} aria-label={heading}>
     <header className="chat-header">
       <button className="icon-button mobile-back" onClick={back} aria-label="Back to chats"><ArrowLeft size={20} /></button>
       <div className="chat-heading"><h2>{peer ? <button className="person-link" onClick={() => open?.(peer)}>{name}</button> : heading}</h2></div>
@@ -451,7 +466,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
               {!mine && avatar}
               <div className={"message-body" + (file ? " attachment-body" : "")}
                 ref={viewed !== undefined && message?.seq === viewed ? viewedBody : undefined}>
-                {!provider && !mine && <span className="message-author">{displayName(message!.sender, remarks)}</span>}
+                {chat.title && !provider && !mine && <span className="message-author">{displayName(message!.sender, remarks)}</span>}
                 {message?.reply_to !== undefined && !message.recalled && <QuotedMessage conversation={chat.id} seq={message.reply_to}
                   known={bySequence.get(message.reply_to)} hidden={hidden.has(message.reply_to) || recalled.has(message.reply_to)} />}
                 {message?.recalled ? <div className="bubble recalled-message">Message recalled</div>
@@ -652,12 +667,11 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
       {ambiguous && <p className="inline-error" role="alert">Rename one of the matching assistants in Settings.</p>}
       {menu && <AssistantMenu id={menuId} assistants={suggestions} active={menuIndex}
         choose={choose} settings={aiChat.settings} />}
-      <div className={"composer-box" + (draft.length > 0 ? " has-text" : "") + (assistant ? " ai-composer" : "")}>
-        <label className="composer-label" htmlFor={menuId + "-message"}>{assistant ? "Write a prompt" : "Write a message"}</label>
+      <div className={"composer-box" + (assistant ? " ai-composer" : "")}>
         <textarea ref={textarea} id={menuId + "-message"} aria-label={assistant ? "AI prompt" : "Message"}
           aria-autocomplete="list" aria-controls={menu ? menuId : undefined}
           aria-activedescendant={menu && activeOption ? menuId + "-" + menuIndex : undefined}
-          rows={ios ? 1 : 2} placeholder={ios ? (assistant ? t("Write a prompt", "输入提示词") : t("Message", "输入消息")) : undefined}
+          rows={ios ? 1 : 3} placeholder={ios ? (assistant ? t("Write a prompt", "输入提示词") : t("Message", "输入消息")) : undefined}
           value={draft} onChange={event => {
             const value = event.target.value;
             setDraft(previous => ({ ...previous, text: value, nonce: undefined }));
@@ -718,7 +732,7 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
             disabled={(!draft.trim() && !pastedImage) || ambiguous || quoteUnavailable || oversized || sending || checkingImage || (!!assistant && (!view || !prompt))}
             aria-label={assistant ? "Choose AI context" : sending ? "Sending message" : "Send message"}>
             {assistant ? <>Choose context <ArrowRight size={16} /></>
-              : <><span>{sending ? "Sending…" : "Send"}</span><Send size={16} /></>}
+              : <span>{sending ? t("Sending…", "发送中…") : t("Send", "发送")}</span>}
           </button>
         </div>
       </div>

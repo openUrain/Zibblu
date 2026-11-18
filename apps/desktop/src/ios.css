@@ -24,7 +24,7 @@
 .ios .chat-list { border: 0; background: var(--panel); }
 .ios .chat-header .mobile-back, .ios .private-header .mobile-back { display: inline-flex; }
 .ios .chat-view, .ios .private-chat { padding-bottom: var(--input-bottom); }
-.ios .chat-list-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 12px 4px 16px; }
+.ios .chat-list-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 12px 0 16px; }
 .ios .chat-list-title h1 { font-size: 1.25rem; }
 .ios .chat-list-head { padding: 4px 12px 8px; }
 .ios .chat-list:focus-within, .ios .contacts-screen:focus-within { padding-bottom: var(--keyboard-inset); }
@@ -115,16 +115,12 @@
 .ios .message-row .bubble, .ios .private-chat .messages { -webkit-user-select: none; user-select: none; }
 
 .ios .composer { padding: 5px 8px; border-top: 1px solid var(--line); background: var(--bg); }
-.ios .composer-box { padding: 0; border: 0; box-shadow: none; background: transparent; }
-.ios .composer-box:focus-within { box-shadow: none; }
 .ios .composer textarea { min-height: 44px; max-height: 28lvh; padding: 10px; border-radius: 5px; background: var(--panel); }
-.ios .composer-label { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden; }
 .ios .composer-bar { padding: 2px 0; }
 .ios .composer-box:not(.ai-composer, :has(.composer-quote, .pasted-image, .drop-hint)) {
   display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: end; gap: 4px;
 }
 .ios .composer-box:not(.ai-composer, :has(.composer-quote, .pasted-image, .drop-hint)) .composer-bar { display: contents; }
-.ios .composer-bar .send-button:has(span) > svg { display: none; }
 .ios .send-button { min-height: 44px; }
 .ios .chat-header { min-height: 52px; gap: 4px; padding-inline: 6px 8px; }
 .ios .chat-header .button { min-height: 44px; }
