@@ -8,7 +8,6 @@ import Security
 import UIKit
 import UniformTypeIdentifiers
 import WebKit
-import WebKit
 import dnssd
 
 private let serviceType = "_zibblu-private._udp"
@@ -63,86 +62,6 @@ private let native = NativeState()
 private func appWindow() -> UIWindow? {
     let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
     return windows.first(where: \.isKeyWindow) ?? UIApplication.shared.windows.first(where: \.isKeyWindow)
-}
-
-typealias LayoutCallback = @convention(c) (Double, Double) -> Void
-
-private final class InputLayout: NSObject {
-    static let shared = InputLayout()
-    private weak var webView: WKWebView?
-    private var onChanged: LayoutCallback?
-    private var onBack: (@convention(c) () -> Void)?
-    private var keyboardFrame: CGRect?
-    private var backGesture: UIScreenEdgePanGestureRecognizer?
-
-    func install(_ view: WKWebView, _ changed: @escaping LayoutCallback, _ back: @escaping @convention(c) () -> Void) {
-        webView = view
-        onChanged = changed
-        onBack = back
-        view.scrollView.contentInsetAdjustmentBehavior = .never
-        view.scrollView.bounces = false
-        let gesture = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(goBack(_:)))
-        gesture.edges = .left
-        gesture.isEnabled = false
-        view.addGestureRecognizer(gesture)
-        backGesture = gesture
-        let center = NotificationCenter.default
-        for name in [UIResponder.keyboardWillChangeFrameNotification, UIResponder.keyboardDidChangeFrameNotification] {
-            center.addObserver(forName: name, object: nil, queue: .main) { notification in
-                self.keyboardFrame = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
-                self.publish()
-            }
-        }
-        center.addObserver(forName: UIResponder.keyboardDidHideNotification, object: nil, queue: .main) { _ in
-            self.keyboardFrame = nil
-            self.publish()
-        }
-        center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
-            self.keyboardFrame = nil
-        }
-        for name in [UIApplication.didBecomeActiveNotification, UIContentSizeCategory.didChangeNotification] {
-            center.addObserver(forName: name, object: nil, queue: .main) { _ in self.publish() }
-        }
-        publish()
-    }
-
-    func publish() {
-        guard let view = webView else { return }
-        let scale = UIFontMetrics(forTextStyle: .body).scaledValue(for: 17, compatibleWith: view.traitCollection) / 17
-        var inset: CGFloat = 0
-        if let frame = keyboardFrame, let window = view.window {
-            let overlap = view.convert(frame, from: window.screen.coordinateSpace).intersection(view.bounds)
-            if !overlap.isNull, overlap.maxY >= view.bounds.maxY - 1, overlap.width >= view.bounds.width - 1 {
-                inset = overlap.height
-            }
-        }
-        onChanged?(Double(inset), Double(scale))
-    }
-
-    func enableBack(_ enabled: Bool) {
-        backGesture?.isEnabled = enabled
-    }
-
-    @objc private func goBack(_ gesture: UIScreenEdgePanGestureRecognizer) {
-        let offset = gesture.translation(in: webView)
-        if gesture.state == .ended && offset.x > 48 && abs(offset.y) < offset.x { onBack?() }
-    }
-}
-
-@_cdecl("zibblu_ios_install_layout")
-func zibbluInstallLayout(_ pointer: UnsafeMutableRawPointer, _ changed: @escaping LayoutCallback, _ back: @escaping @convention(c) () -> Void) {
-    let view = Unmanaged<WKWebView>.fromOpaque(pointer).takeUnretainedValue()
-    InputLayout.shared.install(view, changed, back)
-}
-
-@_cdecl("zibblu_ios_publish_layout")
-func zibbluPublishLayout() {
-    DispatchQueue.main.async { InputLayout.shared.publish() }
-}
-
-@_cdecl("zibblu_ios_back_enabled")
-func zibbluBackEnabled(_ enabled: Bool) {
-    DispatchQueue.main.async { InputLayout.shared.enableBack(enabled) }
 }
 
 typealias LayoutCallback = @convention(c) (Double, Double) -> Void
