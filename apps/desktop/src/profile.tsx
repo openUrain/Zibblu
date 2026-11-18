@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, QrCode } from "lucide-react";
+import { ChevronLeft, ChevronRight, MessageCircle, MoreHorizontal, QrCode, UserRoundMinus } from "lucide-react";
 import { useContext, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api, errorMessage } from "./api";
@@ -8,6 +8,7 @@ import { actions, t } from "./locale";
 import { useIosBack } from "./ios";
 import { QrContent } from "./qr";
 import { ProfileImageEditor } from "./profile-image";
+import { useMenu, useMenuAnchor } from "./context-menu";
 
 type ImageField = "avatar" | "cover";
 type Page = ImageField | "display_name" | "bio" | "notes" | "greeting" | "qr" | "remove";
@@ -33,6 +34,9 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
   message: () => Promise<void>;
 }) {
   const { remarks } = useContext(People);
+  const openMenu = useMenu();
+  const menuAnchor = useMenuAnchor();
+  const more = useRef<HTMLButtonElement>(null);
   const own = user.id === session.user.id;
   const [snapshot, setSnapshot] = useState<{ data: CachedProfile; relation: string }>();
   const [page, setPage] = useState<Page>();
@@ -164,7 +168,7 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
   const saveLabel = busy ? actions.saving : saveError ? actions.retry : page === "greeting" ? t("Send", "发送") : actions.save;
   const qrName = labels.qr;
 
-  return <section className="profile-page" aria-label={title} onKeyDown={event => {
+  return <section className={"profile-page" + (own ? "" : " contact-profile")} aria-label={title} onKeyDown={event => {
     if (event.key === "Escape") { event.stopPropagation(); back(); }
   }}>
     <header className="profile-header">
@@ -172,6 +176,11 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
         <ChevronLeft size={25} />
       </button>
       <h1>{title}</h1>
+      {contact && !editor && <button className="icon-button" type="button" ref={more} disabled={busy}
+        aria-label={t("Contact actions", "联系人操作")} aria-haspopup="menu" aria-expanded={!!menuAnchor && menuAnchor === more.current}
+        onClick={event => openMenu(event.currentTarget, [
+          { label: labels.remove, icon: <UserRoundMinus size={18} />, action: () => show("remove") },
+        ])}><MoreHorizontal size={23} /></button>}
     </header>
     <div className="profile-content">
       {editor && photoPage && photo && <ProfileImageEditor key={page} source={photo} kind={page}
@@ -224,10 +233,10 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
           <Row label={labels.bio} choose={() => show("bio")} disabled={!profile}>{profile?.bio}</Row>
           <Row label={qrName} choose={() => show("qr")}><QrCode size={21} /></Row>
         </div> : <>
-          {profile?.cover && <img className="profile-cover" src={api.profileImageUrl(user.id, profile.cover)} alt="" />}
           <div className="profile-person"><PersonAvatar user={user} version={profile?.avatar} large />
             <div><h2>{name}</h2><small className="muted">@{user.handle}</small></div>
           </div>
+          {profile?.cover && <img className="profile-cover" src={api.profileImageUrl(user.id, profile.cover)} alt="" />}
           {profile?.bio && <p className="profile-bio">{profile.bio}</p>}
           {contact && <div className="profile-rows"><Row label={labels.notes} choose={() => show("notes")}>{profile.notes?.remark}</Row></div>}
           {contact && <button className="button primary profile-direct" disabled={busy} onClick={async () => {
@@ -235,10 +244,7 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
             setSaveError("");
             try { await message(); }
             catch (error) { setSaveError(errorMessage(error)); setBusy(false); }
-          }}>{t("Message", "发消息")}</button>}
-          {contact && <button className="button danger profile-direct" onClick={() => show("remove")} disabled={busy}>
-            {labels.remove}
-          </button>}
+          }}><MessageCircle size={18} /> {t("Message", "发消息")}</button>}
           {profile?.relation === "stranger" && <button className="button primary profile-direct" onClick={() => show("greeting")}>
             {t("Add contact", "添加联系人")}
           </button>}

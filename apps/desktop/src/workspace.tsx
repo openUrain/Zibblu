@@ -2,7 +2,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import {
   ArrowRight, CircleUserRound, FolderOpen, Info, LogOut, Menu, MessageCircle, MessageSquare,
-  Radar, ScanLine, Search, Settings, UserRoundMinus, UsersRound, X,
+  Radar, ScanLine, Search, Settings, UserRoundPlus, UsersRound, X,
   ChevronLeft, ChevronRight, UserRound,
 } from "lucide-react";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
@@ -73,6 +73,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [failure, setFailure] = useState(session.notice ?? "");
   const [syncProblem, setSyncProblem] = useState("");
   const [newChat, setNewChat] = useState(false);
+  const [newContact, setNewContact] = useState(false);
   const [offer, setOffer] = useState<DropOffer & { conversation: string }>();
   const [sharing, setSharing] = useState(false);
   const [leaving, setLeaving] = useState(false);
@@ -280,6 +281,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       setShareCode(undefined);
       setScanning(false);
       setNewChat(false);
+      setNewContact(false);
       setProfile(undefined);
       showPrivate(payload.id, payload.conversation);
     });
@@ -381,6 +383,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }
   useIosBack(conversationOpen && !ipadSplit ? backFromChat : undefined);
   const splitProfile = ipadSplit && (nav === "Contacts" || nav === "Me");
+  const desktopContacts = !ios && nav === "Contacts";
   const chatProfile = nav === "Chats";
   const profilePage = profile && <ProfileView key={profile.id} user={profile} session={session}
     reconnecting={connection === "Reconnecting"}
@@ -445,11 +448,13 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       {syncProblem && <div className="workspace-error" role="alert">{syncProblem}</div>}
       {ios && !connected && <div className="mobile-connection" role="status">{connection}</div>}
       <div className={"workspace-content" + (splitProfile ? " ipad-profile-layout" : "")
-        + (profile && !splitProfile && !chatProfile ? " profile-replaces-root" : "")}>
+        + (desktopContacts ? " contacts-layout" : "")
+        + (profile && !splitProfile && !chatProfile && !desktopContacts ? " profile-replaces-root" : "")}>
       {nav === "Chats" && <div className={"chat-layout" + (mobileChat && (active || privateOpen) ? " mobile-chat-open" : "")
         + (profile && chatProfile ? " chat-profile-open" : "")}>
         <ChatList chats={directory.conversations} own={session.user} selected={privateOpen ? undefined : selected}
-          open={selectChat} newChat={() => setNewChat(true)} rooms={privateRooms} activePrivate={privateId}
+          open={selectChat} newChat={() => setNewChat(true)} addContact={() => setNewContact(true)}
+          rooms={privateRooms} activePrivate={privateId}
           openPrivate={selectPrivate} createQr={() => void createPrivateCode()}
           nearby={() => setNearby(true)} scan={() => setScanning(true)} />
         {privateId ? <PrivateChatView key={privateId} id={privateId} own={session.user}
@@ -458,6 +463,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             setDraft={change => setDraft("private/" + privateId, previous => ({ text: change(previous.text) }))}
             back={backFromChat} showCode={showPrivateCode} />
           : active ? <ChatView key={active.id} chat={active} own={session.user} revision={revision} profileOpen={!!profile}
+            visibleOnNarrow={mobileChat}
             requested={chatPage?.id === active.id ? chatPage : undefined}
             latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset}
             hidden={hidden} hide={seq => hide(active.id, seq)} readReceipts={directory.read_receipts && connected && !profile}
@@ -469,12 +475,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
               answered: reply => setAiReplies(current => [...current, reply]),
               dismiss: id => setAiReplies(current => current.filter(reply => reply.id !== id)),
             }} />
-          : <section className="chat-blank"><Blank icon={<MessageCircle size={31} />} title="No conversation selected">
-            <button className="button primary" onClick={() => setNewChat(true)}>New conversation <ArrowRight size={16} /></button>
-          </Blank></section>}
+          : <section className="chat-blank"><Blank icon={<MessageCircle size={28} />} title={t("Select a chat", "选择会话")} /></section>}
         {chatProfile && profilePage}
       </div>}
-      {nav === "Contacts" && <Contacts own={session.user} directory={directory} selected={profile?.id} refresh={refresh} create={create} />}
+      {nav === "Contacts" && <Contacts directory={directory} selected={profile?.id} refresh={refresh} create={create}
+        addContact={() => setNewContact(true)} />}
       {nav === "Files" && <FilesView people={people} revision={revision} recalled={recalled} hidden={hidden} transfers={transfers} onChanged={changed} />}
       {nav === "Me" && <section className="settings-page phone-me">
         <header className="workspace-heading"><h1>{tabLabels.Me}</h1></header>
@@ -501,7 +506,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           setAssistantFailure("");
         }} />} />}
       {!chatProfile && profilePage}
-      {splitProfile && !profile && <section className="chat-blank">
+      {(splitProfile || desktopContacts) && !profile && <section className="chat-blank">
         <Blank icon={<UserRound size={28} />} title={nav === "Me" ? t("Personal information", "个人信息") : t("Select a contact", "选择联系人")} />
       </section>}
       </div>
@@ -519,7 +524,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       groupJoined={id => { setScanning(false); selectChat(id); void refresh(); }}
       privateJoined={id => { setScanning(false); selectPrivate(id); }} />}
     {newChat && <NewChat contacts={directory.contacts} create={create} close={() => setNewChat(false)} findPeople={() => {
-      setNewChat(false); navigate("Contacts");
+      setNewChat(false); navigate("Contacts"); setNewContact(true);
+    }} />}
+    {newContact && <AddContact close={() => setNewContact(false)} open={user => {
+      setNewContact(false);
+      openProfile(user);
     }} />}
     {!privateOpen && offer && offeredChat && <Dialog title="Share this attachment?" close={() => { if (!sharing) setOffer(undefined); }}>
       <p className="drop-confirm"><strong>{offer.name}</strong> will be shared in <strong>{chatName(offeredChat, session.user.id, names)}</strong>.</p>
@@ -554,14 +563,48 @@ function About({ close }: { close: () => void }) {
   </Dialog>;
 }
 
-function Contacts({ own, directory, selected, refresh, create }: {
-  own: User; directory: Directory; selected?: string; refresh: () => Promise<void>; create: (request: ConversationRequest) => Promise<void>;
+function AddContact({ close, open }: { close: () => void; open: (user: User) => void }) {
+  const { remarks } = useContext(People);
+  const [handle, setHandle] = useState("");
+  const [found, setFound] = useState<User>();
+  const [failure, setFailure] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  return <Dialog title={t("Add contact", "添加联系人")} mobilePage close={close} closeDisabled={busy}>
+    <div className="contact-search">
+      <form onSubmit={async event => {
+        event.preventDefault();
+        if (busy || !handle.trim()) return;
+        setBusy(true);
+        setFailure("");
+        setFound(undefined);
+        try { setFound(await api.findUser(handle.trim())); }
+        catch (error) { setFailure(errorMessage(error)); }
+        finally { setBusy(false); }
+      }}>
+        <label className="search"><Search size={17} /><input aria-label={t("Contact username", "联系人账号")} value={handle}
+          onChange={event => { setHandle(event.target.value); setFound(undefined); setFailure(""); }}
+          placeholder={t("Enter a username", "输入账号")} maxLength={32} required readOnly={busy} autoFocus /></label>
+        <button className="button primary" disabled={busy || !handle.trim()} type="submit">
+          {busy ? t("Searching…", "搜索中…") : t("Search", "搜索")}
+        </button>
+      </form>
+      {found && <button className="drawer-action search-result" onClick={() => open(found)}>
+        <PersonAvatar user={found} /><span>{displayName(found, remarks)} <small>@{found.handle}</small></span><ChevronRight size={17} />
+      </button>}
+      {failure && <p className="inline-error" role="alert">{failure}</p>}
+    </div>
+  </Dialog>;
+}
+
+function Contacts({ directory, selected, refresh, create, addContact }: {
+  directory: Directory; selected?: string; refresh: () => Promise<void>; create: (request: ConversationRequest) => Promise<void>;
+  addContact: () => void;
 }) {
   const { contacts, pending_contacts } = directory;
   const { remarks, open } = useContext(People);
   const menu = useRowMenu();
-  const [handle, setHandle] = useState("");
-  const [found, setFound] = useState<User>();
+  const [search, setSearch] = useState("");
   const [failure, setFailure] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -574,34 +617,26 @@ function Contacts({ own, directory, selected, refresh, create }: {
     finally { setBusy(false); }
   }
 
-  const pending = pending_contacts.find(request => request.user.id === found?.id);
-  const query = handle.trim().toLocaleLowerCase();
+  const query = search.trim().toLocaleLowerCase();
   const filtered = contacts.filter(user => [user.handle, displayName(user, remarks)]
-    .some(name => name.toLocaleLowerCase().includes(query)));
+    .some(name => name.toLocaleLowerCase().includes(query)))
+    .sort((first, second) => displayName(first, remarks).localeCompare(displayName(second, remarks), navigator.language));
   return <section className="settings-page contacts-screen">
-    <header className="workspace-heading"><h1>Contacts</h1></header>
-    <div className="surface contact-search">
-      <form onSubmit={event => {
-        event.preventDefault();
-        setFound(undefined);
-        void perform(async () => { setFound(await api.findUser(handle)); });
-      }}>
-        <label className="search"><Search size={17} /><input aria-label="Contact username" value={handle}
-          onChange={event => { setHandle(event.target.value); setFound(undefined); }} placeholder="Enter a username" required disabled={busy} /></label>
-        <button className="button primary" disabled={busy || !handle.trim()} type="submit">Find contact</button>
-      </form>
-      {found && <div className="contact-row search-result">
-        <button className="person-link contact-name" aria-current={selected === found.id || undefined} onClick={() => open?.(found)}>
-          <PersonAvatar user={found} /><strong>{displayName(found, remarks)}</strong>
-        </button>
-        <span className="muted">{found.id === own.id ? "Your account" : contacts.some(user => user.id === found.id)
-          ? "In contacts" : pending ? pending.incoming ? "Incoming request" : "Request sent" : "View profile"}</span>
-      </div>}
-      {failure && <p className="inline-error" role="alert">{failure}</p>}
-    </div>
-    {pending_contacts.length > 0 && <>
-      <h2 className="section-title">Contact requests</h2>
-      <div className="surface contacts">
+    {ios && <header className="workspace-heading"><h1>{tabLabels.Contacts}</h1></header>}
+    <form className="chat-list-head" onSubmit={event => {
+      event.preventDefault();
+      if (query && filtered.length === 1) open?.(filtered[0]);
+    }}>
+      <label className="search"><Search size={17} /><input type="search" aria-label={t("Search contacts", "搜索联系人")}
+        placeholder={t("Search", "搜索")} value={search} onChange={event => setSearch(event.target.value)} /></label>
+      <button type="button" className="icon-button new-conversation" title={t("Add contact", "添加联系人")}
+        aria-label={t("Add contact", "添加联系人")} onClick={addContact}><UserRoundPlus size={21} /></button>
+    </form>
+    <div className="contacts-list">
+    {failure && <p className="inline-error" role="alert">{failure}</p>}
+    {!query && pending_contacts.length > 0 && <section>
+      <h2 className="section-title">{t("Contact requests", "新的朋友")}</h2>
+      <div className="contact-requests">
         {pending_contacts.map(({ user, incoming, greeting, request_id }) => <div className="contact-row" key={user.id}>
           <button className="person-link contact-name" aria-current={selected === user.id || undefined} onClick={() => open?.(user)}>
             <PersonAvatar user={user} /><span><strong>{displayName(user, remarks)}</strong>
@@ -621,9 +656,8 @@ function Contacts({ own, directory, selected, refresh, create }: {
           })}>Cancel request</button>}
         </div>)}
       </div>
-    </>}
-    <h2 className="section-title">Your contacts</h2>
-    {filtered.length ? <div className="surface contacts">
+    </section>}
+    {filtered.length ? <div className="contacts" aria-label={tabLabels.Contacts}>
       {filtered.map(user => <div className="contact-row" key={user.id}>
         <button className="person-link contact-name" aria-current={selected === user.id || undefined} onClick={() => open?.(user)}
           {...menu([
@@ -632,12 +666,9 @@ function Contacts({ own, directory, selected, refresh, create }: {
           ])}>
           <PersonAvatar user={user} /><strong>{displayName(user, remarks)}</strong>{ios && <ChevronRight size={20} aria-hidden />}
         </button>
-        {!ios && <><button className="button subtle" disabled={busy}
-          onClick={() => void perform(() => create({ kind: "direct", contact_id: user.id }))}><MessageSquare size={16} /> Message</button>
-        <button className="icon-button" disabled={busy} title="Remove contact" aria-label={"Remove " + displayName(user, remarks)}
-          onClick={() => void perform(async () => { await api.removeContact(user.id); await refresh(); })}><UserRoundMinus size={18} /></button></>}
       </div>)}
-    </div> : <Blank icon={<UsersRound size={27} />} title={query ? t("No matching contacts", "没有匹配的联系人") : t("No contacts yet", "暂无联系人")} />}
+    </div> : <p className="list-empty muted">{query ? t("No matching contacts.", "没有匹配的联系人。") : t("No contacts yet.", "暂无联系人。")}</p>}
+    </div>
   </section>;
 }
 
