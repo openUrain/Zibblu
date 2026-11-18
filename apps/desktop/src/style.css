@@ -55,8 +55,9 @@
 *, *::before, *::after { box-sizing: border-box; }
 html, body { min-height: 100%; overflow-x: clip; overscroll-behavior: none; }
 body { margin: 0; min-width: 0; font-size: 14px; }
-/* Scope the policy to Windows and include menus portaled to body. */
-body.windows {
+/* Dialogs in the WebView2 top layer need their own selection boundary. */
+body.windows,
+body.windows :where(dialog, button) {
   -webkit-user-select: none;
   user-select: none;
 }
