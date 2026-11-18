@@ -91,7 +91,7 @@ Issue 明确要求“提交 PR”（如 M1 Issue #1）时，视为该任务已�
 - `crates/core/`：Rust 核心客户端、数据与传输能力。
 - `services/online/`：Rust 在线服务及 PostgreSQL 相关代码。
 - `docs/`：产品、架构、安全、路线图、决策及 Skill 来源。
-- `.agents/skills/`：仓库级 Skills，包括 `stop-that-shit`、`ponytail`、`improve`、Matt Pocock 精选工程 Skills。
+- `.agents/skills/`：仓库级 Skills，包括 Owner 专属 `interaction-design-rules`，以及 `stop-that-shit`、`ponytail`、`improve` 和 Matt Pocock 精选工程 Skills。
 - `.github/workflows/ci.yml`：PR 和 `main` push 的 CI 检查。
 - `.github/PULL_REQUEST_TEMPLATE.md`：人类与 Agent 共用的 PR 描述模板。
 
@@ -103,6 +103,8 @@ Issue 明确要求“提交 PR”（如 M1 Issue #1）时，视为该任务已�
 ## 8. 代码与文档风格
 
 - **UI 工作强制先读** `docs/DESIGN_SYSTEM.md`。Windows、iPhone、iPad 各自对照对应微信的布局、导航、输入与操作状态，使用 Zibblu 原创图标和 Lavender 品牌。**文件页仅显示需下载的普通附件，传输进度在聊天文件卡片，私聊保持深色，AI 授权清晰可见**。
+- **禁用通用审美 Skill**：本仓库的 UI 构思、实现与审查不得调用 `impeccable`、`refactoring-ui`（RUI）及其自动化设计流程；即使这些 Skill 安装在 Agent 的全局/个人环境中也不得调用。不要为了 UI 任务重新安装、自动触发或引入它们的通用设计检查表，更不能以其建议推翻已获 Owner 确认的设计。
+- **Owner 专属设计 Skill**：处理 UI 设计、实现或评审时，先阅读 `docs/DESIGN_SYSTEM.md`，并按涉及的页面、状态及平台使用 `$interaction-design-rules`（`.agents/skills/interaction-design-rules/SKILL.md`）。Skill 负责具体界面细节与交互禁忌，原设计系统继续负责 Zibblu 品牌、布局、平台交互及安全边界；桌面专属要求不强加到移动端。**不得用工程 Skill 代替审美决策**，也不得为落实 Skill 在当前 Issue 范围外改造页面。若新规则与已有规范冲突，优先保证安全、隐私、无障碍、平台可用性及 Owner 明确决策，向 Owner 报告具体冲突，不擅自改写设计系统。
 - 若当前代码尚未实现目标设计，必须在 PR 明确差距，分模块实施，不能把“规范已写”当作“UI 已完成”；修改核心设计决定应先征询 Owner。薰衣草品牌色准确 HEX 尚未冻结。
 - **新增四项必须落实的设计原则**：①用布局、控件和状态自解释，避免大段说明文字；②根据任务与状态模型合理使用滑块、复选框、开关、单选/分段等控件，不为装饰而添加；③禁止同一选择状态出现“框 + 复选框 + 勾选”之类重复表达及无意义嵌套；④为主操作、次级操作、辅助信息与危险操作建立清晰视觉层级。**安全、错误、M2 LAN-only 与 M3 AI 外发授权等关键信息不得借“少文字”隐藏。**
 - UI PR 要附真实平台截图或录屏。缺少设备标为 BLOCKED，验收由 Owner 判定。遵守系统字体、焦点、可访问性与减少动态效果。
