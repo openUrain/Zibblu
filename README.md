@@ -1,47 +1,29 @@
-# Zibblu
+<p align="center">
+  <img src="apps/desktop/src-tauri/icons/icon.png" width="72" height="72" alt="">
+</p>
+<h1 align="center">Zibblu</h1>
+<p align="center"><strong>Chat freely. Share privately.</strong></p>
 
-**Chat freely. Share privately.**
+Run your team's messenger on your own server. Share files and keep everyday conversations on hand, even offline. For a private conversation, invite a colleague on the same local network into a separate, encrypted text chat.
 
-[![Windows v0.1.5](https://img.shields.io/badge/Windows-v0.1.5-5b37a5)](https://download.openurain.com/zibblu/windows/v0.1.5/Zibblu_0.1.5_x64_Client_Setup.exe)
-[![iOS test build](https://img.shields.io/badge/iOS-v0.1.5%20preview-6941b9)](https://download.openurain.com/zibblu/ios/v0.1.5/Zibblu-iOS-arm64-unsigned.ipa)
-[![Enterprise Self-Hosting](https://img.shields.io/badge/Enterprise-Self--Hosting-5b37a5)](#enterprise-self-hosting)
-[![Private LAN Chat](https://img.shields.io/badge/Private-LAN%20Chat-463076)](#private-lan-chat)
-[![Zibblu CI](https://github.com/openUrain/Zibblu/actions/workflows/ci.yml/badge.svg)](https://github.com/openUrain/Zibblu/actions/workflows/ci.yml)
+**[Download for Windows](#downloads-by-platform)** · [Self-host with Docker Compose](docs/ONLINE_DEPLOYMENT.md#enterprise-self-hosting) · [iPhone testing preview](#test-on-your-iphone-from-windows-11) · [Website](https://zibblu.openurain.com/)
 
-Zibblu is a messenger for **Windows** with an **iPhone testing preview**, **enterprise self-hosting** and a separate **private LAN chat** mode. Keep received chat history on your device, share files that can resume after an interruption, and choose exactly what an AI assistant can read.
+![Zibblu desktop conversation with a message, a file attachment and the conversation list](docs/windows-feedback/issue54/desktop-chat-after.png)
 
-[Windows installer · v0.1.5 (R2)](https://download.openurain.com/zibblu/windows/v0.1.5/Zibblu_0.1.5_x64_Client_Setup.exe) · [iPhone unsigned test IPA · v0.1.5 (R2)](https://download.openurain.com/zibblu/ios/v0.1.5/Zibblu-iOS-arm64-unsigned.ipa) · [Product website](https://zibblu.openurain.com/) · [Self-hosting guide](docs/ONLINE_DEPLOYMENT.md#enterprise-self-hosting)
-
-## Downloads by platform
-
-| Platform | Status and build | How to get it |
-| --- | --- | --- |
-| **Windows 10 / 11 · x64** | **v0.1.5 installer** · `Zibblu_0.1.5_x64_Client_Setup.exe` | [Download EXE from R2](https://download.openurain.com/zibblu/windows/v0.1.5/Zibblu_0.1.5_x64_Client_Setup.exe) · [R2 SHA-256](https://download.openurain.com/zibblu/windows/v0.1.5/SHA256SUMS.txt) · [GitHub Release (repository access required)](https://github.com/openUrain/Zibblu/releases/tag/v0.1.5) |
-| **iPhone · iOS 16.4+** | **v0.1.5 unsigned testing preview** · `Zibblu-iOS-arm64-unsigned.ipa` | [Download IPA from R2](https://download.openurain.com/zibblu/ios/v0.1.5/Zibblu-iOS-arm64-unsigned.ipa) · [Free personal installation guide](#test-on-your-iphone-from-windows-11) · [GitHub Actions (repository access required)](https://github.com/openUrain/Zibblu/actions/workflows/ios.yml) |
-
-**Important:** The iOS build is an **unsigned development artifact**, not an App Store or TestFlight release. Download the unsigned IPA from openUrain R2, then sign and install it yourself, for example using Sideloadly and a free Apple Account. The same build process can be inspected in GitHub Actions by people with repository access. Do not expect the IPA to install by tapping the file on an iPhone. Public iOS distribution and physical-device testing are not yet complete.
-
-![Zibblu Windows client showing messages and file cards in a test conversation](docs/windows-feedback/issue35/chat-files.png)
-
-*Windows client captured during [file-sharing testing](https://github.com/openUrain/Zibblu/issues/35).*
+*The redesigned desktop conversation view, captured during [Windows UI testing](https://github.com/openUrain/Zibblu/issues/54).*
 
 ## Enterprise Self-Hosting
 
-Run **Zibblu Online** and PostgreSQL on infrastructure your organization controls. In the Windows client, open **Advanced** on the sign-in screen and enter your organization’s HTTPS server address. Ordinary chats and attachments between accounts on that server are delivered through it, without going through the official Zibblu server.
-
-The hosting server authenticates accounts and handles delivery. It can read ordinary messages and files during online availability. Ordinary chats use HTTPS for transport and have **no end-to-end encryption**. [Docker Compose deployment guide](docs/ONLINE_DEPLOYMENT.md#enterprise-self-hosting)
+Deploy the messaging service and PostgreSQL on infrastructure you control. Employees select **Advanced** at sign-in and enter your HTTPS server address. Your server authenticates accounts and delivers ordinary messages and attachments. It can read their contents during online availability. Received history stays in each device's local SQLite database. [Deployment guide](docs/ONLINE_DEPLOYMENT.md#enterprise-self-hosting)
 
 ## Private LAN Chat
 
-Start a separate text session with participants on a reachable local network. Participants opt in, and devices verify each other over an encrypted QUIC connection. Private messages have **no server relay or internet fallback**. When the session ends, Zibblu discards its in-memory conversation and leaves no private transcript in app history. Screenshots, recipient copies and OS-level traces are outside that cleanup.
+Both participants opt in. Their devices verify each other's identities and exchange text directly over encrypted QUIC. If the LAN connection fails, delivery stops. The account service issues device credentials, but private messages never pass through it.
 
-The account service issues device credentials used to verify identities. Private messages travel directly between clients. [Private LAN security boundaries](docs/SECURITY.md#private-lan-sessions)
+Ending a session clears its in-memory conversation. Zibblu keeps private text out of app history and cloud AI. Participants can still take screenshots or keep copies, and operating-system traces may remain. [Security boundaries](docs/SECURITY.md#private-lan-sessions)
 
-![Zibblu Windows client with an active private LAN chat in a dark conversation pane](docs/windows-feedback/issue26-private.png)
-
-*Windows client captured during [private-chat testing](https://github.com/openUrain/Zibblu/issues/26).*
-
-### How messages travel
+<details>
+<summary>See how ordinary and private messages travel</summary>
 
 ```mermaid
 flowchart LR
@@ -54,19 +36,42 @@ flowchart LR
     end
 ```
 
-## Everyday chat, files and AI
+</details>
 
-| Feature | What you can do |
-| --- | --- |
-| **Local-first history** | Read received ordinary messages from the current device’s SQLite history, including when an active session goes offline. Text and staged attachments can queue for reconnection. A new device can receive eligible pending deliveries and new messages. |
-| **File sharing** | Send files and folders, find shared attachments, and pause or resume transfers. Completed downloads are checked against their SHA-256 digest. Online attachment availability follows the server’s policy. |
-| **Read-only AI** | In an ordinary chat, mention a configured assistant, review the provider and choose which messages and optional text files to send for that request. Cloud AI has no access to private LAN chats. |
+## Inside the desktop client
+
+<details>
+<summary>View the contacts screen</summary>
+
+![Desktop contact list and selected contact details](docs/windows-feedback/issue54/desktop-contact-after.png)
+
+</details>
+
+- **Message offline.** Read received history and queue text or staged attachments for reconnection.
+- **Resume a transfer.** Pause a file download and pick it up later. Zibblu verifies completed downloads against their SHA-256 digest.
+- **Ask an assistant.** Choose the messages and optional text files an AI provider can read for a single request in an ordinary chat.
+
+## Downloads by platform
+
+| Platform | Download | Installation |
+| --- | --- | --- |
+| Windows 10 or 11 · x64 | [v0.1.5 installer](https://download.openurain.com/zibblu/windows/v0.1.5/Zibblu_0.1.5_x64_Client_Setup.exe) · [SHA-256](https://download.openurain.com/zibblu/windows/v0.1.5/SHA256SUMS.txt) | [Windows setup](#install-zibblu-on-windows) |
+| iPhone · iOS 16.4+ | [v0.1.5 unsigned preview](https://download.openurain.com/zibblu/ios/v0.1.5/Zibblu-iOS-arm64-unsigned.ipa) | [Sign and install the IPA](#test-on-your-iphone-from-windows-11) |
+
+The iPhone build requires personal signing. Public distribution and physical-device testing are still pending. [iOS build workflow](https://github.com/openUrain/Zibblu/actions/workflows/ios.yml)
 
 ## Install Zibblu on Windows
 
 1. On Windows 10 or 11 x64, download the [v0.1.5 installer from openUrain R2](https://download.openurain.com/zibblu/windows/v0.1.5/Zibblu_0.1.5_x64_Client_Setup.exe) (or use the [GitHub Release](https://github.com/openUrain/Zibblu/releases/tag/v0.1.5) if you have repository access) and run it. Verify the installer against the published SHA-256 checksum. The installer is unsigned and can install Microsoft WebView2 if needed.
 2. Start Zibblu. A fresh profile defaults to **Zibblu Online**. To use your organization’s compatible v2 service, select **Advanced** and enter its HTTPS origin without a path. Local development also supports `http://127.0.0.1:7841`.
 3. Create an account or sign in on that server. Find a friend by username in **Contacts** and send a request. Once accepted, start a chat and share files.
+
+<details>
+<summary>View the updated sign-in fields</summary>
+
+![Sign-in field comparison showing the previous design above and the updated floating labels below, with and without keyboard focus](apps/desktop/tests/evidence/issue-61/login.png)
+
+</details>
 
 v0.1.4 uses separate Local-First profiles. Old test accounts need to register again on the v2 official service. The client remembers the most recent successful server selection, and profiles are scoped to a server and account.
 
