@@ -1,3 +1,4 @@
+import { FloatingField } from "./floating-field";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -582,9 +583,8 @@ function AddContact({ close, open }: { close: () => void; open: (user: User) => 
         catch (error) { setFailure(errorMessage(error)); }
         finally { setBusy(false); }
       }}>
-        <label className="search"><Search size={17} /><input aria-label={t("Contact username", "联系人账号")} value={handle}
-          onChange={event => { setHandle(event.target.value); setFound(undefined); setFailure(""); }}
-          placeholder={t("Enter a username", "输入账号")} maxLength={32} required readOnly={busy} autoFocus /></label>
+        <FloatingField fieldClass="search" label={t("Contact username", "联系人账号")} prefixIcon={<Search size={17} />} value={handle}
+          onChange={event => { setHandle(event.target.value); setFound(undefined); setFailure(""); }} maxLength={32} required readOnly={busy} autoFocus />
         <button className="button primary" disabled={busy || !handle.trim()} type="submit">
           {busy ? t("Searching…", "搜索中…") : t("Search", "搜索")}
         </button>
@@ -627,8 +627,7 @@ function Contacts({ directory, selected, refresh, create, addContact }: {
       event.preventDefault();
       if (query && filtered.length === 1) open?.(filtered[0]);
     }}>
-      <label className="search"><Search size={17} /><input type="search" aria-label={t("Search contacts", "搜索联系人")}
-        placeholder={t("Search", "搜索")} value={search} onChange={event => setSearch(event.target.value)} /></label>
+      <FloatingField fieldClass="search" label={t("Search contacts", "搜索联系人")} prefixIcon={<Search size={17} />} type="search" value={search} onChange={event => setSearch(event.target.value)} />
       <button type="button" className="icon-button new-conversation" title={t("Add contact", "添加联系人")}
         aria-label={t("Add contact", "添加联系人")} onClick={addContact}><UserRoundPlus size={21} /></button>
     </form>
@@ -707,7 +706,7 @@ function NewChat({ contacts, create, close, findPeople }: {
         <Choice type="radio" name="conversation-type" checked={group} onChange={() => { setGroup(true); setFailure(""); }}>Group</Choice>
       </fieldset>
       {group ? <form className="group-form" onSubmit={submit}>
-        <label>Group name<input required maxLength={64} value={title} onChange={event => setTitle(event.target.value)} /></label>
+        <FloatingField label="Group name" required maxLength={64} value={title} onChange={event => setTitle(event.target.value)} />
         <fieldset className="dialog-contacts"><legend>Choose 2–15 contacts</legend>{contacts.map(user => {
           const checked = members.includes(user.id);
           return <Choice key={user.id} checked={checked} disabled={busy || (!checked && members.length >= 15)}

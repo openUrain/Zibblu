@@ -1,3 +1,4 @@
+import { FloatingField } from "./floating-field";
 import { ChevronLeft, ChevronRight, MessageCircle, MoreHorizontal, QrCode, UserRoundMinus } from "lucide-react";
 import { useContext, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
@@ -204,17 +205,15 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
         </div>
       </>}
       {editor && !photoPage && page !== "qr" && page !== "remove" && <form className="profile-fields" key={page} onSubmit={submit}>
-        <label>{page === "notes" ? t("Remark", "备注名") : labels[page]}
-          {page === "bio" || page === "greeting"
-            ? <textarea name="value" maxLength={page === "bio" ? 300 : 200} rows={4} readOnly={busy} autoFocus
+        {page === "bio" || page === "greeting"
+            ? <FloatingField multiline label={labels[page]} name="value" maxLength={page === "bio" ? 300 : 200} rows={4} readOnly={busy} autoFocus
               defaultValue={page === "bio" ? profile?.bio ?? "" : ""} />
-            : <input name="value" maxLength={64} readOnly={busy} autoFocus
+            : <FloatingField label={page === "notes" ? t("Remark", "备注名") : labels[page]} name="value" maxLength={64} readOnly={busy} autoFocus
               defaultValue={page === "notes" ? profile?.notes?.remark ?? "" : profile?.display_name ?? ""} />}
-        </label>
-        {page === "notes" && <label>{t("Contact details", "联系资料")}
-          <textarea name="details" rows={3} maxLength={300} readOnly={busy} defaultValue={profile?.notes?.contact_info ?? ""} />
+        {page === "notes" && <>
+          <FloatingField multiline label={t("Contact details", "联系资料")} name="details" rows={3} maxLength={300} readOnly={busy} defaultValue={profile?.notes?.contact_info ?? ""} />
           <small>{t("Only you can see these details.", "仅自己可见。")}</small>
-        </label>}
+        </>}
         <div className="dialog-actions">
           <button type="button" className="button subtle" onClick={back} disabled={busy}>{actions.cancel}</button>
           <button className="button primary" disabled={busy}>{saveLabel}</button>

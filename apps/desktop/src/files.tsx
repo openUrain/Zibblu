@@ -1,3 +1,4 @@
+import { FloatingField } from "./floating-field";
 import { Archive, ArrowDown, ArrowUp, Check, Download, File, FolderOpen, Pause, Play, RotateCcw, Search, Share, Trash2 } from "lucide-react";
 import { useCallback, useContext, useState } from "react";
 import { api, errorMessage, fileExpired } from "./api";
@@ -166,9 +167,8 @@ export function FilesView({ conversation, people, transfers, revision, recalled,
     </fieldset>}
     {tab === "shared" ? <>
       <div className="filters">
-        <label className="file-search">File name<span className="search"><Search size={16} />
-          <input type="search" value={name} onChange={event => setName(event.target.value)} placeholder="Search file names" />
-        </span></label>
+        <FloatingField fieldClass="search file-search" label="Search file names" prefixIcon={<Search size={16} />}
+             type="search" value={name} onChange={event => setName(event.target.value)} />
         {!conversation && <label>Shared by<select value={person} onChange={event => setPerson(event.target.value)}>
           <option value="">Everyone</option>
           {people.map(user => <option key={user.id} value={user.id}>{displayName(user, remarks)}</option>)}

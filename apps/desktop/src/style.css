@@ -155,12 +155,46 @@ svg { vertical-align: middle; }
 .signin-form form, .group-form { display: grid; gap: 14px; }
 .signin-form label, .group-form > label, .filters label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 650; }
 .signin-form input { min-height: 44px; font-size: 14px; }
-.floating-field { min-inline-size: 0; margin: 0; padding: 0; background: transparent; }
-.floating-field legend { margin-inline-start: 9px; font-size: 12px; line-height: 1; }
-.floating-field:focus-within { border-color: var(--accent); }
-.floating-field:focus-within legend label { color: var(--accent); }
-.signin-form .floating-field input { width: 100%; border: 0; background: transparent; padding: 5px 13px 8px; outline: 0; }
-.password-field { display: flex; align-items: center; padding-inline-end: 4px; }
+.floating-field {
+  --field-surface: var(--panel);
+  --label-start: 8px;
+  position: relative; display: flex; align-items: center; min-width: 0;
+  border: 2px solid var(--line); border-radius: 8px; corner-shape: squircle;
+  background: var(--field-surface); color: var(--ink);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.floating-field:has(> :is(input, textarea):focus) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--tint), 0 0 0 4px color-mix(in srgb, var(--accent) 13%, transparent);
+}
+.floating-field > :is(input, textarea):not([type="range"]) {
+  flex: 1; width: 100%; min-width: 0; border: 0; outline: 0; box-shadow: none;
+  background: transparent; padding: 9px 11px; border-radius: inherit;
+}
+.floating-field > :is(input, textarea):not(:focus)::placeholder { color: transparent; }
+.floating-field .field-label {
+  position: absolute; inset-inline-start: var(--label-start); top: 50%; transform: translateY(-50%);
+  display: block; max-width: calc(100% - var(--label-start) - 8px); margin: 0; padding-inline: 3px;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; pointer-events: none;
+  font-size: 14px; line-height: 1.2; font-weight: 400; color: var(--muted);
+  transition: top .15s ease-out, font-size .15s ease-out, color .15s ease;
+}
+.floating-field:has(textarea) .field-label { top: 19px; }
+.floating-field:has(> :is(input, textarea):is(:focus, :not(:placeholder-shown), :autofill)) .field-label {
+  top: -1px; font-size: 12px; font-weight: 550; background: var(--field-surface);
+}
+.floating-field:has(> :is(input, textarea):focus) .field-label { color: var(--accent); }
+.field-icon { display: inline-flex; margin-inline-start: 9px; color: var(--muted); }
+.floating-field:has(.field-icon) { --label-start: 33px; }
+.floating-field.password-field { padding-inline-end: 4px; }
+.floating-field:has(:disabled) { opacity: .65; }
+.floating-field:has([aria-invalid="true"]) { border-color: var(--danger); }
+@media (prefers-reduced-motion: reduce) {
+  .floating-field, .floating-field .field-label { transition: none; }
+}
+@media (forced-colors: active) {
+  .floating-field:focus-within { outline: 2px solid Highlight; }
+}
 .password-field input::-ms-reveal { display: none; }
 .password-field .icon-button { height: 36px; }
 .signin-server { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
@@ -254,15 +288,9 @@ svg { vertical-align: middle; }
 .chat-list-head .search { flex: 1; min-width: 0; }
 .chat-list-head .icon-button { width: 36px; min-width: 36px; height: 36px; }
 .chat-list h1, .workspace-heading h1 { font-size: 15px; letter-spacing: -.01em; line-height: 1.2; font-weight: 600; }
-.search {
-  display: flex; align-items: center; gap: 6px; padding-left: 8px; border: 1px solid var(--line);
-  border-radius: 8px; min-width: 0; background: var(--soft); color: var(--muted);
-  transition: border-color .15s ease, background-color .15s ease;
-}
-.search svg { flex: none; }
-.search input { border: 0; padding-inline: 0 8px; background: transparent; min-height: 32px; font-size: 12px; }
-.search:focus-within { border-color: rgba(99, 79, 180, 0.4); background: var(--panel); outline: 2px solid rgba(99, 79, 180, 0.12); outline-offset: 0; }
-.search input:focus { outline: 0; }
+.floating-field.search { --field-surface: var(--soft); }
+.search > input { min-height: 32px; }
+.filters .file-search { align-self: end; min-height: 41px; }
 .chat-rows { overflow: auto; padding-bottom: 8px; }
 .chat-row {
   position: relative; display: flex; align-items: center; width: 100%; gap: 8px; padding: 8px 12px;
@@ -349,7 +377,7 @@ svg { vertical-align: middle; }
   display: block; width: 100%; min-height: 52px; max-height: 155px; border: 0; outline: 0;
   background: transparent; padding: 12px 8px 4px; line-height: 1.45; resize: vertical;
 }
-.composer textarea:focus-visible { box-shadow: inset 0 -1px var(--accent); }
+.composer-box > .floating-field { margin-top: 9px; }
 .composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 4px; }
 .composer-attachments { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .drop-hint { color: var(--muted); font-size: 11px; margin-left: 5px; }
@@ -668,7 +696,7 @@ button.profile-row:hover { background: var(--hover); }
 .profile-fields { display: grid; gap: 12px; }
 .profile-fields label { display: grid; gap: 6px; }
 .profile-fields small { color: var(--muted); }
-.profile-fields textarea { width: 100%; padding: 10px; border: 1px solid var(--line); background: var(--panel); }
+.profile-fields textarea { resize: vertical; }
 .profile-image-editor { display: grid; gap: 12px; }
 .profile-crop {
   position: relative; overflow: hidden; width: min(100%, 360px); margin-inline: auto;

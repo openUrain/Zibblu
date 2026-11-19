@@ -1,3 +1,4 @@
+import { FloatingField } from "./floating-field";
 import { ArrowDown, ArrowLeft, Ghost, QrCode, Send, UserPlus } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { Fragment, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
@@ -343,9 +344,8 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
         {(failure || oversized) && <p className="inline-error" role="alert">
           {oversized ? "Private messages can be up to 2 KiB." : failure}
         </p>}
-        <div className={"composer-box" + (draft.length > 0 ? " has-text" : "")}>
-          <label className="composer-label" htmlFor={inputId}>Write a private message</label>
-          <textarea id={inputId} aria-label="Private message" rows={2} autoComplete="off"
+        <div className="composer-box">
+          <FloatingField multiline id={inputId} label="Private message" rows={2} autoComplete="off"
             spellCheck={false} value={draft} onChange={event => { const value = event.target.value; setDraft(() => value); }}
             onKeyDown={event => {
               if (!ios && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {

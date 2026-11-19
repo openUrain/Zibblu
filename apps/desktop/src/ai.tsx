@@ -1,3 +1,4 @@
+import { FloatingField } from "./floating-field";
 import {
   AtSign, Bot, ChevronRight, CircleCheck, Clock3, FileText, ListChecks,
   LockKeyhole, MessageSquare, Paperclip, Send, X,
@@ -105,23 +106,17 @@ function AssistantEditor({ provider, assistant, saved }: {
   return <form className="ai-settings-form" onSubmit={save} autoComplete="off">
     <fieldset className="ai-editor-fields" disabled={!!busy}>
     <div className="ai-settings-fields">
-      <label>Mention name
-        <span className="ai-mention-field"><AtSign size={16} />
-          <input aria-label="Mention name" value={name} onChange={event => setName(event.target.value)} maxLength={32} required />
-        </span>
-      </label>
-      <label>Model ID<input value={model} onChange={event => setModel(event.target.value)} maxLength={128} required
-        list={models.length ? modelList : undefined} /></label>
+      <FloatingField label="Mention name" prefixIcon={<AtSign size={16} />} value={name} onChange={event => setName(event.target.value)} maxLength={32} required />
+      <FloatingField label="Model ID" value={model} onChange={event => setModel(event.target.value)} maxLength={128} required
+        list={models.length ? modelList : undefined} />
       {models.length > 0 && <datalist id={modelList}>{models.map(id => <option key={id} value={id} />)}</datalist>}
     </div>
-    <label>API key
-      <input ref={key} type="password" autoComplete="off" spellCheck={false} maxLength={512} required={!assistant}
+    <FloatingField label="API key" ref={key} type="password" autoComplete="off" spellCheck={false} maxLength={512} required={!assistant}
         onChange={resetTest} placeholder={assistant ? "Saved · enter a new key to replace it" : "Paste your provider API key"} />
-    </label>
     <details className="ai-advanced" open={assistant?.base_url ? true : undefined}>
       <summary>Advanced connection settings</summary>
-      <label>Base URL<input type="url" value={baseUrl} placeholder={aiProviders[provider].base} maxLength={2048}
-        onChange={event => { setBaseUrl(event.target.value); resetTest(); }} /></label>
+      <FloatingField label="Base URL" type="url" value={baseUrl} placeholder={aiProviders[provider].base} maxLength={2048}
+        onChange={event => { setBaseUrl(event.target.value); resetTest(); }} />
       <p className="muted">Use the HTTPS API base path. The key is sent to this address when you test or ask the assistant.</p>
     </details>
     </fieldset>
