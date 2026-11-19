@@ -1,3 +1,4 @@
+import { FloatingField } from "./floating-field";
 import { ChevronLeft, ChevronRight, Image, Play, RotateCcw, Search, Video } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage, fileExpired } from "./api";
@@ -70,10 +71,8 @@ export function MediaHistory({ conversation, revision, recalled, hidden, open }:
 }) {
   const [name, setName] = useState("");
   return <>
-    <label className="search media-search"><Search size={16} />
-      <input type="search" aria-label="Search media by file name" placeholder="Search photos and videos"
+    <FloatingField fieldClass="search media-search" label="Search media by file name" prefixIcon={<Search size={16} />} type="search"
         value={name} onChange={event => setName(event.target.value)} />
-    </label>
     <MediaResults key={name} {...{ conversation, revision, recalled, hidden, name, open }} />
   </>;
 }

@@ -1,3 +1,4 @@
+import { FloatingField } from "./floating-field";
 import { ArrowRight, Eye, EyeOff, Globe2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
@@ -185,9 +186,7 @@ function SignIn({ initialServer, officialServer, initialAccount, notice, signedI
           </div>
           <div id="signin-advanced" hidden={!advanced}>
             {advanced && <>
-              <fieldset className="floating-field" disabled={busy}><legend><label htmlFor="server">Server address</label></legend>
-                <input id="server" type="url" value={server} onChange={event => chooseServer(event.target.value)} required />
-              </fieldset>
+              <FloatingField label="Server address" id="server" disabled={busy} type="url" value={server} onChange={event => chooseServer(event.target.value)} required />
               {!official && <div className="signin-server-help">
                 <p className="muted">Accounts and chat history belong to the selected server.</p>
                 <button className="text-button" type="button" disabled={busy} onClick={() => {
@@ -197,28 +196,21 @@ function SignIn({ initialServer, officialServer, initialAccount, notice, signedI
               </div>}
             </>}
           </div>
-          <fieldset className="floating-field"><legend><label htmlFor="username">Username</label></legend>
-            <input id="username" ref={usernameInput} value={handle} onChange={event => setHandle(event.target.value)} required
+          <FloatingField label="Username" id="username" ref={usernameInput} value={handle} onChange={event => setHandle(event.target.value)} required
               autoComplete="username" maxLength={32} />
-          </fieldset>
-          <fieldset className="floating-field"><legend><label htmlFor="password">Password</label></legend>
-            <div className="password-field">
-              <input id="password" ref={passwordInput} data-password type={passwordVisible ? "text" : "password"} value={password}
-                onChange={event => setPassword(event.target.value)} required
-                autoComplete={register ? "new-password" : "current-password"} minLength={register ? 12 : undefined}
-                maxLength={256} />
+          <FloatingField label="Password" id="password" fieldClass="password-field" trailingAction={
               <button className="icon-button" type="button" aria-label={`${passwordVisible ? "Hide" : "Show"} ${register ? "passwords" : "password"}`}
                 aria-controls={register ? "password confirm-password" : "password"} onClick={() => setPasswordVisible(!passwordVisible)}>
                 {passwordVisible ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
-            </div>
-          </fieldset>
-          {register && <fieldset className="floating-field"><legend><label htmlFor="confirm-password">Confirm password</label></legend>
-            <input id="confirm-password" ref={confirmationInput} data-password type={passwordVisible ? "text" : "password"} value={confirmation}
+            } ref={passwordInput} data-password type={passwordVisible ? "text" : "password"} value={password}
+                onChange={event => setPassword(event.target.value)} required
+                autoComplete={register ? "new-password" : "current-password"} minLength={register ? 12 : undefined}
+                maxLength={256} />
+          {register && <FloatingField label="Confirm password" id="confirm-password" ref={confirmationInput} data-password type={passwordVisible ? "text" : "password"} value={confirmation}
               onChange={event => setConfirmation(event.target.value)}
               required autoComplete="new-password" maxLength={256} aria-invalid={showMismatch || undefined}
-              aria-describedby={showMismatch ? "password-mismatch" : undefined} />
-          </fieldset>}
+              aria-describedby={showMismatch ? "password-mismatch" : undefined} />}
           {showMismatch && <p id="password-mismatch" className="inline-error" role="alert">Passwords don’t match.</p>}
           {failure && <div className="inline-error" role="alert">{failure}</div>}
           <button className="button primary signin-submit" disabled={busy} type="submit">

@@ -1,3 +1,4 @@
+import { FloatingField } from "./floating-field";
 import {
   ArrowDown, ArrowLeft, ArrowRight, AtSign, Check, CheckCheck, Copy, Download, FilePlus2, FolderOpen, Ghost, LockKeyhole,
   Image, LogOut, MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Radar, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, UserRoundPlus, UsersRound, X,
@@ -51,8 +52,7 @@ export function ChatList({ chats, own, selected, open, newChat, addContact, room
       event.preventDefault();
       if (query && filtered.length === 1) open(filtered[0].id);
     }}>
-      <label className="search"><Search size={18} /><input type="search" aria-label={t("Search chats", "搜索聊天")}
-        placeholder={t("Search", "搜索")} value={search} onChange={event => setSearch(event.target.value)} /></label>
+      <FloatingField fieldClass="search" label={t("Search chats", "搜索聊天")} prefixIcon={<Search size={18} />} type="search" value={search} onChange={event => setSearch(event.target.value)} />
       {!ios && add}
     </form>
     <div className="chat-rows">
@@ -215,8 +215,8 @@ function ChatSearch({ conversation, initialTab, revision, latestAiSeq, recalled,
     </fieldset>
     {tab === "media" ? <MediaHistory {...{ conversation, revision, recalled, hidden }} open={openMedia} /> : <>
       <form className="chat-search" onSubmit={event => { event.preventDefault(); setSearch(query.trim()); }}>
-        <label className="search"><Search size={16} /><input aria-label="Search message text" value={query}
-          onChange={event => setQuery(event.target.value)} placeholder="Search message text" autoFocus /></label>
+        <FloatingField fieldClass="search" label="Search message text" prefixIcon={<Search size={16} />} value={query}
+          onChange={event => setQuery(event.target.value)} autoFocus />
         <button className="button primary" type="submit" disabled={!query.trim()}>Search</button>
       </form>
       {search && <SearchResults key={search} {...{ conversation, search, revision, latestAiSeq, recalled, hidden }} />}
@@ -668,10 +668,10 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
       {menu && <AssistantMenu id={menuId} assistants={suggestions} active={menuIndex}
         choose={choose} settings={aiChat.settings} />}
       <div className={"composer-box" + (assistant ? " ai-composer" : "")}>
-        <textarea ref={textarea} id={menuId + "-message"} aria-label={assistant ? "AI prompt" : "Message"}
+        <FloatingField multiline ref={textarea} id={menuId + "-message"} label={assistant ? t("AI prompt", "AI 提示词") : t("Message", "消息")}
           aria-autocomplete="list" aria-controls={menu ? menuId : undefined}
           aria-activedescendant={menu && activeOption ? menuId + "-" + menuIndex : undefined}
-          rows={ios ? 1 : 3} placeholder={ios ? (assistant ? t("Write a prompt", "输入提示词") : t("Message", "输入消息")) : undefined}
+          rows={ios ? 1 : 3}
           value={draft} onChange={event => {
             const value = event.target.value;
             setDraft(previous => ({ ...previous, text: value, nonce: undefined }));
