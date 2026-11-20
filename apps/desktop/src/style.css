@@ -914,6 +914,7 @@ button.profile-row:hover { background: var(--hover); }
   }
   .chat-row.selected :is(small, time) { color: HighlightText; }
   .windows .contact-group .contact-name[aria-current] small { color: HighlightText; }
+  .windows .contacts-screen .contact-name[aria-current]:hover { background: Highlight; color: HighlightText; }
   .windows .contacts-screen .contact-name[aria-current]:focus-visible { outline-color: HighlightText; }
   .windows .conversation-row.selected:hover { background: Highlight; }
   .windows :is(.conversation-row, .chat-view .chat-heading .person-link, .conversation-drawer button):focus-visible {

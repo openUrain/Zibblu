@@ -113,8 +113,18 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }
 
   function closeProfile() {
+    const trigger = profileTrigger.current;
+    const contactId = windows && nav === "Contacts" ? profile?.id : undefined;
     setProfile(undefined);
-    requestAnimationFrame(() => profileTrigger.current?.focus({ preventScroll: true }));
+    requestAnimationFrame(() => {
+      if (trigger?.isConnected) {
+        trigger.focus({ preventScroll: true });
+      } else if (contactId) {
+        const row = document.querySelector<HTMLButtonElement>(`.contacts-screen [data-contact-id="${CSS.escape(contactId)}"]`);
+        if (row) row.focus();
+        else document.querySelector<HTMLInputElement>('.contacts-screen input[type="search"]')?.focus({ preventScroll: true });
+      }
+    });
   }
 
   function profileEdited(id: string, patch: Partial<Profile>) {
@@ -687,7 +697,8 @@ function Contacts({ directory, selected, refresh, create, addContact }: {
       {[...groups].map(([letter, entries]) => <div className={letter ? "contact-group" : undefined} key={letter}>
         {letter && <h2 className="contact-group-letter">{letter}</h2>}
         {entries.map(({ user, name, showHandle }) => <div className="contact-row" key={user.id}>
-          <button className="person-link contact-name" aria-current={selected === user.id || undefined} onClick={() => open?.(user)}
+          <button className="person-link contact-name" aria-current={selected === user.id || undefined}
+            data-contact-id={windows ? user.id : undefined} onClick={() => open?.(user)}
             {...menu([
               { label: t("View profile", "查看资料"), icon: <UserRound size={17} />, action: () => open?.(user) },
               { label: t("Message", "发消息"), icon: <MessageSquare size={17} />, action: () => void perform(() => create({ kind: "direct", contact_id: user.id })) },
