@@ -19,6 +19,10 @@ test("starts a group across local midnight and preserves local labels", () => {
   const after = new Date(2026, 10, 15, 0, 1);
   assert.equal(startsTimeGroup(after.getTime(), before), true);
   assert.equal(messageTimeLabel(after.getTime(), after), "00:01");
-  assert.equal(messageTimeLabel(before, after), "昨天 23:59");
-  assert.match(messageTimeLabel(before, new Date(2026, 10, 16)), /23:59$/);
+  assert.equal(messageTimeLabel(before, after), "昨天");
+  assert.equal(messageTimeLabel(before, new Date(2026, 10, 16)), "前天");
+  assert.equal(messageTimeLabel(before, new Date(2026, 10, 20)), "星期六");
+  assert.equal(messageTimeLabel(before, new Date(2026, 10, 21)), "11月14日");
+  assert.equal(messageTimeLabel(before, new Date(2027, 0, 1)), "2026年11月14日");
+  assert.equal(messageTimeLabel(new Date(2026, 11, 31, 23).getTime(), new Date(2027, 0, 1)), "昨天");
 });

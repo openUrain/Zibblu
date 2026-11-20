@@ -1,5 +1,5 @@
 import { FloatingField } from "./floating-field";
-import { Archive, ArrowDown, ArrowUp, Check, Download, File, FileText, FolderOpen, Image, MessageSquare, Pause, Play, RotateCcw, Search, Share, Trash2, Video } from "lucide-react";
+import { Archive, ArrowDown, ArrowUp, Clock, Check, Download, File, FileText, FolderOpen, Image, MessageSquare, Pause, Play, RotateCcw, Search, Share, Trash2, Video } from "lucide-react";
 import { useCallback, useContext, useId, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { api, errorMessage, fileExpired } from "./api";
@@ -137,7 +137,7 @@ function TransferProgress({ transfer, onChanged, chooseNew, choosing }: {
 
   return <div className="transfer-progress">
     <div className="transfer-status"><span role="status" className={complete ? "verified" : failed || expired ? "danger" : ""}>
-      {complete && <Check size={14} />}{status}
+      {complete && <Check size={14} />}{queued ? <span className="status-icon" role="img" aria-label={status} title={status} tabIndex={0}><Clock size={14} aria-hidden /></span> : status}
     </span>{!complete && <span>{bytes(transfer.received)} of {bytes(total)} · {percentage}%</span>}</div>
     {!complete && <>
       <progress max={100} value={percentage} aria-label={status + " " + transfer.attachment.name} />

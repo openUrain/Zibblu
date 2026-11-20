@@ -1,12 +1,12 @@
 import { FloatingField } from "./floating-field";
-import { ChevronLeft, ChevronRight, Image, MessageCircle, MoreHorizontal, QrCode, UserRoundMinus, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, MessageCircle, MoreHorizontal, QrCode, UserRoundMinus } from "lucide-react";
 import { useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api, errorMessage } from "./api";
 import type { CachedProfile, Profile, Session, User } from "./api";
-import { People, PersonAvatar, displayName } from "./common";
+import { People, PersonAvatar, displayName, placeDialog } from "./common";
 import { actions, t } from "./locale";
-import { useIosBack } from "./ios";
+import { phone, useIosBack } from "./ios";
 import { QrContent } from "./qr";
 import { ProfileImageEditor } from "./profile-image";
 import { useMenu, useMenuAnchor } from "./context-menu";
@@ -29,17 +29,17 @@ function Row({ label, children, choose, disabled, entry }: {
   </button>;
 }
 
-export function ProfileView({ session, user, relationVersion, reconnecting, close, refresh, edited, message, popup }: {
+export function ProfileView({ session, user, relationVersion, reconnecting, close, refresh, edited, message, popup, point }: {
   session: Session; user: User; relationVersion: string; reconnecting: boolean;
   close: () => void; refresh: () => Promise<void>; edited: (id: string, patch: Partial<Profile>) => void;
-} & ({ popup: true; message?: never } | { popup?: false; message: () => Promise<void> })) {
+  popup?: boolean; point?: { x: number; y: number }; message: () => Promise<void>;
+}) {
   const { remarks } = useContext(People);
   const openMenu = useMenu();
   const menuAnchor = useMenuAnchor();
   const more = useRef<HTMLButtonElement>(null);
   const own = user.id === session.user.id;
   const [snapshot, setSnapshot] = useState<{ data: CachedProfile; relation: string }>();
-  const [details, setDetails] = useState(false);
   const [page, setPage] = useState<Page>();
   const [photo, setPhoto] = useState<ArrayBuffer>();
   const [picking, setPicking] = useState(false);
@@ -105,10 +105,19 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
     if (entry) {
       const trigger = dialog.current?.querySelector<HTMLButtonElement>(`[data-profile-entry="${entry}"]:enabled`);
       (trigger ?? backButton.current)?.focus();
-    } else if ((details && !page) || page === "qr" || page === "avatar" || page === "cover") {
-      backButton.current?.focus();
     }
-  }, [details, page, popup]);
+  }, [page, popup]);
+
+  useLayoutEffect(() => {
+    const element = dialog.current;
+    if (!point || !element) return;
+    const position = () => placeDialog(element, point.x, point.y, true);
+    position();
+    const observer = new ResizeObserver(position);
+    observer.observe(element);
+    window.addEventListener("resize", position);
+    return () => { observer.disconnect(); window.removeEventListener("resize", position); };
+  }, [point]);
 
   function show(next: Page | undefined) {
     if (popup && next === undefined) returnEntry.current = page;
@@ -121,11 +130,7 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
   function back() {
     if (busy || picking) return;
     if (page) show(undefined);
-    else if (details) {
-      show(undefined);
-      returnEntry.current = "details";
-      setDetails(false);
-    } else close();
+    else close();
   }
   useIosBack(back, 10);
 
@@ -198,17 +203,15 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
   const title = editor ? labels[page] : own ? t("Personal information", "个人信息") : t("Profile", "个人资料");
   const saveLabel = busy ? actions.saving : saveError ? actions.retry : page === "greeting" ? t("Send", "发送") : actions.save;
   const qrName = labels.qr;
-  const card = popup && !details && !page;
+  const card = popup && !page;
   const cover = profile?.cover ? api.profileImageUrl(user.id, profile.cover) : undefined;
 
   const content = <section className={"profile-page" + (own ? "" : " contact-profile")} aria-label={popup ? undefined : title} onKeyDown={event => {
     if (!popup && event.key === "Escape") { event.stopPropagation(); back(); }
   }}>
     <header className={"profile-header" + (card ? " profile-card-header" : "")}>
-      <button className="icon-button" type="button" ref={backButton} onClick={back} disabled={busy || picking}
-        aria-label={card ? t("Close profile", "关闭个人资料") : actions.back}>
-        {card ? <X size={20} /> : <ChevronLeft size={25} />}
-      </button>
+      {!card && <button className="icon-button" type="button" ref={backButton} onClick={back} disabled={busy || picking}
+        aria-label={actions.back}><ChevronLeft size={25} /></button>}
       <h1 id={heading} className={card ? "sr-only" : undefined}>{title}</h1>
       {contact && !editor && <button className="icon-button" type="button" ref={more} disabled={busy}
         aria-label={t("Contact actions", "联系人操作")} aria-haspopup="menu" aria-expanded={!!menuAnchor && menuAnchor === more.current}
@@ -254,29 +257,25 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
       </form>}
       {!editor && <>
         {card ? <>
-          <div className="profile-card-photo">
-            <button className="profile-card-cover" type="button" aria-label={labels.cover} title={labels.cover}
-              data-profile-entry="cover" onClick={() => void pick("cover")} disabled={!profile || picking}>
-              {cover ? <img src={cover} alt="" /> : <Image size={20} aria-hidden />}
-            </button>
-            <button className="profile-card-avatar" type="button" aria-label={labels.avatar} title={labels.avatar}
-              data-profile-entry="avatar" onClick={() => void pick("avatar")} disabled={!profile || picking}>
-              <PersonAvatar user={user} version={profile?.avatar} large />
-            </button>
-          </div>
-          <div className="profile-card-identity">
-            <button className="profile-card-name" type="button" aria-label={`${labels.display_name}: ${name}`} title={name}
-              data-profile-entry="display_name" onClick={() => show("display_name")} disabled={!profile}>{name}</button>
-            <small className="muted">@{user.handle}</small>
-          </div>
-          <div className="profile-rows">
-            <Row label={labels.bio} entry="bio" choose={() => show("bio")} disabled={!profile}>{profile?.bio}</Row>
-            <Row label={qrName} entry="qr" choose={() => show("qr")}><QrCode size={20} aria-hidden /></Row>
-            <Row label={t("Edit profile", "编辑资料")} entry="details" choose={() => {
-              show(undefined);
-              setDetails(true);
-            }} />
-          </div>
+          {cover && <img className="profile-cover" src={cover} alt="" />}
+          <PersonAvatar user={user} version={profile?.avatar} large />
+          <dl className="quick-profile-fields">
+            {[
+              [t("Nickname", "昵称"), profile?.display_name],
+              [t("Username", "账号"), user.handle],
+              [t("Remark", "备注"), contact && relationVersion === "contact" ? profile?.notes?.remark : ""],
+              [t("Phone", "电话"), ""],
+              [t("Signature", "个性签名"), profile?.bio],
+              [t("Added via", "添加方式"), ""],
+              [t("Date added", "添加日期"), ""],
+            ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+          </dl>
+          {contact && <button className="button subtle" disabled={busy} onClick={async () => {
+            setBusy(true);
+            try { await message(); } catch (error) { setSaveError(errorMessage(error)); setBusy(false); }
+          }}>{t("Message", "发消息")}</button>}
+          {profile?.relation === "stranger" && <button className="button primary" onClick={() => show("greeting")}>{labels.greeting}</button>}
+          {profile?.relation === "outgoing" && <p role="status">{t("Contact request sent.", "好友请求已发送。")}</p>}
         </> : own ? <div className="profile-rows">
           <Row label={labels.avatar} entry="avatar" choose={() => void pick("avatar")} disabled={!profile || picking}>
             <PersonAvatar user={user} version={profile?.avatar} large />
@@ -287,7 +286,7 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
             {cover && <img className="profile-cover-thumb" src={cover} alt="" />}
           </Row>
           <Row label={labels.bio} entry="bio" choose={() => show("bio")} disabled={!profile}>{profile?.bio}</Row>
-          <Row label={qrName} entry="qr" choose={() => show("qr")}><QrCode size={21} /></Row>
+          {phone && <Row label={qrName} entry="qr" choose={() => show("qr")}><QrCode size={21} /></Row>}
         </div> : <>
           <div className="profile-person"><PersonAvatar user={user} version={profile?.avatar} large />
             <div><h2>{name}</h2><small className="muted">@{user.handle}</small></div>

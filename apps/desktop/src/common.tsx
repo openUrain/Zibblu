@@ -66,12 +66,37 @@ export function Choice({ children, className = "", type = "checkbox", ...input }
   </label>;
 }
 
+export function placeDialog(dialog: HTMLDialogElement, x: number, y: number, flip = false) {
+  const bounds = document.querySelector(".shell")?.getBoundingClientRect()
+    ?? new DOMRect(0, 0, innerWidth, innerHeight);
+  const { width, height } = dialog.getBoundingClientRect();
+  const left = flip && x + width > bounds.right ? x - width : x;
+  const top = flip && y + height > bounds.bottom ? y - height : y;
+  dialog.style.margin = "0";
+  dialog.style.inset = "auto";
+  dialog.style.left = Math.max(bounds.left, Math.min(left, bounds.right - width)) + "px";
+  dialog.style.top = Math.max(bounds.top, Math.min(top, bounds.bottom - height)) + "px";
+}
+
 export function Dialog({ title, close, children, className, onKeyDown, closeDisabled, mobilePage, visible = true, modal = true }: {
   title: string; close: () => void; children: ReactNode; className?: string;
   onKeyDown?: KeyboardEventHandler<HTMLDialogElement>; closeDisabled?: boolean; mobilePage?: boolean;
   visible?: boolean; modal?: boolean;
 }) {
   const element = useRef<HTMLDialogElement>(null);
+  const drag = useRef<{ x: number; y: number }>(undefined);
+  const movable = !ios && modal;
+  useLayoutEffect(() => {
+    const dialog = element.current;
+    if (!movable || !dialog || !visible) return;
+    const clamp = () => {
+      if (!dialog.style.left) return;
+      const rect = dialog.getBoundingClientRect();
+      placeDialog(dialog, rect.left, rect.top);
+    };
+    window.addEventListener("resize", clamp);
+    return () => window.removeEventListener("resize", clamp);
+  }, [movable, visible]);
   useLayoutEffect(() => {
     const dialog = element.current;
     if (!dialog || !visible) return;
@@ -81,10 +106,17 @@ export function Dialog({ title, close, children, className, onKeyDown, closeDisa
   }, [visible, modal]);
   useIosBack(visible ? () => { if (!closeDisabled) close(); } : undefined, 20);
   const page = ios && mobilePage;
-  return <dialog ref={element} inert={!visible} className={(className ?? "") + (page ? " dialog-page" : "")}
+  return <dialog ref={element} inert={!visible} className={(className ?? "") + (movable ? " formal-dialog" : "") + (page ? " dialog-page" : "")}
     onCancel={event => { event.preventDefault(); if (!closeDisabled) close(); }}
     onKeyDown={onKeyDown} aria-label={title}>
-    <div className="dialog-head">
+    <div className="dialog-head" onPointerDown={event => {
+      if (!movable || event.button !== 0 || !element.current || (event.target as Element).closest("button")) return;
+      const bounds = element.current.getBoundingClientRect();
+      drag.current = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }} onPointerMove={event => {
+      if (drag.current && element.current) placeDialog(element.current, event.clientX - drag.current.x, event.clientY - drag.current.y);
+    }} onLostPointerCapture={() => { drag.current = undefined; }}>
       {!page && <h2>{title}</h2>}
       <button className="icon-button" type="button" aria-label={page ? actions.back : t("Close dialog", "关闭")}
         onClick={close} disabled={closeDisabled}>{page ? <ChevronLeft size={25} /> : <X size={19} />}</button>

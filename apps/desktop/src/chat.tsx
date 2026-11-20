@@ -1,7 +1,7 @@
 import { FloatingField } from "./floating-field";
 import {
-  ArrowDown, ArrowLeft, ArrowRight, AtSign, Check, CheckCheck, ChevronRight, Copy, Download, FolderOpen, Ghost, LockKeyhole,
-  Image, LogOut, MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Radar, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, UserRoundPlus, UsersRound, X,
+  ArrowDown, ArrowLeft, ArrowRight, Clock, Check, CheckCheck, ChevronRight, Copy, Download, FolderOpen, Ghost, LockKeyhole,
+  Image, LogOut, MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, UserRoundPlus, UsersRound, X,
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
@@ -16,7 +16,7 @@ import { copyText, useMenu, useMenuAnchor, useRowMenu } from "./context-menu";
 import { FilesView, TransferList, useAttachmentSave } from "./files";
 import { ChatAttachment, MediaHistory, MediaViewer } from "./chat-media";
 import { privatePhaseLabel, privateTitle } from "./private-chat";
-import { ios, useIosBack } from "./ios";
+import { phone, ios, useIosBack } from "./ios";
 import { actions as actionLabels, t } from "./locale";
 import { ShareQr } from "./qr";
 import type { SharedCode } from "./qr";
@@ -24,13 +24,13 @@ import { windows } from "./window-chrome";
 
 type ChatPage = "details" | "search";
 
-export function ChatList({ chats, own, selected, open, newChat, addContact, rooms, activePrivate, openPrivate, createQr, nearby, scan }: {
+export function ChatList({ chats, own, selected, open, newChat, addContact, rooms, activePrivate, openPrivate, createQr, scan }: {
   chats: Conversation[]; own: User; selected?: string; open: (id: string, page?: ChatPage) => void; newChat: () => void;
   addContact: () => void;
   rooms: PrivateSummary[]; activePrivate?: string; openPrivate: (id: string) => void; createQr: () => void;
-  nearby: () => void; scan: () => void;
+  scan: () => void;
 }) {
-  const { remarks } = useContext(People);
+  const { remarks, open: showPerson } = useContext(People);
   const menu = useRowMenu();
   const openMenu = useMenu();
   const anchor = useMenuAnchor();
@@ -41,13 +41,10 @@ export function ChatList({ chats, own, selected, open, newChat, addContact, room
   const add = <button className="icon-button new-conversation" type="button" ref={plus}
     aria-label={t("Add", "添加")} title={t("Add", "添加")} aria-haspopup="menu" aria-expanded={!!anchor && anchor === plus.current}
     onClick={event => openMenu(event.currentTarget, [
-      { label: t("New conversation", "发起聊天"), icon: <MessageCircle size={18} />, action: newChat },
-      { label: t("Add contact", "添加联系人"), icon: <UserRoundPlus size={18} />, action: addContact },
-      ...(ios ? [
-        { label: t("Scan QR code", "扫一扫"), icon: <ScanLine size={18} />, action: scan },
-        { label: t("Nearby devices", "附近设备"), icon: <Radar size={18} />, action: nearby },
-      ] : []),
-      { label: t("Start private QR chat", "发起扫码私聊"), icon: <QrCode size={18} />, action: createQr },
+      { label: t("Start group chat", "发起群聊"), icon: <UsersRound size={18} />, action: newChat },
+      ...(phone ? [{ label: t("Scan QR code", "扫一扫"), icon: <ScanLine size={18} />, action: scan }] : []),
+      { label: t("Add friend", "添加朋友"), icon: <UserRoundPlus size={18} />, action: addContact },
+      { label: t("Private chat QR code", "私聊二维码"), icon: <QrCode size={18} />, action: createQr },
     ])}><Plus size={22} /></button>;
   return <aside className="chat-list">
     {ios && <header className="chat-list-title"><h1>{t("Chats", "聊天")}</h1>{add}</header>}
@@ -62,7 +59,7 @@ export function ChatList({ chats, own, selected, open, newChat, addContact, room
       {filtered.map(chat => {
         const name = chatName(chat, own.id, remarks);
         const peer = chat.members.find(user => user.id !== own.id);
-        return <button key={chat.id} type="button" className={"chat-row conversation-row" + (chat.id === selected ? " selected" : "")} {...menu([
+        return <div className="conversation-entry" key={chat.id}><button type="button" className={"chat-row conversation-row" + (chat.id === selected ? " selected" : "")} {...menu([
           { label: t("Chat info", "聊天信息"), icon: <MoreHorizontal size={18} />, action: () => open(chat.id, "details") },
           { label: t("Search chat", "查找聊天内容"), icon: <Search size={18} />, action: () => open(chat.id, "search") },
         ])}
@@ -75,7 +72,11 @@ export function ChatList({ chats, own, selected, open, newChat, addContact, room
               <span className="sr-only">{t(`${chat.unread} unread messages`, `${chat.unread} 条未读消息`)}</span>
             </span>}
           </span>
-        </button>;
+        </button>
+          {windows && !chat.title && peer && <button type="button" className="conversation-avatar"
+            aria-label={t("View profile", "查看资料") + " " + name} onClick={() => showPerson?.(peer)}>
+            <PersonAvatar user={peer} /></button>}
+        </div>;
       })}
       {filtered.length === 0 && <p className="list-empty muted">{search ? "No matching chats." : "Start a chat with a contact."}</p>}
       {rooms.length > 0 && <div className="private-rows" aria-label="Private chats">
@@ -432,7 +433,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
 
   useEffect(() => {
     const view = viewport.current;
-    if (!ios || !view) return;
+    if (!view) return;
     const resize = new ResizeObserver(() => {
       if (nearBottom.current && view.getClientRects().length) view.scrollTop = view.scrollHeight;
     });
@@ -500,7 +501,6 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
           const file = message?.attachment;
           const download = file ? downloads.get(file.id) : undefined;
           const expiredFile = !!message && (fileExpired(message, now) || download?.status === "expired");
-          const touchMenu = !!file || ios;
           function actions(selection?: string) {
             const copy = selection || text;
             return [
@@ -522,6 +522,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
           return <Fragment key={key}>
             {newGroup && <div className="day-divider"><time dateTime={new Date(time).toISOString()}>{messageTimeLabel(time)}</time></div>}
             <div className={"message-row" + (mine ? " mine" : "") + (animated ? " message-arrival" : "")}
+              tabIndex={0} aria-haspopup="menu"
               onContextMenu={event => {
                 window.clearTimeout(press.current?.timer);
                 const selection = window.getSelection()?.toString();
@@ -529,12 +530,12 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                 if (!openedByPress(event.currentTarget)) openMenu(event.currentTarget, actions(selection),
                   event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : undefined);
               }}
-              onPointerDown={touchMenu ? event => {
+              onPointerDown={event => {
                 window.clearTimeout(press.current?.timer);
                 press.current = undefined;
                 if (event.pointerType === "mouse" || !event.isPrimary
                   || !(event.target instanceof Element && event.target.closest(
-                    ios ? ".bubble, .media-tile, .file-main" : ".media-tile, .file-main"
+                    ".bubble, .media-tile, .file-main"
                   ))) return;
                 const anchor = event.currentTarget;
                 const point = { x: event.clientX, y: event.clientY };
@@ -544,29 +545,29 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                   openMenu(anchor, actions(), point);
                 }, 550);
                 press.current = { ...point, anchor, timer, opened: false };
-              } : undefined}
-              onPointerMove={touchMenu ? event => {
+              }}
+              onPointerMove={event => {
                 const active = press.current;
                 if (active && Math.hypot(event.clientX - active.x, event.clientY - active.y) > 10) window.clearTimeout(active.timer);
-              } : undefined}
-              onPointerUp={touchMenu ? () => {
+              }}
+              onPointerUp={() => {
                 if (press.current) {
                   window.clearTimeout(press.current.timer);
                   press.current.released = Date.now();
                 }
-              } : undefined}
-              onPointerLeave={touchMenu ? () => window.clearTimeout(press.current?.timer) : undefined}
-              onPointerCancel={touchMenu ? () => {
+              }}
+              onPointerLeave={() => window.clearTimeout(press.current?.timer)}
+              onPointerCancel={() => {
                 window.clearTimeout(press.current?.timer);
                 press.current = undefined;
-              } : undefined}
-              onClickCapture={touchMenu ? event => {
+              }}
+              onClickCapture={event => {
                 if (openedByPress(event.currentTarget) && event.detail > 0) {
                   event.preventDefault();
                   event.stopPropagation();
                   press.current = undefined;
                 }
-              } : undefined}>
+              }}>
               {!mine && avatar}
               <div className={"message-body" + (file ? " attachment-body" : "")}
                 ref={viewed !== undefined && message?.seq === viewed ? viewedBody : undefined}>
@@ -582,7 +583,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                     : <div className="bubble">{message?.text ?? reply?.text}</div>}
                 <div className="message-meta">
                   {message?.pending && <>
-                    <small role="status">{message.pending.error ?? "Queued"}</small>
+                    <small role="status">{message.pending.error ?? <span className="status-icon" title={t("Queued", "排队中")} aria-label={t("Queued", "排队中")} role="img" tabIndex={0}><Clock size={14} aria-hidden /></span>}</small>
                     {message.pending.blocked && message.nonce && <button className="text-button" type="button"
                       onClick={() => void retry(message.nonce!)}><RotateCcw size={13} /> Retry</button>}
                   </>}
@@ -597,8 +598,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                     <button type="button" className="text-button" onClick={() => setSharingReply(reply)}><UsersRound size={13} /> Visible to</button>
                     <button className="icon-button" aria-label="Dismiss AI reply" onClick={() => aiChat.dismiss(reply.id)}><X size={14} /></button>
                   </>}
-                  {actions().length > 0 && <button className="icon-button message-menu" aria-label="Message actions" aria-haspopup="menu"
-                    onClick={event => openMenu(event.currentTarget, actions())}><MoreHorizontal size={16} /></button>}
+
                 </div>
               </div>
               {mine && avatar}
@@ -646,6 +646,8 @@ function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, p
   aiChat: ChatAssistants; page?: Page; loading: boolean; older: () => Promise<void>; quoteUnavailable: boolean;
 } & ChatDraft) {
   const { remarks } = useContext(People);
+  const openTools = useMenu();
+  const toolsAnchor = useMenuAnchor();
   const draft = saved.text;
   const quote = quoteUnavailable ? undefined : saved.quote;
   const pastedImage = saved.image;
@@ -801,11 +803,13 @@ function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, p
         <FloatingField multiline ref={textarea} id={menuId + "-message"} label={assistant ? t("AI prompt", "AI 提示词") : t("Message", "消息")}
           aria-autocomplete="list" aria-controls={menu ? menuId : undefined}
           aria-activedescendant={menu && activeOption ? menuId + "-" + menuIndex : undefined}
-          rows={ios ? 1 : 3}
+          rows={2}
           value={draft} onChange={event => {
             const value = event.target.value;
             setDraft(previous => ({ ...previous, text: value, nonce: undefined }));
-            setMenu(/^\s*@[\p{L}\p{N}_-]*\s*$/u.test(value));
+            const input = event.nativeEvent as InputEvent;
+            const typedAt = input.inputType === "insertText" && input.data === "@";
+            setMenu((menu || typedAt) && /^\s*@[\p{L}\p{N}_-]*$/u.test(value));
             setMenuIndex(0);
           }}
           onPaste={event => {
@@ -854,33 +858,21 @@ function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, p
           <button className="icon-button" type="button" disabled={sending || checkingImage} aria-label="Remove pasted image"
             onClick={() => setDraft(previous => ({ ...previous, image: undefined }))}><X size={16} /></button>
         </div>}
-        <div className="composer-bar">
-          <div className="composer-attachments" role="group" aria-label={t("Message tools", "消息工具")}>
-            {assistant ? <span className="ai-composer-target"><ProviderLogo provider={assistant.provider} /> @{assistant.name}</span> : <>
-              <button className="icon-button" type="button" aria-label="Attach a file" title="Attach a file"
-                onClick={() => void pick("file")} disabled={preparing}><Paperclip size={20} /></button>
-              {!ios && <button className="icon-button" type="button" aria-label="Attach a folder" title="Attach a folder"
-                onClick={() => void pick("folder")} disabled={preparing}><FolderOpen size={20} /></button>}
-              {windows && <button className="icon-button" type="button"
-                aria-label={t("Paste image", "粘贴图片")} title={t("Paste image (Ctrl+V)", "粘贴图片（Ctrl+V）")}
-                onClick={() => void pasteFromClipboard()} disabled={sending || checkingImage}><Image size={20} /></button>}
-            </>}
-            <button className="icon-button ai-mention-button" type="button" aria-label="Mention an AI assistant"
-              aria-controls={menu ? menuId : undefined} aria-expanded={menu} title="Mention an AI assistant" onClick={() => {
-                setMenu(!menu);
-                setMenuIndex(0);
-                textarea.current?.focus();
-              }}><AtSign size={20} /></button>
-            {preparing && <span className="drop-hint" role="status">Preparing attachment…</span>}
-            {checkingImage && <span className="drop-hint" role="status">Checking image…</span>}
-          </div>
+        {!assistant && <button className="icon-button composer-plus" type="button" title={t("Message tools", "消息工具")}
+          aria-label={t("Message tools", "消息工具")} aria-haspopup="menu" aria-expanded={toolsAnchor?.classList.contains("composer-plus") ?? false}
+          onClick={event => openTools(event.currentTarget, [
+            { label: t("Attach a file", "附件"), icon: <Paperclip size={18} />, disabled: preparing, action: () => void pick("file") },
+            ...(!ios ? [{ label: t("Attach a folder", "文件夹"), icon: <FolderOpen size={18} />, disabled: preparing, action: () => void pick("folder") }] : []),
+            ...(windows ? [{ label: t("Paste image", "粘贴图片"), icon: <Image size={18} />, disabled: sending || checkingImage, action: () => void pasteFromClipboard() }] : []),
+          ])}><Plus size={20} /></button>}
+        {preparing && <span className="drop-hint" role="status">Preparing attachment…</span>}
+        {checkingImage && <span className="drop-hint" role="status">Checking image…</span>}
           <button className="button primary send-button" type="submit"
             disabled={(!draft.trim() && !pastedImage) || ambiguous || quoteUnavailable || oversized || sending || checkingImage || (!!assistant && (!view || !prompt))}
             aria-label={assistant ? "Choose AI context" : sending ? "Sending message" : "Send message"}>
             {assistant ? <>Choose context <ArrowRight size={16} /></>
               : <span>{sending ? t("Sending…", "发送中…") : t("Send", "发送")}</span>}
           </button>
-        </div>
       </div>
     </form>
     {view && request && <AiRequest view={view} draft={request.id} assistant={request.assistant} prompt={request.prompt}
