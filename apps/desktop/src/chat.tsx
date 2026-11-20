@@ -296,16 +296,16 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
         }}>Leave group</button>
       </div>
     </Dialog>}
-    {search && <ChatSearch conversation={chat.id} initialTab={search} {...{ revision, latestAiSeq, recalled, hidden }}
+    {search && <ChatSearch conversation={chat.id} initialTab={search} {...{ revision, latestAiSeq, recalled, hidden, transfers, changed }}
       openMedia={setMedia} close={() => setSearch(undefined)} />}
     {media && <MediaViewer message={media} conversation={chat.id} {...{ revision, recalled, hidden, transfers }}
       open={setMedia} close={() => setMedia(undefined)} onChanged={changed} />}
   </section>;
 }
 
-function ChatSearch({ conversation, initialTab, revision, latestAiSeq, recalled, hidden, openMedia, close }: {
+function ChatSearch({ conversation, initialTab, revision, latestAiSeq, recalled, hidden, openMedia, close, transfers, changed }: {
   conversation: string; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; hidden: ReadonlySet<number>; close: () => void;
-  openMedia: (message: Message) => void; initialTab: "text" | "media";
+  openMedia: (message: Message) => void; initialTab: "text" | "media"; transfers: Transfer[]; changed: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
@@ -316,7 +316,7 @@ function ChatSearch({ conversation, initialTab, revision, latestAiSeq, recalled,
       <Choice type="radio" name="chat-search" checked={tab === "text"} onChange={() => setTab("text")}>Messages</Choice>
       <Choice type="radio" name="chat-search" checked={tab === "media"} onChange={() => setTab("media")}>Photos and videos</Choice>
     </fieldset>
-    {tab === "media" ? <MediaHistory {...{ conversation, revision, recalled, hidden }} open={openMedia} /> : <>
+    {tab === "media" ? <MediaHistory {...{ conversation, revision, recalled, hidden, transfers }} open={openMedia} onChanged={changed} /> : <>
       <form className="chat-search" onSubmit={event => { event.preventDefault(); setSearch(query.trim()); }}>
         <FloatingField fieldClass="search" label="Search message text" prefixIcon={<Search size={16} />} value={query}
           onChange={event => setQuery(event.target.value)} autoFocus />

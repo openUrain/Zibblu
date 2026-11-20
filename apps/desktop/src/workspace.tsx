@@ -6,16 +6,17 @@ import {
   Radar, ScanLine, Search, Settings, UserRoundPlus, UsersRound, X,
   ChevronLeft, ChevronRight, UserRound,
 } from "lucide-react";
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { ai } from "./ai-api";
 import type { AiReply, Assistant } from "./ai-api";
 import { AssistantSettings } from "./ai";
 import { api, errorMessage, isExpired } from "./api";
 import type { CloseAction, Conversation, ConversationRequest, Device, Directory, Draft, DropOffer, Profile, Session, ShareSource, SyncUpdate, Transfer, User } from "./api";
+import { mediaKind } from "./attachment-media";
 import { Blank, Brand, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName } from "./common";
 import { orderContacts } from "./contact-order";
-import { t } from "./locale";
+import { actions, t } from "./locale";
 import { ChatList, ChatView } from "./chat";
 import { FilesView } from "./files";
 import { NearbyDevices, PrivateChatView, PrivateInvitationOverlay, PrivateTargets, usePrivateRooms } from "./private-chat";
@@ -386,7 +387,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const attention: Partial<Record<Navigation, string>> = {
     Chats: directory.conversations.some(chat => chat.unread > 0) ? "Unread messages" : undefined,
     Contacts: directory.pending_contacts.some(request => request.incoming) ? "Pending contact requests" : undefined,
-    Files: transfers.some(transfer => transfer.status !== "complete") ? "Unfinished transfers" : undefined,
+    Files: transfers.some(transfer => transfer.status !== "complete" && !mediaKind(transfer.attachment)) ? "Unfinished transfers" : undefined,
   };
 
   const conversationOpen = nav === "Chats" && mobileChat && (!!active || privateOpen);
@@ -494,7 +495,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       </div>}
       {nav === "Contacts" && <Contacts directory={directory} selected={profile?.id ?? (windows ? selectedContact : undefined)} refresh={refresh} create={create}
         addContact={() => setNewContact(true)} />}
-      {nav === "Files" && <FilesView people={people} revision={revision} recalled={recalled} hidden={hidden} transfers={transfers} onChanged={changed} />}
+      {nav === "Files" && <FilesView people={people} revision={revision} recalled={recalled} hidden={hidden} transfers={transfers}
+        sources={new Map(directory.conversations.map(chat => [chat.id, chatName(chat, session.user.id, names)]))} onChanged={changed} />}
       {nav === "Me" && <section className="settings-page phone-me">
         <header className="workspace-heading"><h1>{tabLabels.Me}</h1></header>
         <button className="phone-profile drawer-action" onClick={() => openProfile(session.user)}>
@@ -778,82 +780,144 @@ function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, se
   back?: () => void;
   openAssistants: boolean;
 }) {
-  const [section, setSection] = useState<"account" | "general" | "assistants" | undefined>(
-    () => openAssistants ? "assistants" : ios ? undefined : "account");
-  const [failure, setFailure] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [deviceList, setDeviceList] = useState<Device[]>();
-  const [retiring, setRetiring] = useState<Device>();
-  async function save(change: () => Promise<void>) {
-    setSaving(true);
-    setFailure("");
-    try { await change(); } catch (error) { setFailure(errorMessage(error)); }
-    finally { setSaving(false); }
-  }
-  function goBack() {
-    if (saving) return;
-    if (section) {
-      setSection(undefined);
-      setFailure("");
-    } else back?.();
-  }
-  useIosBack(back ? goBack : undefined, 5);
+  const { remarks } = useContext(People);
   const sections = [
     { id: "account", label: t("Account and devices", "账号与设备"), Icon: CircleUserRound },
     { id: "general", label: t("General", "通用"), Icon: Settings },
     { id: "assistants", label: t("AI assistants", "AI 助理"), Icon: MessageSquare },
   ] as const;
-  return <section className={"settings-page settings-screen" + (section ? " settings-detail-open" : "")}>
+  type Section = typeof sections[number]["id"];
+  type Operation = "preferences" | "devices" | "retire";
+  const compact = () => ios || (windows && window.matchMedia("(max-width: 740px)").matches);
+  const [section, setSection] = useState<Section>(openAssistants ? "assistants" : "account");
+  const [detailOpen, setDetailOpen] = useState(() => openAssistants || !compact());
+  const [pending, setPending] = useState<Operation>();
+  const [saved, setSaved] = useState(false);
+  const [failure, setFailure] = useState<{ operation: Operation; message: string; retry: () => void }>();
+  const [deviceList, setDeviceList] = useState<Device[]>();
+  const [retiring, setRetiring] = useState<Device>();
+  const heading = useRef<HTMLHeadingElement>(null);
+  const nav = useRef<HTMLElement>(null);
+  const focusAfterNavigation = useRef(false);
+  useLayoutEffect(() => {
+    if (!focusAfterNavigation.current) return;
+    focusAfterNavigation.current = false;
+    if (detailOpen) heading.current?.focus();
+    else nav.current?.querySelector<HTMLButtonElement>("[aria-current]")?.focus();
+  }, [detailOpen, section]);
+
+  async function run(operation: Operation, change: () => Promise<void>) {
+    if (pending) return;
+    setPending(operation);
+    setFailure(undefined);
+    setSaved(false);
+    try {
+      await change();
+      if (operation === "preferences") setSaved(true);
+    } catch (error) {
+      setFailure({ operation, message: errorMessage(error), retry: () => void run(operation, change) });
+    } finally { setPending(undefined); }
+  }
+  function goBack() {
+    if (pending) return;
+    if (detailOpen) {
+      focusAfterNavigation.current = true;
+      setDetailOpen(false);
+    } else back?.();
+  }
+  useIosBack(back ? goBack : undefined, 5);
+  const sectionLabel = sections.find(item => item.id === section)?.label;
+  const settingTitle = t("Settings", "设置");
+  const manageDevices = () => run("devices", async () => setDeviceList(await api.devices()));
+  const retryError = (operation: Operation) => failure?.operation === operation && <div className="settings-feedback">
+    <p className="inline-error" role="alert">{failure.message}</p>
+    <button className="button subtle small" type="button" onClick={failure.retry}>{actions.retry}</button>
+  </div>;
+  return <section className={"settings-page settings-screen" + (detailOpen ? " settings-detail-open" : "")}>
     <header className="workspace-heading settings-heading">
-      {back && <button className="icon-button" aria-label={t("Back", "返回")} onClick={goBack}><ChevronLeft size={25} /></button>}
-      <h1>{ios && section ? sections.find(item => item.id === section)?.label : t("Settings", "设置")}</h1>
+      {(windows || back) && <button className="icon-button settings-back" aria-label={actions.back} onClick={goBack}
+        aria-disabled={!!pending}><ChevronLeft size={24} /></button>}
+      <h1 ref={heading} tabIndex={-1}>
+        <span className="settings-root-title">{settingTitle}</span>
+        <span className="settings-section-title">{sectionLabel}</span>
+      </h1>
     </header>
-    <nav className="settings-nav" aria-label={t("Settings", "设置")}>
+    <nav className="settings-nav" ref={nav} aria-label={settingTitle}>
       {sections.map(({ id, label, Icon }) => <button key={id} className="drawer-action" type="button"
-        aria-current={id === section ? "page" : undefined} onClick={() => { setFailure(""); setSection(id); }}>
-        <Icon size={22} /><span>{label}</span><ChevronRight size={18} />
+        aria-current={id === section ? "page" : undefined} aria-disabled={!!pending} onClick={() => {
+          if (pending) return;
+          focusAfterNavigation.current = compact() && !detailOpen;
+          setSection(id);
+          setDetailOpen(true);
+        }}>
+        <Icon size={20} /><span>{label}</span><ChevronRight className="settings-chevron" size={16} />
       </button>)}
     </nav>
-    <div className="settings-detail">
-    {section === "account" && <div className="surface settings-card">
-      <h2><CircleUserRound size={20} /> Account</h2>
-      <p className="muted server-address">{session.server}</p>
-      <button className="button subtle small" type="button" disabled={saving}
-        onClick={() => void save(async () => setDeviceList(await api.devices()))}>Devices</button>
-    </div>}
-    {section === "general" && <div className="surface settings-card">
-      {windows && <CloseActionChoices action={closeAction} choose={action => void save(() => setCloseAction(action))} disabled={saving} />}
-      <label className="choice setting-switch">
-        <span>Read receipts<small>Both people must enable receipts to share delivery and read status in direct chats.</small></span>
-        <input type="checkbox" role="switch" checked={readReceipts} disabled={saving}
-          onChange={event => { const enabled = event.target.checked; void save(() => setReadReceipts(enabled)); }} />
-        <span className="switch-track" aria-hidden="true" />
-      </label>
-      <label className="choice setting-switch">
-        <span>Pause private invitation pop-ups<small>Pending invitations stay in Private chats.</small></span>
-        <input type="checkbox" role="switch" checked={privateQuiet} disabled={saving}
-          onChange={event => { const quiet = event.target.checked; void save(() => setPrivateQuiet(quiet)); }} />
-        <span className="switch-track" aria-hidden="true" />
-      </label>
-    </div>}
-    {section === "assistants" && assistantSettings}
-    {failure && <p className="inline-error" role="alert">{failure}</p>}
+    <div className="settings-detail" key={section}>
+      {section === "account" && <section className="settings-group">
+        <h2>{t("Account", "账号")}</h2>
+        <div className="settings-row settings-identity">
+          <PersonAvatar user={session.user} large />
+          <div><strong>{displayName(session.user, remarks)}</strong><small>@{session.user.handle}</small></div>
+        </div>
+        <dl className="settings-row settings-server">
+          <dt>{t("Server address", "服务器地址")}</dt><dd>{session.server}</dd>
+        </dl>
+        <button className="drawer-action settings-row" type="button" aria-haspopup="dialog" aria-disabled={!!pending}
+          onClick={() => void manageDevices()}>
+          <span>{t("Devices", "设备管理")}</span><ChevronRight size={16} />
+        </button>
+        {pending === "devices" && <p className="settings-feedback muted" role="status">{t("Loading devices…", "正在加载设备…")}</p>}
+        {retryError("devices")}
+      </section>}
+      {section === "general" && <>
+        {windows && <section className="settings-group">
+          <h2>{t("Window behavior", "窗口行为")}</h2>
+          <div className="settings-row" aria-disabled={!!pending}>
+            <CloseActionChoices action={closeAction} choose={action => void run("preferences", () => setCloseAction(action))} />
+          </div>
+        </section>}
+        <section className="settings-group">
+          <h2>{t("Chat and privacy", "聊天与隐私")}</h2>
+          <label className="choice setting-switch settings-row">
+            <span>{t("Read receipts", "消息回执")}<small>{t("Both people must enable receipts to share delivery and read status in direct chats.", "双方都开启后，才会在单聊中共享送达和已读状态。")}</small></span>
+            <input type="checkbox" role="switch" checked={readReceipts} aria-disabled={!!pending}
+              onChange={event => { const enabled = event.target.checked; void run("preferences", () => setReadReceipts(enabled)); }} />
+            <span className="switch-track" aria-hidden="true" />
+          </label>
+          <label className="choice setting-switch settings-row">
+            <span>{t("Pause private invitation pop-ups", "暂停私聊邀请弹窗")}<small>{t("Pending invitations stay in Private chats.", "待处理的邀请仍保留在私密聊天中。")}</small></span>
+            <input type="checkbox" role="switch" checked={privateQuiet} aria-disabled={!!pending}
+              onChange={event => { const quiet = event.target.checked; void run("preferences", () => setPrivateQuiet(quiet)); }} />
+            <span className="switch-track" aria-hidden="true" />
+          </label>
+        </section>
+        <div className="settings-feedback settings-save-status" role="status">
+          {pending === "preferences" ? actions.saving : saved ? actions.saved : ""}
+        </div>
+        {retryError("preferences")}
+      </>}
+      {section === "assistants" && assistantSettings}
     </div>
-    {deviceList && <Dialog title="Devices" mobilePage close={() => { setDeviceList(undefined); setRetiring(undefined); }} closeDisabled={saving}>
+    {deviceList && <Dialog title={t("Devices", "设备管理")} mobilePage close={() => {
+      setDeviceList(undefined); setRetiring(undefined); setFailure(undefined);
+    }} closeDisabled={!!pending}>
       {deviceList.map(device => <div className="drawer-action" key={device.id}>
         <span>{device.current ? "This device" : "Device " + device.id.slice(0, 8)} · {dateTimeLabel(device.last_seen_at)}</span>
-        {!device.current && <button className="button subtle small" disabled={saving} onClick={() => setRetiring(device)}>Retire</button>}
+        {!device.current && <button className="button subtle small" disabled={!!pending} onClick={() => {
+          setRetiring(device); setFailure(undefined);
+        }}>Retire</button>}
       </div>)}
       {retiring && <div className="file-download-actions">
         <p>End sign-in for device {retiring.id.slice(0, 8)}?</p>
-        <button className="button subtle" onClick={() => setRetiring(undefined)} disabled={saving}>Cancel</button>
-        <button className="button danger" disabled={saving} onClick={() => void save(async () => {
+        <button className="button subtle" onClick={() => { setRetiring(undefined); setFailure(undefined); }} disabled={!!pending}>Cancel</button>
+        <button className="button danger" disabled={!!pending} onClick={() => void run("retire", async () => {
           await api.retireDevice(retiring.id);
           setDeviceList(current => current?.filter(device => device.id !== retiring.id));
           setRetiring(undefined);
         })}>Retire device</button>
       </div>}
-      {failure && <p className="inline-error" role="alert">{failure}</p>}
+      {failure?.operation === "retire" && <p className="inline-error" role="alert">{failure.message}</p>}
     </Dialog>}
   </section>;
 }
