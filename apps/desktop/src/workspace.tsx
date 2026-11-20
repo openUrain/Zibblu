@@ -6,7 +6,7 @@ import {
   Radar, ScanLine, Search, Settings, UserRoundPlus, UsersRound, X,
   ChevronLeft, ChevronRight, UserRound,
 } from "lucide-react";
-import { useCallback, useContext, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { ai } from "./ai-api";
 import type { AiReply, Assistant } from "./ai-api";
@@ -14,6 +14,7 @@ import { AssistantSettings } from "./ai";
 import { api, errorMessage, isExpired } from "./api";
 import type { CloseAction, Conversation, ConversationRequest, Device, Directory, Draft, DropOffer, Profile, Session, ShareSource, SyncUpdate, Transfer, User } from "./api";
 import { Blank, Brand, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName } from "./common";
+import { orderContacts } from "./contact-order";
 import { t } from "./locale";
 import { ChatList, ChatView } from "./chat";
 import { FilesView } from "./files";
@@ -52,6 +53,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [hidden, setHidden] = useState<ReadonlySet<number>>(new Set());
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [profile, setProfile] = useState<User>();
+  const [selectedContact, setSelectedContact] = useState<string>();
   const [ownProfileOpen, setOwnProfileOpen] = useState(false);
   const profileTrigger = useRef<HTMLElement>(null);
   const refreshInFlight = useRef<Promise<void> | null>(null);
@@ -106,12 +108,23 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       return;
     }
     if (document.activeElement instanceof HTMLElement) profileTrigger.current = document.activeElement;
+    if (windows && nav === "Contacts") setSelectedContact(user.id);
     setProfile(user);
   }
 
   function closeProfile() {
+    const trigger = profileTrigger.current;
+    const contactId = windows && nav === "Contacts" ? profile?.id : undefined;
     setProfile(undefined);
-    requestAnimationFrame(() => profileTrigger.current?.focus({ preventScroll: true }));
+    requestAnimationFrame(() => {
+      if (trigger?.isConnected) {
+        trigger.focus({ preventScroll: true });
+      } else if (contactId) {
+        const row = document.querySelector<HTMLButtonElement>(`.contacts-screen [data-contact-id="${CSS.escape(contactId)}"]`);
+        if (row) row.focus();
+        else document.querySelector<HTMLInputElement>('.contacts-screen input[type="search"]')?.focus({ preventScroll: true });
+      }
+    });
   }
 
   function profileEdited(id: string, patch: Partial<Profile>) {
@@ -364,7 +377,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     catch (error) { signedOut(errorMessage(error)); }
   }
 
-  const names = { ...directory.names, ...directory.remarks };
+  const names = useMemo(() => ({ ...directory.names, ...directory.remarks }), [directory.names, directory.remarks]);
   const people = [...new Map([session.user, ...directory.conversations.flatMap(chat => chat.members)]
     .map(user => [user.id, user])).values()].sort((a, b) => displayName(a, names).localeCompare(displayName(b, names)));
   const offeredChat = directory.conversations.find(chat => chat.id === offer?.conversation);
@@ -479,7 +492,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           : <section className="chat-blank"><Blank icon={<MessageCircle size={28} />} title={t("Select a chat", "选择会话")} /></section>}
         {chatProfile && profilePage}
       </div>}
-      {nav === "Contacts" && <Contacts directory={directory} selected={profile?.id} refresh={refresh} create={create}
+      {nav === "Contacts" && <Contacts directory={directory} selected={profile?.id ?? (windows ? selectedContact : undefined)} refresh={refresh} create={create}
         addContact={() => setNewContact(true)} />}
       {nav === "Files" && <FilesView people={people} revision={revision} recalled={recalled} hidden={hidden} transfers={transfers} onChanged={changed} />}
       {nav === "Me" && <section className="settings-page phone-me">
@@ -507,7 +520,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           setAssistantFailure("");
         }} />} />}
       {!chatProfile && profilePage}
-      {(splitProfile || desktopContacts) && !profile && <section className="chat-blank">
+      {desktopContacts && windows && !profile && <section className="chat-blank contact-detail-empty">
+        {(directory.contacts.length > 0 || directory.pending_contacts.length > 0)
+          && <p>{t("Select a contact", "选择联系人")}</p>}
+      </section>}
+      {(splitProfile || (desktopContacts && !windows)) && !profile && <section className="chat-blank">
         <Blank icon={<UserRound size={28} />} title={nav === "Me" ? t("Personal information", "个人信息") : t("Select a contact", "选择联系人")} />
       </section>}
       </div>
@@ -608,6 +625,7 @@ function Contacts({ directory, selected, refresh, create, addContact }: {
   const { remarks, open } = useContext(People);
   const menu = useRowMenu();
   const [search, setSearch] = useState("");
+  const list = useRef<HTMLDivElement>(null);
   const [failure, setFailure] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -620,21 +638,37 @@ function Contacts({ directory, selected, refresh, create, addContact }: {
     finally { setBusy(false); }
   }
 
+  const windowsContacts = useMemo(() => windows ? orderContacts(contacts, remarks) : [], [contacts, remarks]);
   const query = search.trim().toLocaleLowerCase();
-  const filtered = contacts.filter(user => [user.handle, displayName(user, remarks)]
-    .some(name => name.toLocaleLowerCase().includes(query)))
-    .sort((first, second) => displayName(first, remarks).localeCompare(displayName(second, remarks), navigator.language));
+  const matches = (name: string) => name.toLocaleLowerCase().includes(query);
+  const filtered = (windows ? windowsContacts : contacts.map(user => ({
+    user, name: displayName(user, remarks), letter: "", showHandle: false,
+  })))
+    .filter(({ user, name }) => matches(user.handle) || matches(name));
+  if (!windows) filtered.sort((a, b) => a.name.localeCompare(b.name, navigator.language));
+  const groups = new Map<string, typeof filtered>();
+  for (const entry of filtered) {
+    const group = groups.get(entry.letter);
+    if (group) group.push(entry);
+    else groups.set(entry.letter, [entry]);
+  }
+  const emptyText = query ? t("No matching contacts", "没有匹配的联系人") : t("No contacts yet", "暂无联系人");
   return <section className="settings-page contacts-screen">
     {ios && <header className="workspace-heading"><h1>{tabLabels.Contacts}</h1></header>}
-    <form className="chat-list-head" onSubmit={event => {
+    <form className="chat-list-head" role={windows ? "search" : undefined} onSubmit={event => {
       event.preventDefault();
-      if (query && filtered.length === 1) open?.(filtered[0]);
+      if (query && filtered.length === 1) open?.(filtered[0].user);
     }}>
-      <FloatingField fieldClass="search" label={t("Search contacts", "搜索联系人")} prefixIcon={<Search size={17} />} type="search" value={search} onChange={event => setSearch(event.target.value)} />
+      <FloatingField fieldClass="search" label={t("Search contacts", "搜索联系人")} prefixIcon={<Search size={17} />}
+        type="search" value={search} onChange={event => {
+          if (windows && list.current) list.current.scrollTop = 0;
+          setSearch(event.currentTarget.value);
+        }} />
       <button type="button" className="icon-button new-conversation" title={t("Add contact", "添加联系人")}
-        aria-label={t("Add contact", "添加联系人")} onClick={addContact}><UserRoundPlus size={21} /></button>
+        aria-label={t("Add contact", "添加联系人")} aria-haspopup={windows ? "dialog" : undefined}
+        onClick={addContact}><UserRoundPlus size={windows ? 20 : 21} /></button>
     </form>
-    <div className="contacts-list">
+    <div className="contacts-list" ref={list}>
     {failure && <p className="inline-error" role="alert">{failure}</p>}
     {!query && pending_contacts.length > 0 && <section>
       <h2 className="section-title">{t("Contact requests", "新的朋友")}</h2>
@@ -660,16 +694,23 @@ function Contacts({ directory, selected, refresh, create, addContact }: {
       </div>
     </section>}
     {filtered.length ? <div className="contacts" aria-label={tabLabels.Contacts}>
-      {filtered.map(user => <div className="contact-row" key={user.id}>
-        <button className="person-link contact-name" aria-current={selected === user.id || undefined} onClick={() => open?.(user)}
-          {...menu([
-            { label: t("View profile", "查看资料"), icon: <UserRound size={17} />, action: () => open?.(user) },
-            { label: t("Message", "发消息"), icon: <MessageSquare size={17} />, action: () => void perform(() => create({ kind: "direct", contact_id: user.id })) },
-          ])}>
-          <PersonAvatar user={user} /><strong>{displayName(user, remarks)}</strong>{ios && <ChevronRight size={20} aria-hidden />}
-        </button>
+      {[...groups].map(([letter, entries]) => <div className={letter ? "contact-group" : undefined} key={letter}>
+        {letter && <h2 className="contact-group-letter">{letter}</h2>}
+        {entries.map(({ user, name, showHandle }) => <div className="contact-row" key={user.id}>
+          <button className="person-link contact-name" aria-current={selected === user.id || undefined}
+            data-contact-id={windows ? user.id : undefined} onClick={() => open?.(user)}
+            {...menu([
+              { label: t("View profile", "查看资料"), icon: <UserRound size={17} />, action: () => open?.(user) },
+              { label: t("Message", "发消息"), icon: <MessageSquare size={17} />, action: () => void perform(() => create({ kind: "direct", contact_id: user.id })) },
+            ])}>
+            <PersonAvatar user={user} />
+            {showHandle ? <span className="contact-identity"><strong>{name}</strong><small>@{user.handle}</small></span> : <strong>{name}</strong>}
+            {ios && <ChevronRight size={20} aria-hidden />}
+          </button>
+        </div>)}
       </div>)}
-    </div> : <p className="list-empty muted">{query ? t("No matching contacts.", "没有匹配的联系人。") : t("No contacts yet.", "暂无联系人。")}</p>}
+    </div> : <p className="list-empty muted" role={windows ? "status" : undefined}>{windows ? emptyText
+      : query ? t("No matching contacts.", "没有匹配的联系人。") : t("No contacts yet.", "暂无联系人。")}</p>}
     </div>
   </section>;
 }
