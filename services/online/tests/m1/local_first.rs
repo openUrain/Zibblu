@@ -12,7 +12,8 @@ use std::{
     sync::atomic::{AtomicU8, Ordering},
 };
 use zibblu_core::{
-    Attachment, AttachmentKind, ContentAck, DeviceSession, ExpiredPayload, SYNC_PAGE_SIZE,
+    Attachment, AttachmentKind, ContentAck, DeviceSession, ExpiredPayload, MAX_MESSAGE_BYTES,
+    SYNC_PAGE_SIZE,
 };
 use zibblu_online::retention::Retention;
 
@@ -46,6 +47,88 @@ async fn direct(alice: &Client, bob: &Client) -> Result<Uuid> {
             contact_id: bob.user.id,
         })
         .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn committed_outbox_can_publish_while_its_inbox_request_is_waiting() -> Result<()> {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let request_started = started.clone();
+    let release_request = release.clone();
+    let app = zibblu_online::router(test_db().await?).await?.layer(middleware::from_fn(
+        move |request: Request, next: Next| {
+            let started = request_started.clone();
+            let release = release_request.clone();
+            async move {
+                if request.uri().path() == "/v2/sync" {
+                    // Pause before entering the handler so no server lock is held.
+                    started.notify_one();
+                    release.notified().await;
+                }
+                next.run(request).await
+            }
+        },
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let server = format!("http://{}", listener.local_addr()?);
+    let task = tokio::spawn(async move { axum::serve(listener, app).await });
+    let a = tempfile::tempdir()?;
+    let b = tempfile::tempdir()?;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let alice = sign_in(a.path(), &server, &format!("send_{}", &suffix[..10]), "fixture-password", true).await?;
+    let bob = sign_in(b.path(), &server, &format!("recv_{}", &suffix[..10]), "fixture-password", true).await?;
+    let chat = direct(&alice, &bob).await?;
+    let syncing = tokio::spawn({
+        let alice = alice.clone();
+        async move { alice.sync_inbox().await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified()).await?;
+    let text = "Durable while the download of a sync page is stalled";
+    alice.queue_message(chat, SendMessage { nonce: Uuid::new_v4(), text: text.into(), reply_to: None }).await?;
+    let queued = alice.messages(chat, None).await?.items.pop().context("missing queued message")?;
+    assert!(queued.seq < 0 && queued.pending.is_some());
+    let published = tokio::time::timeout(Duration::from_secs(2), alice.flush_pending_messages()).await;
+    release.notify_one();
+    assert!(published.context("outbox blocked on inbox sync")??);
+    syncing.await??;
+    release.notify_one();
+    bob.sync().await?;
+    let received = bob.messages(chat, None).await?.items;
+    assert_eq!(received.iter().filter(|row| row.text.as_deref() == Some(text)).count(), 1);
+    assert_eq!(alice.messages(chat, None).await?.items[0].seq, received[0].seq);
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn maximum_utf8_text_survives_sync_pagination_and_over_limit_is_rejected() -> Result<()> {
+    let app = zibblu_online::router(test_db().await?).await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let server = format!("http://{}", listener.local_addr()?);
+    let task = tokio::spawn(async move { axum::serve(listener, app).await });
+    let a = tempfile::tempdir()?;
+    let b = tempfile::tempdir()?;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let alice = sign_in(a.path(), &server, &format!("long_{}", &suffix[..10]), "fixture-password", true).await?;
+    let bob = sign_in(b.path(), &server, &format!("page_{}", &suffix[..10]), "fixture-password", true).await?;
+    let chat = direct(&alice, &bob).await?;
+    // Controls with six-byte JSON escapes exercise the largest encoded sync page.
+    let boundary = format!("a{}界", "\u{1}".repeat(MAX_MESSAGE_BYTES - 4));
+    let rejected = SendMessage { nonce: Uuid::new_v4(), text: format!("{boundary}x"), reply_to: None };
+    let status = reqwest::Client::builder().no_proxy().build()?
+        .post(format!("{server}/v1/conversations/{chat}/messages"))
+        .bearer_auth(alice.session_token()).json(&rejected).send().await?.status();
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(alice.queue_message(chat, rejected).await.is_err());
+    for _ in 0..33 {
+        send(&alice, chat, &boundary).await?;
+    }
+    bob.sync().await?;
+    let stored = bob.messages(chat, None).await?.items;
+    assert_eq!(stored.len(), 33);
+    assert!(stored.iter().all(|row| row.text.as_deref() == Some(&boundary) && row.attachment.is_none()));
+    task.abort();
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]

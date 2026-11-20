@@ -8,6 +8,7 @@ use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, SqliteConnection};
+use std::sync::atomic::Ordering;
 use uuid::Uuid;
 
 #[derive(Serialize, Deserialize)]
@@ -40,7 +41,8 @@ impl Client {
             !message.text.is_empty()
                 && message.text.len() <= MAX_MESSAGE_BYTES
                 && !message.text.contains('\0'),
-            "Enter a message up to 8 KiB"
+            "Enter a message up to {} KiB without NUL characters",
+            MAX_MESSAGE_BYTES / 1024
         );
         if let Some(seq) = message.reply_to {
             ensure!(
@@ -94,7 +96,7 @@ impl Client {
     async fn enqueue(&self, nonce: Uuid, conversation: Option<Uuid>, work: Work) -> Result<()> {
         self.ensure_open()?;
         let nonce_key = nonce.to_string();
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
         let serialized = serde_json::to_string(&work)?;
         let chat = conversation.map(|id| id.to_string());
         let confirmed: Option<String> =
@@ -163,14 +165,14 @@ impl Client {
     }
 
     async fn try_send(&self, nonce: Uuid) -> Result<()> {
-        if let Ok(_gate) = self.sync_gate.try_lock() {
+        if let Ok(_gate) = self.outbox_gate.try_lock() {
             self.flush_outbox(Some(nonce)).await?;
         }
         Ok(())
     }
 
     pub async fn retry_message(&self, nonce: Uuid) -> Result<()> {
-        let _gate = self.sync_gate.lock().await;
+        let _gate = self.outbox_gate.lock().await;
         self.ensure_open()?;
         sqlx::query(
             "UPDATE outbox SET blocked = 0, next_attempt = 0, attempts = 0 WHERE nonce = ?",
@@ -181,7 +183,15 @@ impl Client {
         self.flush_outbox(Some(nonce)).await
     }
 
-    pub(super) async fn flush_outbox(&self, only: Option<Uuid>) -> Result<()> {
+    pub async fn flush_pending_messages(&self) -> Result<bool> {
+        let _gate = self.outbox_gate.lock().await;
+        let before = self.history_revision.load(Ordering::Relaxed);
+        self.flush_outbox(None).await?;
+        Ok(before != self.history_revision.load(Ordering::Relaxed))
+    }
+
+    async fn flush_outbox(&self, only: Option<Uuid>) -> Result<()> {
+        self.ensure_open()?;
         let only = only.map(|nonce| nonce.to_string());
         let pending: Vec<Pending> = if let Some(ref nonce) = only {
             sqlx::query_as(
@@ -268,6 +278,12 @@ impl Client {
                 Err(error) => {
                     let blocked = matches!(&error, OnlineError::Rejected { status, .. }
                         if status.is_client_error() && !matches!(*status, StatusCode::TOO_MANY_REQUESTS | StatusCode::REQUEST_TIMEOUT));
+                    // Probe connectivity promptly without shortening backoff for HTTP errors or timeouts.
+                    let max_exponent = if matches!(&error, OnlineError::Network(cause) if !cause.is_timeout()) {
+                        1
+                    } else {
+                        6
+                    };
                     let mut draft: Option<Message> = item
                         .draft
                         .as_deref()
@@ -283,7 +299,7 @@ impl Client {
                     sqlx::query(
                         "UPDATE outbox SET draft = ?, blocked = ?, next_attempt = ?, attempts = attempts + 1 WHERE nonce = ?",
                     ).bind(&draft).bind(blocked)
-                        .bind(unix_millis() + 1000 * (1 << item.attempts.min(6)))
+                        .bind(unix_millis() + 1000 * (1 << item.attempts.min(max_exponent)))
                         .bind(&item.nonce).execute(&self.db).await?;
                     if item.draft != draft {
                         self.history_changed();
@@ -309,7 +325,7 @@ impl Client {
         message.expires_at = stamp.expires_at;
         message.recalled = stamp.recalled;
         message.pending = None;
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
         persist_message(&mut tx, message).await?;
         confirm_outbox(
             &mut tx,

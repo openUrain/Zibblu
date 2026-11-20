@@ -183,10 +183,13 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     setLatestAiSeq(update.latest_ai_seq);
   }, []);
 
+  const refreshLocal = useCallback(() => api.localUpdate().then(apply).catch(() => {}), [apply]);
+
   const refresh = useCallback(() => {
+    const local = refreshLocal();
     if (refreshInFlight.current) return refreshInFlight.current;
     const sync = async () => {
-      await api.localUpdate().then(apply).catch(() => {});
+      await local;
       try {
         apply(await api.sync());
         setConnection("Connected");
@@ -202,7 +205,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           if (typeof error === "object" && error !== null && "status" in error && error.status === 409) {
             setSyncProblem("This device's sync position is no longer valid. Keep this profile and sign in from a new data directory.");
           }
-          void api.localUpdate().then(apply).catch(() => {});
+          void refreshLocal();
         }
       } finally {
         refreshInFlight.current = null;
@@ -210,7 +213,17 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     };
     refreshInFlight.current = sync();
     return refreshInFlight.current;
-  }, [apply, signedOut]);
+  }, [apply, refreshLocal, signedOut]);
+
+  useEffect(() => {
+    const updated = listen("message-outbox-changed", () => void refreshLocal());
+    const online = () => void refresh();
+    window.addEventListener("online", online);
+    return () => {
+      void updated.then(unlisten => unlisten());
+      window.removeEventListener("online", online);
+    };
+  }, [refreshLocal, refresh]);
 
   const changed = useCallback(() => {
     void api.transfers().then(setTransfers).catch(error => setFailure(errorMessage(error)));
@@ -366,8 +379,21 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
 
   async function share(conversation: string, source: ShareSource) {
     setFailure("");
-    try { await api.share(conversation, source); changed(); }
+    try { await api.share(conversation, source); }
     catch (error) { setFailure(errorMessage(error)); }
+    finally { changed(); }
+  }
+
+  async function pasteFiles(conversation: string) {
+    const clipboard = await api.offerClipboardFiles();
+    if (!clipboard) return false;
+    setOffer({ ...clipboard, conversation });
+    return true;
+  }
+
+  function cancelOffer() {
+    if (offer) void api.cancelAttachmentOffer(offer.ticket).catch(() => {});
+    setOffer(undefined);
   }
 
   async function signOut() {
@@ -484,6 +510,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             hidden={hidden} hide={seq => hide(active.id, seq)} readReceipts={directory.read_receipts && connected && !profile}
             draft={drafts[active.id] ?? { text: "" }} setDraft={change => setDraft(active.id, change)}
             transfers={transfers} changed={changed} refresh={refresh} back={() => setMobileChat(false)}
+            pasteFiles={() => pasteFiles(active.id)}
             share={source => share(active.id, source)} openPrivate={() => void invitePrivate(active)}
             aiChat={{
               assistants, settings: () => navigate("Settings", true), replies: aiReplies.filter(reply => reply.conversation === active.id),
@@ -553,10 +580,10 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       setNewContact(false);
       openProfile(user);
     }} />}
-    {!privateOpen && offer && offeredChat && <Dialog title="Share this attachment?" close={() => { if (!sharing) setOffer(undefined); }}>
-      <p className="drop-confirm"><strong>{offer.name}</strong> will be shared in <strong>{chatName(offeredChat, session.user.id, names)}</strong>.</p>
+    {!privateOpen && offer && offeredChat && <Dialog title={offer.names.length === 1 ? "Share this attachment?" : "Share these attachments?"} close={() => { if (!sharing) cancelOffer(); }}>
+      <p className="drop-confirm"><strong>{offer.names.join(", ")}</strong> will be shared in <strong>{chatName(offeredChat, session.user.id, names)}</strong>.</p>
       <div className="dialog-actions">
-        <button className="button subtle" onClick={() => setOffer(undefined)} disabled={sharing}>Cancel</button>
+        <button className="button subtle" onClick={cancelOffer} disabled={sharing}>Cancel</button>
         <button className="button primary" disabled={sharing} onClick={async () => {
           setSharing(true);
           await share(offer.conversation, { kind: "dropped", ticket: offer.ticket });

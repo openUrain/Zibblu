@@ -116,10 +116,14 @@ impl Client {
     }
 
     pub async fn sync_updates(self: &Arc<Self>) -> Result<SyncUpdate> {
+        self.flush_pending_messages().await?;
+        self.sync_inbox().await
+    }
+
+    pub async fn sync_inbox(self: &Arc<Self>) -> Result<SyncUpdate> {
         let _gate = self.sync_gate.lock().await;
         self.ensure_open()?;
         self.reconcile_history().await?;
-        self.flush_outbox(None).await?;
         self.resume_queued().await?;
         self.flush_content_acks().await?;
         self.flush_sync_ack().await?;
@@ -157,7 +161,7 @@ impl Client {
             page.events.len() <= SYNC_PAGE_SIZE,
             OnlineError::InvalidResponse
         );
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
         let mut ack = SyncAck {
             page_id: page.page_id,
             metadata_received: Vec::new(),

@@ -47,7 +47,7 @@ export type FileFilter = {
 export type ConversationRequest =
   | { kind: "direct"; contact_id: string }
   | { kind: "group"; title: string; contact_ids: string[] };
-export type DropOffer = { ticket: string; name: string };
+export type DropOffer = { ticket: string; names: string[] };
 export type ShareSource = { kind: "file" | "folder" } | { kind: "dropped"; ticket: string };
 export type GroupInvite = { code: string; expires_at: number };
 export type GroupPreview = { id: string; title: string; member_count: number };
@@ -125,7 +125,9 @@ export const api = {
   privateCode: (id: string) => invoke<PrivateCode>("private_qr", { id }),
   scanPrivate: (code: PrivateCode) => invoke<string>("private_scan", { code }),
   setPrivateQuiet: (quiet: boolean) => invoke<void>("set_private_quiet", { quiet }),
-  share: (conversation: string, source: ShareSource) => invoke<Transfer | null>("share", { conversation, source }),
+  offerClipboardFiles: () => invoke<DropOffer | null>("offer_clipboard_files"),
+  cancelAttachmentOffer: (ticket: string) => invoke<void>("cancel_attachment_offer", { ticket }),
+  share: (conversation: string, source: ShareSource) => invoke<void>("share", { conversation, source }),
   checkPastedImage: (bytes: ArrayBuffer) => invoke<string>("check_pasted_image", bytes),
   readClipboardImage: () => invoke<ArrayBuffer | number[]>("read_clipboard_image")
     .then(bytes => Array.isArray(bytes) ? new Uint8Array(bytes).buffer : bytes),

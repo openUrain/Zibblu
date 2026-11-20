@@ -7,7 +7,7 @@ use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 use zibblu_core::{
-    AiScope, MAX_MESSAGE_BYTES,
+    AiScope, MAX_AI_PROMPT_BYTES,
     assistant::{AiFile, AiProvider, AiSnapshot, ModelDiscovery, valid_model_id},
 };
 
@@ -455,7 +455,7 @@ pub(crate) async fn ai_prepare(
             "The selected context has changed"
         );
         ensure!(
-            !prompt.is_empty() && prompt.len() <= MAX_MESSAGE_BYTES,
+            !prompt.is_empty() && prompt.len() <= MAX_AI_PROMPT_BYTES,
             "Enter a prompt of up to 8 KiB"
         );
         let assistant = load_assistants(client.profile_dir())?

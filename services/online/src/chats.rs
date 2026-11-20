@@ -259,7 +259,7 @@ pub(crate) async fn send(
 ) -> Result<Json<Publication>> {
     let text = input.text.trim();
     if text.is_empty() || text.len() > MAX_MESSAGE_BYTES || text.contains('\0') {
-        return Err(Error::bad("Enter a message up to 8 KiB."));
+        return Err(Error::bad("Enter a message up to 64 KiB without NUL characters."));
     }
     let mut tx = app.db.begin().await?;
     lock_message_feed(&mut tx).await?;
