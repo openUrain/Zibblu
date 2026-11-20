@@ -2,6 +2,8 @@
 
 **Approach:** three complete functional modules, in order. Implement only what is necessary for each outcome. No calendar promises, premature microservices or test matrices.
 
+> **文档定位（2026-11-20）**：M1/M2/M3 下方是功能交付范围与最小验收基线，**不是尚未实现事项的实时任务板**。Windows 已有公开 Release 和后续迭代；实际当前功能、已知限制与部署方式以 [PRODUCT](PRODUCT.md)、[SECURITY](SECURITY.md)、[ONLINE_DEPLOYMENT](ONLINE_DEPLOYMENT.md)、GitHub Issues/PRs 为准。UI 分模块整改见 [Issue #59](https://github.com/openUrain/Zibblu/issues/59)，设计/审查使用 [Always UI](DESIGN_SYSTEM.md)。
+
 ## M1 — Normal Chat & Files
 
 **Deliverable:** a usable desktop messenger with standard online direct/group communication and strong file handling.
@@ -54,4 +56,4 @@ Scope:
 - At module completion, run the above minimal checks and report actual commands/results.
 - Review against the module acceptance criteria and security invariants. Fix substantive findings, then merge only per repository owner's instruction.
 
-**Not scheduled for v1:** mobile clients, calls/video, social feed, public bot marketplace, elaborate plugin systems, autonomous AI agents, private attachment exchange and speculative multi-cloud infrastructure.
+**Platform status / future scope:** Windows is the delivered client baseline. An **unsigned iPhone/iOS preview build exists for testing**; this is not an App Store release or proof of real-device acceptance. iPad adaptations require platform-specific verification. Public mobile distribution and wider production support are separate follow-up work, not “mobile never started.” Calls/video, social feed, public bot marketplace, elaborate plugin systems, autonomous AI agents, private attachment exchange and speculative multi-cloud infrastructure are not committed v1 deliverables.
