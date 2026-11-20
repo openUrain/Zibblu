@@ -385,11 +385,23 @@ async fn confirm_outbox(
     chat: Option<&str>,
     work: &str,
 ) -> Result<()> {
-    sqlx::query("INSERT INTO confirmed_sends (nonce, request_hash) VALUES (?,?)")
+    let hash = request_hash(chat, work);
+    let inserted = sqlx::query(
+        "INSERT INTO confirmed_sends (nonce, request_hash) VALUES (?,?) ON CONFLICT(nonce) DO NOTHING",
+    )
         .bind(nonce)
-        .bind(request_hash(chat, work))
+        .bind(&hash)
         .execute(&mut *db)
-        .await?;
+        .await?
+        .rows_affected();
+    if inserted == 0 {
+        let same: bool = sqlx::query_scalar("SELECT request_hash = ? FROM confirmed_sends WHERE nonce = ?")
+            .bind(hash)
+            .bind(nonce)
+            .fetch_one(&mut *db)
+            .await?;
+        ensure!(same, "This message ID is already in use");
+    }
     sqlx::query("DELETE FROM outbox WHERE nonce = ?")
         .bind(nonce)
         .execute(db)

@@ -50,22 +50,34 @@ async fn direct(alice: &Client, bob: &Client) -> Result<Uuid> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn committed_outbox_can_publish_while_its_inbox_request_is_waiting() -> Result<()> {
+async fn outbox_and_inbox_progress_independently_and_confirm_the_same_nonce() -> Result<()> {
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
+    let hold = Arc::new(AtomicU8::new(1));
     let request_started = started.clone();
     let release_request = release.clone();
+    let hold_request = hold.clone();
     let app = zibblu_online::router(test_db().await?).await?.layer(middleware::from_fn(
         move |request: Request, next: Next| {
             let started = request_started.clone();
             let release = release_request.clone();
+            let hold = hold_request.clone();
             async move {
-                if request.uri().path() == "/v2/sync" {
+                let path = request.uri().path();
+                if path == "/v2/sync" && hold.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
                     // Pause before entering the handler so no server lock is held.
                     started.notify_one();
                     release.notified().await;
                 }
-                next.run(request).await
+                let wait_for_publish = path.ends_with("/messages")
+                    && hold.compare_exchange(2, 0, Ordering::SeqCst, Ordering::SeqCst).is_ok();
+                let response = next.run(request).await;
+                if wait_for_publish && response.status().is_success() {
+                    // Keep the committed message visible to sync while its response is in flight.
+                    started.notify_one();
+                    release.notified().await;
+                }
+                response
             }
         },
     ));
@@ -91,11 +103,38 @@ async fn committed_outbox_can_publish_while_its_inbox_request_is_waiting() -> Re
     release.notify_one();
     assert!(published.context("outbox blocked on inbox sync")??);
     syncing.await??;
-    release.notify_one();
     bob.sync().await?;
     let received = bob.messages(chat, None).await?.items;
     assert_eq!(received.iter().filter(|row| row.text.as_deref() == Some(text)).count(), 1);
     assert_eq!(alice.messages(chat, None).await?.items[0].seq, received[0].seq);
+
+    let delayed_nonce = Uuid::new_v4();
+    let following_nonce = Uuid::new_v4();
+    for (nonce, text) in [(delayed_nonce, "Confirmed by sync first"), (following_nonce, "Next queued message")] {
+        alice.queue_message(chat, SendMessage { nonce, text: text.into(), reply_to: None }).await?;
+    }
+    hold.store(2, Ordering::SeqCst);
+    let flushing = tokio::spawn({
+        let alice = alice.clone();
+        async move { alice.flush_pending_messages().await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified()).await?;
+    alice.sync_inbox().await?;
+    let saved = alice.messages(chat, None).await?.items;
+    assert!(saved.iter().any(|row| row.nonce == Some(delayed_nonce) && row.pending.is_none()));
+    assert!(saved.iter().any(|row| row.nonce == Some(following_nonce) && row.pending.is_some()));
+    release.notify_one();
+    assert!(flushing.await??);
+    assert!(alice.queue_message(chat, SendMessage {
+        nonce: delayed_nonce,
+        text: "Different text with the same ID".into(),
+        reply_to: None,
+    }).await.is_err());
+    bob.sync().await?;
+    let received = bob.messages(chat, None).await?.items;
+    for text in ["Confirmed by sync first", "Next queued message"] {
+        assert_eq!(received.iter().filter(|row| row.text.as_deref() == Some(text)).count(), 1);
+    }
     task.abort();
     Ok(())
 }
