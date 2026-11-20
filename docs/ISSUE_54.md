@@ -1,4 +1,6 @@
-# Issue #54 界面对照与验收
+# Issue #54 界面对照与验收（历史记录）
+
+> **历史基线，不是当前 UI 实施规范。** 本文保留 #54 当时的审计、截图、测试及未验证项作为可追溯证据。2026-11-20 后的现行设计/数值/审查规则请看 [DESIGN_SYSTEM](DESIGN_SYSTEM.md) 和 [Always UI](https://github.com/handFOOLed/always-ui)；Windows 后续整改见 [Issue #59](https://github.com/openUrain/Zibblu/issues/59)。特别是本文中“移除浮动输入标签”“Windows 个人资料独立页面”等旧改法已被 #61 和 #62 后续 Owner 决策取代，**不得照本文将现行 UI 回滚**。历史 BLOCKED 状态仅描述当时的验证覆盖情况。
 
 基线为 `c2bb734`，包含 Windows v0.1.5 和 iPhone 预览版。[整改任务书](https://github.com/openUrain/Zibblu/issues/54)
 
