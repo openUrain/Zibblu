@@ -162,6 +162,7 @@ pub fn run() {
             commands::publish_ai_reply,
             media::paste_image,
             media::check_pasted_image,
+            media::read_clipboard_image,
             ai::ai_assistants,
             ai::ai_save_assistant,
             ai::ai_test_connection,

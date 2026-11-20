@@ -122,6 +122,28 @@ pub(crate) async fn check_pasted_image(
 }
 
 #[tauri::command]
+pub(crate) async fn read_clipboard_image(window: WebviewWindow) -> CommandResult<tauri::ipc::Response> {
+    #[cfg(windows)]
+    {
+        let _permit = IMAGE_JOBS.acquire().await.map_err(anyhow::Error::from)?;
+        let bytes = tauri::async_runtime::spawn_blocking(move || -> CommandResult<Vec<u8>> {
+            let Some(bitmap) = crate::clipboard::read_bitmap(&window)? else {
+                return Ok(Vec::new());
+            };
+            Ok(images::clipboard_png(&bitmap)?)
+        })
+        .await
+        .context("Opening the clipboard was interrupted")??;
+        Ok(tauri::ipc::Response::new(bytes))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        Err(anyhow::anyhow!("Use the system Paste action").into())
+    }
+}
+
+#[tauri::command]
 pub(crate) async fn paste_image(
     state: State<'_, Desktop>,
     request: tauri::ipc::Request<'_>,

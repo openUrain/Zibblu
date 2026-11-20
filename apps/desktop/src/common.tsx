@@ -66,19 +66,22 @@ export function Choice({ children, className = "", type = "checkbox", ...input }
   </label>;
 }
 
-export function Dialog({ title, close, children, className, onKeyDown, closeDisabled, mobilePage }: {
+export function Dialog({ title, close, children, className, onKeyDown, closeDisabled, mobilePage, visible = true, modal = true }: {
   title: string; close: () => void; children: ReactNode; className?: string;
   onKeyDown?: KeyboardEventHandler<HTMLDialogElement>; closeDisabled?: boolean; mobilePage?: boolean;
+  visible?: boolean; modal?: boolean;
 }) {
   const element = useRef<HTMLDialogElement>(null);
   useLayoutEffect(() => {
     const dialog = element.current;
-    dialog?.showModal();
+    if (!dialog || !visible) return;
+    if (modal) dialog.showModal();
+    else dialog.show();
     return () => dialog?.close();
-  }, []);
-  useIosBack(() => { if (!closeDisabled) close(); }, 20);
+  }, [visible, modal]);
+  useIosBack(visible ? () => { if (!closeDisabled) close(); } : undefined, 20);
   const page = ios && mobilePage;
-  return <dialog ref={element} className={(className ?? "") + (page ? " dialog-page" : "")}
+  return <dialog ref={element} inert={!visible} className={(className ?? "") + (page ? " dialog-page" : "")}
     onCancel={event => { event.preventDefault(); if (!closeDisabled) close(); }}
     onKeyDown={onKeyDown} aria-label={title}>
     <div className="dialog-head">

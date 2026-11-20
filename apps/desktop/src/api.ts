@@ -127,6 +127,8 @@ export const api = {
   setPrivateQuiet: (quiet: boolean) => invoke<void>("set_private_quiet", { quiet }),
   share: (conversation: string, source: ShareSource) => invoke<Transfer | null>("share", { conversation, source }),
   checkPastedImage: (bytes: ArrayBuffer) => invoke<string>("check_pasted_image", bytes),
+  readClipboardImage: () => invoke<ArrayBuffer | number[]>("read_clipboard_image")
+    .then(bytes => Array.isArray(bytes) ? new Uint8Array(bytes).buffer : bytes),
   pasteImage: (conversation: string, bytes: ArrayBuffer) =>
     invoke<Transfer>("paste_image", bytes, { headers: { "zibblu-conversation": conversation } }),
   mediaUrl: (id: string) => convertFileSrc(id, "zibblu-media"),

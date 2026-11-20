@@ -44,6 +44,16 @@ pub(crate) fn paste_text(window: WebviewWindow) -> Result<Option<String>> {
 }
 
 #[cfg(windows)]
+pub(crate) fn read_bitmap(window: &WebviewWindow) -> Result<Option<Vec<u8>>> {
+    if window.label() != "main" || !window.is_focused().unwrap_or(false) {
+        return Err(anyhow!("Focus Zibblu before pasting").into());
+    }
+    Ok(windows::read_bitmap(
+        window.hwnd().map_err(anyhow::Error::from)?.0 as _,
+    )?)
+}
+
+#[cfg(windows)]
 mod windows {
     use anyhow::{Context, Result, ensure};
     use windows_sys::Win32::{
@@ -51,7 +61,7 @@ mod windows {
         System::{
             DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, SetClipboardData},
             Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
-            Ole::CF_UNICODETEXT,
+            Ole::{CF_DIB, CF_DIBV5, CF_UNICODETEXT},
         },
     };
 
@@ -89,6 +99,29 @@ mod windows {
             .map(|end| String::from_utf16_lossy(&text[..end]));
         unsafe { GlobalUnlock(data) };
         Ok(Some(value.context("The clipboard text is invalid")?))
+    }
+
+    pub(super) fn read_bitmap(owner: HWND) -> Result<Option<Vec<u8>>> {
+        let _clipboard = Clipboard::open(owner)?;
+        let Some(format) = [CF_DIBV5, CF_DIB]
+            .into_iter()
+            .map(u32::from)
+            .find(|format| unsafe { IsClipboardFormatAvailable(*format) } != 0)
+        else {
+            return Ok(None);
+        };
+        let data = unsafe { GetClipboardData(format) };
+        ensure!(!data.is_null(), "The clipboard image is unavailable");
+        let length = unsafe { GlobalSize(data) };
+        ensure!(
+            length <= zibblu_core::MAX_PASTED_IMAGE_BYTES,
+            "Clipboard images can be up to 16 MiB."
+        );
+        let ptr = unsafe { GlobalLock(data) }.cast::<u8>();
+        ensure!(!ptr.is_null(), "The clipboard image is unavailable");
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, length) }.to_vec();
+        unsafe { GlobalUnlock(data) };
+        Ok(Some(bytes))
     }
 
     pub(super) fn write(owner: HWND, text: &str) -> Result<()> {
