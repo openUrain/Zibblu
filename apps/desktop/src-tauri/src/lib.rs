@@ -12,12 +12,11 @@ mod saved_session;
 #[cfg(windows)]
 mod windows_shell;
 
-use commands::{Desktop, DropOffer};
+use commands::Desktop;
 #[cfg(not(target_os = "ios"))]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, DragDropEvent, Emitter, Manager, WebviewWindowBuilder, WindowEvent};
-use uuid::Uuid;
 
 fn quit(app: &AppHandle) {
     static EXITING: AtomicBool = AtomicBool::new(false);
@@ -103,21 +102,15 @@ pub fn run() {
                 return;
             };
             let state = window.state::<Desktop>();
-            let [path] = paths.as_slice() else {
+            if paths.len() != 1 {
                 let _ = window.emit(
                     "attachment-drop-error",
                     "Drop one file or folder at a time.",
                 );
                 return;
-            };
-            let ticket = Uuid::new_v4();
-            let name = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            *state.drop.lock().expect("drop state") = Some((ticket, path.clone()));
-            let _ = window.emit("attachment-drop", DropOffer { ticket, name });
+            }
+            let offer = state.offer_attachments(paths.clone());
+            let _ = window.emit("attachment-drop", offer);
         })
         .invoke_handler(tauri::generate_handler![
             clipboard::copy_text,
@@ -186,6 +179,8 @@ pub fn run() {
             commands::private_qr,
             commands::private_scan,
             commands::set_private_quiet,
+            commands::offer_clipboard_files,
+            commands::cancel_attachment_offer,
             commands::share,
             commands::save_attachment,
             commands::transfers,

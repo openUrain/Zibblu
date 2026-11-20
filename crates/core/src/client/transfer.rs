@@ -324,6 +324,7 @@ impl Client {
     pub async fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
         let _sync = self.sync_gate.lock().await;
+        let _outbox = self.outbox_gate.lock().await;
         let active = std::mem::take(&mut *self.workers.lock().await);
         for worker in active.values() {
             worker.stop.store(true, Ordering::Relaxed);

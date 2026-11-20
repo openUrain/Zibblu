@@ -87,6 +87,8 @@ pub(crate) async fn page(
             "This cursor is not the confirmed position for this device.",
         ));
     }
+    // Keep new pages below the clients' 16 MiB JSON limit even with six-byte escapes.
+    const PAGE_EVENTS: usize = 32;
     let (page_id, next, more) = match (current.page_id, current.page_next, current.page_more) {
         (Some(id), Some(next), Some(more)) => (id, next, more),
         _ => {
@@ -97,12 +99,12 @@ pub(crate) async fn page(
             .bind(auth.device_id)
             .bind(current.acked_after)
             .bind(current.committed_through)
-            .bind(SYNC_PAGE_SIZE as i64 + 1)
+            .bind(PAGE_EVENTS as i64 + 1)
             .fetch_all(&mut *tx)
             .await?;
-            let more = scanned.len() > SYNC_PAGE_SIZE;
+            let more = scanned.len() > PAGE_EVENTS;
             let next = if more {
-                scanned[SYNC_PAGE_SIZE - 1]
+                scanned[PAGE_EVENTS - 1]
             } else {
                 current.committed_through
             };

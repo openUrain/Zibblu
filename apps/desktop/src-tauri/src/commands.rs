@@ -5,10 +5,11 @@ use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex},
+    time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 use zibblu_core::private_chat::{
     DiscoveryStatus, DismissedRooms, NearbyDevices, Phase, PrivateCode, PrivateLobby,
@@ -26,6 +27,8 @@ pub(crate) struct Desktop {
     data: PathBuf,
     preferences: StdMutex<anyhow::Result<Preferences>>,
     session: Mutex<Option<Arc<Client>>>,
+    outbox_wake: Arc<Notify>,
+    outbox_worker: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub(crate) ai: StdMutex<crate::ai::AiState>,
     pub(crate) private: Mutex<Option<Arc<PrivateLobby>>>,
     pub(crate) discovery: StdMutex<DiscoveryStatus>,
@@ -33,7 +36,7 @@ pub(crate) struct Desktop {
     #[cfg(target_os = "ios")]
     pub(crate) private_generation: std::sync::atomic::AtomicU64,
     private_worker: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
-    pub drop: StdMutex<Option<(Uuid, PathBuf)>>,
+    attachment_offer: StdMutex<Option<(Uuid, Vec<PathBuf>)>>,
 }
 
 impl Desktop {
@@ -43,6 +46,8 @@ impl Desktop {
             data,
             preferences: StdMutex::new(preferences),
             session: Mutex::new(None),
+            outbox_wake: Arc::new(Notify::new()),
+            outbox_worker: Mutex::new(None),
             ai: StdMutex::default(),
             private: Mutex::new(None),
             discovery: StdMutex::new(DiscoveryStatus::Starting),
@@ -50,7 +55,7 @@ impl Desktop {
             #[cfg(target_os = "ios")]
             private_generation: std::sync::atomic::AtomicU64::new(0),
             private_worker: Mutex::new(None),
-            drop: StdMutex::new(None),
+            attachment_offer: StdMutex::new(None),
         }
     }
 
@@ -79,6 +84,15 @@ impl Desktop {
 
     pub(crate) async fn is_current(&self, client: &Arc<Client>) -> bool {
         self.session.lock().await.as_ref().is_some_and(|active| Arc::ptr_eq(active, client))
+    }
+
+    pub(crate) fn offer_attachments(&self, paths: Vec<PathBuf>) -> DropOffer {
+        let ticket = Uuid::new_v4();
+        let names = paths.iter()
+            .map(|path| path.file_name().unwrap_or_default().to_string_lossy().into_owned())
+            .collect();
+        *self.attachment_offer.lock().expect("attachment offer") = Some((ticket, paths));
+        DropOffer { ticket, names }
     }
 
     pub async fn close_private(&self, app: &AppHandle) {
@@ -185,6 +199,11 @@ impl Desktop {
             }),
         };
         *session = Some(client.clone());
+        *self.outbox_worker.lock().await = Some(tauri::async_runtime::spawn(run_outbox(
+            app.clone(),
+            client.clone(),
+            self.outbox_wake.clone(),
+        )));
         #[cfg(any(windows, target_os = "ios"))]
         {
             let app = app.clone();
@@ -214,8 +233,12 @@ impl Desktop {
         let cleared = saved_session::clear(&self.data)
             .context("Could not remove the saved sign-in from this device.");
         self.ai.lock().expect("AI state").clear();
+        if let Some(task) = self.outbox_worker.lock().await.take() {
+            task.abort();
+            let _ = task.await;
+        }
         self.close_private(app).await;
-        *self.drop.lock().expect("drop state") = None;
+        *self.attachment_offer.lock().expect("attachment offer") = None;
         let revoked = match session.take() {
             Some(client) if revoke => client.logout().await,
             Some(client) => {
@@ -232,6 +255,20 @@ impl Desktop {
             );
         }
         Ok(())
+    }
+}
+
+async fn run_outbox(app: AppHandle, client: Arc<Client>, wake: Arc<Notify>) {
+    let mut retry = tokio::time::interval(Duration::from_millis(750));
+    retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = wake.notified() => {},
+            _ = retry.tick() => {},
+        }
+        if client.flush_pending_messages().await.unwrap_or(false) {
+            let _ = app.emit_to("main", "message-outbox-changed", ());
+        }
     }
 }
 
@@ -397,7 +434,7 @@ pub(crate) struct SignedIn {
 #[derive(Clone, Serialize)]
 pub(crate) struct DropOffer {
     pub ticket: Uuid,
-    pub name: String,
+    pub names: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -543,7 +580,7 @@ pub(crate) async fn logout(app: AppHandle, state: State<'_, Desktop>) -> Result<
 #[tauri::command]
 pub(crate) async fn sync(app: AppHandle, state: State<'_, Desktop>) -> Result<SyncUpdate> {
     let client = state.client().await?;
-    let result = client.sync_updates().await;
+    let result = client.sync_inbox().await;
     let mut session = state.session.lock().await;
     if !session
         .as_ref()
@@ -753,11 +790,10 @@ pub(crate) async fn send_message(
     conversation: Uuid,
     message: SendMessage,
 ) -> Result<()> {
-    Ok(state
-        .client()
-        .await?
-        .queue_message(conversation, message)
-        .await?)
+    let client = state.client().await?;
+    client.queue_message(conversation, message).await?;
+    state.outbox_wake.notify_one();
+    Ok(())
 }
 
 #[tauri::command]
@@ -950,20 +986,47 @@ pub(crate) async fn group_join(state: State<'_, Desktop>, code: Uuid) -> Result<
 }
 
 #[tauri::command]
+pub(crate) async fn offer_clipboard_files(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+) -> Result<Option<DropOffer>> {
+    #[cfg(windows)]
+    {
+        let session = state.session.lock().await;
+        session.as_ref().context("Sign in to continue")?;
+        let paths = crate::clipboard::read_files(&window).await?;
+        return Ok((!paths.is_empty()).then(|| state.offer_attachments(paths)));
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, state);
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+pub(crate) fn cancel_attachment_offer(state: State<'_, Desktop>, ticket: Uuid) {
+    let mut offer = state.attachment_offer.lock().expect("attachment offer");
+    if offer.as_ref().is_some_and(|(id, _)| *id == ticket) {
+        *offer = None;
+    }
+}
+
+#[tauri::command]
 pub(crate) async fn share(
     window: WebviewWindow,
     state: State<'_, Desktop>,
     conversation: Uuid,
     source: ShareSource,
-) -> Result<Option<Transfer>> {
+) -> Result<()> {
     let client = state.client().await?;
-    let path = match source {
+    let paths = match source {
         ShareSource::Dropped { ticket } => {
-            let mut offer = state.drop.lock().expect("drop state");
+            let mut offer = state.attachment_offer.lock().expect("attachment offer");
             if offer.as_ref().is_none_or(|(id, _)| *id != ticket) {
-                return Err(anyhow!("Drop the item again to share it").into());
+                return Err(anyhow!("Paste or drop the attachments again to share them").into());
             }
-            offer.take().map(|(_, path)| path)
+            offer.take().expect("matching attachment offer").1
         }
         source => tauri::async_runtime::spawn_blocking(move || {
             let dialog = window.dialog().file();
@@ -981,12 +1044,19 @@ pub(crate) async fn share(
         })
         .await
         .context("File picker was interrupted")?
-        .context("Choose a local file or folder")?,
+        .context("Choose a local file or folder")?.into_iter().collect(),
     };
-    match path {
-        Some(path) => Ok(Some(client.queue_upload(conversation, path).await?)),
-        None => Ok(None),
+    let mut failures = Vec::new();
+    for path in paths {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        if let Err(error) = client.queue_upload(conversation, path).await {
+            failures.push(format!("{name}: {error}"));
+        }
     }
+    if !failures.is_empty() {
+        return Err(anyhow!(failures.join("\n")).into());
+    }
+    Ok(())
 }
 
 #[tauri::command]

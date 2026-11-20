@@ -22,7 +22,7 @@ use sqlx::{PgConnection, PgPool};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
-use zibblu_core::{CHUNK_SIZE, MAX_PROFILE_IMAGE_BYTES};
+use zibblu_core::{CHUNK_SIZE, MAX_MESSAGE_BYTES, MAX_PROFILE_IMAGE_BYTES};
 
 #[derive(Clone)]
 struct App {
@@ -77,7 +77,6 @@ pub async fn router_with_retention(
         .route("/v1/conversations/{id}/invite", post(group_invites::issue))
         .route("/v1/group-invites/preview", post(group_invites::preview))
         .route("/v1/group-invites/join", post(group_invites::join))
-        .route("/v1/conversations/{id}/messages", post(chats::send))
         .route("/v1/conversations/{id}/read", post(chats::read))
         .route("/v1/read-receipts", put(chats::set_read_receipts))
         .route(
@@ -94,6 +93,9 @@ pub async fn router_with_retention(
         .route("/v2/files/{id}/download", post(files::start_download))
         .route("/v2/files/{id}/ack", post(files::ack_content))
         .layer(DefaultBodyLimit::max(64 * 1024));
+    let text_publish = Router::new()
+        .route("/v1/conversations/{id}/messages", post(chats::send))
+        .layer(DefaultBodyLimit::max(MAX_MESSAGE_BYTES * 6 + 1024));
     let chunks = Router::new()
         .route(
             "/v1/files/{id}/chunks/{offset}",
@@ -104,6 +106,7 @@ pub async fn router_with_retention(
         .route("/v1/profiles/me/images/{kind}", put(profiles::set_image))
         .layer(DefaultBodyLimit::max(MAX_PROFILE_IMAGE_BYTES));
     Ok(json_routes
+        .merge(text_publish)
         .merge(chunks)
         .merge(profile_upload)
         .route("/healthz", get(health))

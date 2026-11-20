@@ -54,15 +54,28 @@ pub(crate) fn read_bitmap(window: &WebviewWindow) -> Result<Option<Vec<u8>>> {
 }
 
 #[cfg(windows)]
+pub(crate) async fn read_files(window: &WebviewWindow) -> Result<Vec<std::path::PathBuf>> {
+    if window.label() != "main" || !window.is_focused().unwrap_or(false) {
+        return Err(anyhow!("Focus Zibblu before pasting").into());
+    }
+    let owner = window.hwnd().map_err(anyhow::Error::from)?.0 as isize;
+    Ok(tauri::async_runtime::spawn_blocking(move || windows::read_files(owner as _))
+        .await
+        .map_err(anyhow::Error::from)??)
+}
+
+#[cfg(windows)]
 mod windows {
     use anyhow::{Context, Result, ensure};
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, ptr::null_mut, thread, time::Duration};
     use windows_sys::Win32::{
         Foundation::{GlobalFree, HWND},
         System::{
             DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, SetClipboardData},
             Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
-            Ole::{CF_DIB, CF_DIBV5, CF_UNICODETEXT},
+            Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT},
         },
+        UI::Shell::DragQueryFileW,
     };
 
     const FORMAT: u32 = CF_UNICODETEXT as u32;
@@ -122,6 +135,45 @@ mod windows {
         let bytes = unsafe { std::slice::from_raw_parts(ptr, length) }.to_vec();
         unsafe { GlobalUnlock(data) };
         Ok(Some(bytes))
+    }
+
+    pub(super) fn read_files(owner: HWND) -> Result<Vec<PathBuf>> {
+        let format = u32::from(CF_HDROP);
+        if unsafe { IsClipboardFormatAvailable(format) } == 0 {
+            return Ok(Vec::new());
+        }
+        let mut opened = Clipboard::open(owner);
+        // WebView2 may briefly own the clipboard during the same Ctrl+V.
+        for _ in 0..5 {
+            if opened.is_ok() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+            opened = Clipboard::open(owner);
+        }
+        let _clipboard = opened?;
+        let drop = unsafe { GetClipboardData(format) };
+        ensure!(!drop.is_null(), "The clipboard file list is unavailable");
+        let count = unsafe { DragQueryFileW(drop, u32::MAX, null_mut(), 0) };
+        ensure!(count <= 8, "Paste up to 8 attachments at a time");
+        (0..count)
+            .map(|index| {
+                let length = unsafe { DragQueryFileW(drop, index, null_mut(), 0) };
+                ensure!(
+                    (1..32768).contains(&length),
+                    "The clipboard contains an invalid file path"
+                );
+                let mut name = vec![0; length as usize + 1];
+                let copied = unsafe { DragQueryFileW(drop, index, name.as_mut_ptr(), length + 1) };
+                ensure!(copied == length, "Could not read a clipboard file path");
+                let path = PathBuf::from(OsString::from_wide(&name[..length as usize]));
+                ensure!(
+                    path.is_absolute() && path.file_name().is_some(),
+                    "Paste a file or folder from File Explorer"
+                );
+                Ok(path)
+            })
+            .collect()
     }
 
     pub(super) fn write(owner: HWND, text: &str) -> Result<()> {

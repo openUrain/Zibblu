@@ -109,10 +109,10 @@ function DrawerAction({ icon, children, onClick, className = "", next = true, bu
   </button>;
 }
 
-export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, back, share, openPrivate, aiChat,
+export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, back, share, pasteFiles, openPrivate, aiChat,
   hidden, hide, readReceipts, draft, setDraft, profileOpen, visibleOnNarrow, requested }: {
   chat: Conversation; own: User; server: string; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
-  refresh: () => Promise<void>; back: () => void; share: (source: ShareSource) => Promise<void>; openPrivate: () => void;
+  refresh: () => Promise<void>; back: () => void; share: (source: ShareSource) => Promise<void>; pasteFiles: () => Promise<boolean>; openPrivate: () => void;
   aiChat: ChatAssistants; hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean;
   profileOpen: boolean; visibleOnNarrow: boolean;
   requested?: { page: ChatPage };
@@ -241,7 +241,7 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
     <div className="chat-content">
       <div className="chat-messages" hidden={showFiles}>
         <ChatMessages chat={chat} own={own} revision={revision} latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset} transfers={transfers}
-          visible={!showFiles && !profileOpen} changed={changed} refresh={refresh} share={share} aiChat={aiChat} openMedia={setMedia}
+          visible={!showFiles && !profileOpen} changed={changed} refresh={refresh} share={share} pasteFiles={pasteFiles} aiChat={aiChat} openMedia={setMedia}
           {...{ hidden, hide, readReceipts, draft, setDraft }} />
       </div>
       {showFiles && <FilesView conversation={chat.id} people={chat.members} transfers={transfers} revision={revision} recalled={recalled} hidden={hidden} onChanged={changed} />}
@@ -346,10 +346,10 @@ function SearchResults({ conversation, search, revision, latestAiSeq, recalled, 
   </div>;
 }
 
-function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset, transfers, visible, changed, refresh, share, aiChat,
+function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset, transfers, visible, changed, refresh, share, pasteFiles, aiChat,
   hidden, hide, readReceipts, draft, setDraft, openMedia }: {
   chat: Conversation; own: User; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
-  refresh: () => Promise<void>; share: (source: ShareSource) => Promise<void>; aiChat: ChatAssistants;
+  refresh: () => Promise<void>; share: (source: ShareSource) => Promise<void>; pasteFiles: () => Promise<boolean>; aiChat: ChatAssistants;
   hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean; visible: boolean;
   openMedia: (message: Message) => void;
 } & ChatDraft) {
@@ -614,7 +614,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
     {pending.length > 0 && <section className="composer-transfers" aria-label="Pending uploads">
       <TransferList transfers={pending} onChanged={changed} inChat />
     </section>}
-    <Composer conversation={chat.id} refresh={refresh} share={share} changed={changed} aiChat={aiChat}
+    <Composer conversation={chat.id} refresh={refresh} share={share} pasteFiles={pasteFiles} changed={changed} aiChat={aiChat}
       page={page} loading={loading} older={older} draft={draft} setDraft={setDraft}
       quoteUnavailable={!!draft.quote && (recalled.has(draft.quote.seq) || hidden.has(draft.quote.seq))} />
     {sharingReply && <ShareAiReply key={sharingReply.id} reply={sharingReply}
@@ -641,8 +641,8 @@ function QuotedMessage({ conversation, seq, known, hidden }: { conversation: str
     : <span>Message unavailable</span>}</div>;
 }
 
-function Composer({ conversation, refresh, share, changed, aiChat, page, loading, older, draft: saved, setDraft, quoteUnavailable }: {
-  conversation: string; refresh: () => Promise<void>; share: (source: ShareSource) => Promise<void>; changed: () => void;
+function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, page, loading, older, draft: saved, setDraft, quoteUnavailable }: {
+  conversation: string; refresh: () => Promise<void>; share: (source: ShareSource) => Promise<void>; pasteFiles: () => Promise<boolean>; changed: () => void;
   aiChat: ChatAssistants; page?: Page; loading: boolean; older: () => Promise<void>; quoteUnavailable: boolean;
 } & ChatDraft) {
   const { remarks } = useContext(People);
@@ -655,6 +655,7 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
   const [menuIndex, setMenuIndex] = useState(0);
   const [request, setRequest] = useState<{ id: string; assistant: Assistant; prompt: string; text: string }>();
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const clipboardFileCheck = useRef<Promise<boolean> | undefined>(undefined);
   const menuId = useId();
   const mention = /^\s*@([\p{L}\p{N}_-]*)(?=\s|$)/u.exec(draft);
   const prefix = mention?.[1].toLowerCase() ?? "";
@@ -695,7 +696,8 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
     setImageUrl(url);
     return () => { if (url) URL.revokeObjectURL(url); };
   }, [pastedImage]);
-  const oversized = new TextEncoder().encode(draft.trim()).length > 8192;
+  const maxTextKiB = assistant ? 8 : 64;
+  const oversized = new TextEncoder().encode(draft.trim()).length > maxTextKiB * 1024;
 
   async function send(event: FormEvent) {
     event.preventDefault();
@@ -763,6 +765,14 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
     finally { setCheckingImage(false); }
   }
 
+  async function checkClipboardFiles() {
+    try { return await pasteFiles(); }
+    catch (error) {
+      setFailure(errorMessage(error));
+      return true;
+    }
+  }
+
   async function pasteFromClipboard() {
     textarea.current?.focus();
     setFailure("");
@@ -782,7 +792,8 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
     <form className="composer" onSubmit={send} onBlur={event => {
       if (!event.currentTarget.contains(event.relatedTarget)) setMenu(false);
     }}>
-      {(failure || oversized) && <div className="inline-error" role="alert">{oversized ? "Messages can be up to 8 KiB." : failure}</div>}
+      {(failure || oversized) && <div className="inline-error" role="alert">{oversized
+        ? t(`Text can be up to ${maxTextKiB} KiB.`, `文本最多 ${maxTextKiB} KiB。`) : failure}</div>}
       {ambiguous && <p className="inline-error" role="alert">Rename one of the matching assistants in Settings.</p>}
       {menu && <AssistantMenu id={menuId} assistants={suggestions} active={menuIndex}
         choose={choose} settings={aiChat.settings} />}
@@ -801,10 +812,23 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
             const file = Array.from(event.clipboardData.items).find(item => item.kind === "file" && item.type.startsWith("image/"))?.getAsFile();
             if (!file) return;
             event.preventDefault();
-            if (!sending && !checkingImage) void preparePastedImage(file);
+            if (sending || checkingImage) return;
+            const files = clipboardFileCheck.current;
+            void (async () => {
+              if (!windows || !(await (files ?? checkClipboardFiles()))) await preparePastedImage(file);
+            })();
           }}
           onKeyDown={event => {
             if (event.nativeEvent.isComposing) return;
+            if (windows && event.nativeEvent.isTrusted && event.ctrlKey && !event.altKey && !event.shiftKey
+                && event.key.toLowerCase() === "v" && !event.repeat && !sending && !checkingImage) {
+              // Explorer's native file list may not reach the WebView's paste event.
+              const files = checkClipboardFiles();
+              clipboardFileCheck.current = files;
+              void files.then(() => {
+                if (clipboardFileCheck.current === files) clipboardFileCheck.current = undefined;
+              });
+            }
             if (menu && event.key === "Escape") {
               event.preventDefault();
               setMenu(false);
