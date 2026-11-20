@@ -1,50 +1,41 @@
-# Repository Skills
+# Repository Skills · 使用与来源
 
-These are **repository-scoped Agent Skills** for Codex cloud/CLI/IDE, including vendored third-party engineering skills and Owner-authored interaction rules. They are checked into `.agents/skills/`, so a Codex environment that checks out this repository can discover them. Installation of the repository files **does not mean their optional plugin hooks or guards are installed or active**. No hook is configured here, and the included diagnostic script is not auto-executed.
+本仓库 `.agents/skills/` 保存**工程辅助 Skills**，**UI 设计/审查统一使用 Owner 的 [Always UI](https://github.com/handFOOLed/always-ui)**。Always UI 目前由 Agent 的个人/全局环境安装使用，**不是本仓库 vendored Skill**；使用前必须核实安装状态、版本和实际可访问的 `SKILL.md` 及 references。
 
-## Installed Skills
+## 仓库内实际保留的工程 Skills
 
-| Source project | Repository skill | Use | Provenance |
-| --- | --- | --- | --- |
-| [lennney/stop-that-shit](https://github.com/lennney/stop-that-shit) | `stop-that-shit` | Bounded changes/reviews and avoiding speculative work | Tag `0.2.5` |
-| [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) | `ponytail` | Smallest complete engineering change | `main` snapshot, 2026-11-11 |
-| [shadcn/improve](https://github.com/shadcn/improve) | `improve` | **On request only:** read-only codebase audit and implementation plans | `main` snapshot, 2026-11-11 |
-| [mattpocock/skills](https://github.com/mattpocock/skills) | `codebase-design` | Module and interface decisions when specifically needed | `main` snapshot, 2026-11-11 |
-| [mattpocock/skills](https://github.com/mattpocock/skills) | `diagnosing-bugs` | Reproduce and diagnose difficult bugs | `main` snapshot, 2026-11-11 |
-| [mattpocock/skills](https://github.com/mattpocock/skills) | `code-review` | Explicit PR/diff review, not automatic review agents | `main` snapshot, 2026-11-11 |
-| Owner-authored | `interaction-design-rules` | UI interaction detail rules and scoped UI review | Owner-uploaded `SKILL.md`, 2026-11-18 |
+| 来源 | Skill | 用途 |
+| --- | --- | --- |
+| [lennney/stop-that-shit](https://github.com/lennney/stop-that-shit) | `stop-that-shit` | 限定任务范围、分支与变更 |
+| [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) | `ponytail` | 最小完整工程变更 |
+| [shadcn/improve](https://github.com/shadcn/improve) | `improve` | 仅按需使用的**代码库**审计/改进计划，不是 `$always-ui improve` |
+| [mattpocock/skills](https://github.com/mattpocock/skills) | `codebase-design` | 必要时协助模块边界与代码架构 |
+| [mattpocock/skills](https://github.com/mattpocock/skills) | `diagnosing-bugs` | 困难缺陷排查 |
+| [mattpocock/skills](https://github.com/mattpocock/skills) | `code-review` | 按需评审差异，不等同于 Codex 自动 PR 审查 |
 
-**Matt Pocock is a collection, not a single skill named `matt-pocock`.** The three listed skills are a deliberate subset, not the whole collection. No other Matt Pocock skill was installed.
+旧版 `.agents/skills/interaction-design-rules/SKILL.md` 已从 `main` 删除；**不得继续宣称它已安装、强制读取或为此自行恢复文件**。旧版 `AGENTS.md` / 设计系统中基于 2026-11-14 问卷的泛用审美指令已改由 Always UI 统一管理。历史来源仍能通过 Git 历史和 [Issue #54](ISSUE_54.md) 查到。
 
-Vendored third-party skill files were kept unchanged, including their local reference material and the optional diagnostic shell-script template. The Owner-authored `interaction-design-rules/SKILL.md` is added verbatim; it is not a third-party dependency. Snapshot versions are not automatically updated.
+以上工程 Skills 的历史来源版本见 Git 历史及仓库 `docs/licenses/` 许可文本；它们的存在**不代表其插件 Hook / Guard 已安装或启用**。
 
-## Authority and usage for Zibblu
+## Always UI · 当前 UI 规范入口
 
-1. **User request + `AGENTS.md` + `docs/SECURITY.md` + module acceptance criteria** take priority when any bundled skill's generic workflow would add work or weaken a permission boundary.
-2. For normal M1 implementation, invoke `$stop-that-shit change -- ...`. Ponytail may help minimize implementation. Finish the complete assigned module; only then run the minimal module acceptance checks described in `docs/ROADMAP.md`. Correct and recheck actual failures.
-3. **Necessary integrity hashing is not waste:** M1 explicitly requires verifying resumed file transfers. Do not delete essential verification as “overengineering”.
-4. Do **not** invoke `improve`, `code-review` or parallel agents automatically on every task. Use their prescribed flows when explicitly requested or the task actually calls for them. In particular, `improve` can create plans, and some upstream variants can dispatch agents; only do so with the requesting user's authorization.
-5. Never execute a copied third-party script just because it exists. Inspect its behavior and confirm it is relevant before use.
-6. Codex may load a SKILL.md, but this does **not** install the source repository's Codex plugin or activate **stop-that-shit Guard** / **ponytail hooks**. Install and review those in a supported Codex host separately if runtime blocking is desired.
+- 源仓库：**[handFOOLed/always-ui](https://github.com/handFOOLed/always-ui)**。
+- 使用前读取实际版本的 `SKILL.md`。如尚未安装，可在合适的本地/Agent 环境运行 `npx skills add handFOOLed/always-ui -g`，确认安装结果；不能从仓库文档推断用户机器已经安装。
+- 三档设计强度：`$always-ui creative`（获授权的明显风格重设计）、`$always-ui design`（布局和信息架构）、`$always-ui improve`（保留风格的局部优化）。独立 `$always-ui check` **只审查、不改代码**；设计与审查都要求时独立执行。
+- **Reference-first 是强制要求**。当前版本：
+  - `creative` / `design`：先读 `design-intensity.md`、`design-archetypes.md`、`value-presets.md`、`visual-discipline.md`。
+  - `improve`：先读 `design-intensity.md`、`check-catalog.md`、`value-presets.md`、`visual-discipline.md`。
+  - `check`：先读 `check-catalog.md`、`visual-discipline.md`、`value-presets.md`。
+  - 涉及焦点、展开、文件名、宿主拖拽时，按 `SKILL.md` 要求另读 `implementation-notes.md`。若上游更新，始终以运行时实际版本为准。
+- **设计数值**：先复用当前 Zibblu Token、平台度量与现有组件 → 无合适值才按 `value-presets.md` 的分类表挑选 → 特殊例外说明理由。四项视觉纪律（颜色分工、按钮主次、装饰理由、组件经济性）是**基于证据的判断**，不是全局固定审美。
+- **权威顺序**：Owner 当前要求 / 安全、隐私、无障碍、平台可用性 → [Zibblu 产品交互约束](DESIGN_SYSTEM.md)与已批准 Token → Always UI 设计/审查方法。Skill **不能取消** M1/M2/M3 安全边界、重设计未授权模块或覆盖真实微信平台行为。
+- 原来的 `impeccable`、`refactoring-ui` 不再作为 Zibblu UI 工作流入口；UI 工作优先使用 Always UI，不因其他 Agent 全局安装了审美 Skill 就混合规则。
 
-## UI design skill policy
+## 工程工作流与维护
 
-- This repository does **not** vendor `impeccable` or `refactoring-ui` (RUI). **Do not invoke either one for Zibblu UI planning, implementation, or review**, even if available from the Agent's global/user-level skills. Do not install or add them back as part of UI work.
-- For UI design, implementation, and review, read `docs/DESIGN_SYSTEM.md` and use the Owner's `$interaction-design-rules` for applicable page/platform details. The design system remains authoritative for Zibblu identity, platform navigation, and product-specific interaction decisions; the Skill adds concrete interaction/visual constraints without replacing the design system.
-- Apply desktop-specific instructions only to desktop UI. When constraints conflict, do not silently redesign: prioritize security/privacy, accessibility, platform operability, and Owner-approved product decisions, and report the conflict. Keep changes inside the current Issue's authorized scope.
-- Engineering skills may assist with code correctness, debugging, review, and minimal changes; they do not choose UI aesthetics. Report conflicts between design constraints instead of silently normalizing the interface toward generic patterns.
+1. 按 [AGENTS.md](../AGENTS.md) 与当前 Issue 从最新 `main` 开分支；常规实现使用 `$stop-that-shit change -- ...`，必要时配合 `ponytail`。只有明确授权时才启动代码库 `improve`、其他评审 Skills 或多 Agent 流程。
+2. 完成整个授权模块后运行最小必要验收，报告实际结果；完整性校验、安全权限等必要工作不能被“最小改动”原则删除。
+3. 不自动执行陌生第三方脚本。Skill 文件存在 ≠ 运行时强制保护；不得虚构 Hook/Guard、真机/UI 或 CI 验证结果。
+4. 更改 vendored Skill 时核对 frontmatter、参考文件、许可证与来源；不要把 Always UI 的线上最新内容误写成仓库已固定安装的版本。
 
-## Third-party licenses
-
-The upstream projects publish MIT licensing. Their original license notices are retained verbatim:
-
-- [Stop That Shit](licenses/stop-that-shit-MIT.txt)
-- [Ponytail](licenses/ponytail-MIT.txt)
-- [Improve](licenses/improve-MIT.txt)
-- [Matt Pocock Skills](licenses/mattpocock-MIT.txt)
-
-## Validation and maintenance
-
-When adding or updating a skill, ensure its `SKILL.md` frontmatter includes `name` and `description`, and its local references exist. Pin or record source versions, review any script changes and keep license notices. A static file check is **not** proof of automatic invocation or runtime hook enforcement.
-
-Keep future changes scoped. Install additional Matt Pocock skills only when an actual Zibblu workflow requires them.
+第三方许可证：[Stop That Shit](licenses/stop-that-shit-MIT.txt) · [Ponytail](licenses/ponytail-MIT.txt) · [Improve](licenses/improve-MIT.txt) · [Matt Pocock](licenses/mattpocock-MIT.txt)。
