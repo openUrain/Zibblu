@@ -1,7 +1,7 @@
 # Product specification
 
 **Product:** Zibblu — *Chat freely. Share privately.*  
-**Release scope:** Windows v0.1.4 includes local-first normal chat and files, private LAN text chat, and scoped AI assistants.
+**Release baseline (2026-11-20):** Windows has reached public GitHub Release **v0.1.6**. The repository also publishes an **unsigned iPhone test preview**; it is not App Store distribution, and physical-device acceptance must be reported separately. This document describes product behavior, not a guarantee that every platform feature has passed live-device testing. Confirm current downloadable assets from [releases](https://github.com/openUrain/Zibblu/releases) and [README](../README.md).
 
 **Goal:** Give organizations a choice of server for everyday chats and file sharing. Give participants a separate, consent-based mode for private text on a reachable LAN.
 
@@ -13,7 +13,7 @@ The selected server handles accounts, contacts, groups, devices and delivery. It
 
 ## Interface
 
-The [cross-platform design system](DESIGN_SYSTEM.md) records the Owner's interface requirements from [Issue #54](https://github.com/openUrain/Zibblu/issues/54).
+The [current cross-platform design system](DESIGN_SYSTEM.md) preserves Zibblu-specific behavior and branding; **Always UI** supplies the latest UI design, numeric-preset and review workflow. [Issue #54](https://github.com/openUrain/Zibblu/issues/54) is historical evidence; [Issue #59](https://github.com/openUrain/Zibblu/issues/59) tracks subsequent Windows refinements.
 
 - Windows, iPhone and iPad each follow WeChat on that platform for navigation, chat, profile and settings. Zibblu uses its own imagery and Lavender accents.
 - Desktop has three panes for navigation, conversation list and content. **Chats · Contacts · Files** are direct entries. The signed-in user's avatar opens their profile. The bottom-left menu contains Settings, About, Feedback availability and Sign out. iPhone uses **Chats · Contacts · Files · Me**. iPad uses list and detail panes when the window fits and pushes detail onto the navigation stack in narrow windows.
@@ -22,7 +22,7 @@ The [cross-platform design system](DESIGN_SYSTEM.md) records the Owner's interfa
 - Files lists ordinary attachments that require a download. Chat previews and conversation media history contain pictures and videos. Transfer progress, save and retry stay with the chat attachment. System pickers and export sheets handle file access.
 - On Windows, the signed-in user's avatar opens a compact profile card beside the navigation rail. The card keeps the current conversation or contact visible behind it. Editors and the personal QR code return to the layer that opened them. iPhone and iPad use their profile navigation. Select and crop a photo before confirming. Display names are editable while the sign-in handle stays stable. Profile, image and contact data render from the signed-in account's cache first and update in the background.
 - Normal app/chat uses a lightly lavender-tinted **light theme**. M2 private chat **keeps its existing separate dark theme**, same core controls and explicit LAN-only indicators. AI stays inside normal chat as an opt-in `@name` flow with conspicuous per-request authorization.
-- Shared semantic tokens, system fonts, linear icons with filled selected state, small radii, mostly flat surfaces (glass only on temporary overlays), balanced density and natural moderate motion. Never use excessive decoration, crowded controls or inconsistent cross-platform interactions.
+- Preserve the existing semantic tokens, platform-native fonts, Zibblu original icons, Lavender identity, small-radius and approved floating-label inputs. Use Always UI `creative/design/improve` and independent `check` as specified by [DESIGN_SYSTEM](DESIGN_SYSTEM.md); follow the required references, existing-token-first numeric presets and evidence-based visual discipline rather than copying an obsolete universal visual recipe.
 - The first visible message has a local 24-hour time label. A new label appears when consecutive messages cross a local date boundary or are more than 10 minutes apart.
 
 
@@ -99,7 +99,7 @@ Rules:
 Name: **Zibblu**. Tagline: **Chat freely. Share privately.**  
 Personality: **Warm, precise and familiar in everyday use.**
 
-- **Main hue:** Lavender. **Exact HEX is not yet Owner-approved**; candidate prototypes are listed in [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) and must be reviewed for accessible contrast before being frozen.
+- **Main hue:** Lavender. Reuse currently implemented brand tokens; do not revive old prototype HEX values or invent a new palette without Owner approval and accessible contrast checks. See [DESIGN_SYSTEM](DESIGN_SYSTEM.md).
 - **Normal mode:** light surfaces with very subtle lavender tint, flat presentation and restrained accents.
 - **Private LAN mode:** preserve independent dark theme; use explicit text/icon security states instead of relying on color as a privacy claim.
 - **Interface reference:** Windows WeChat, iPhone WeChat and iPad WeChat for their respective platforms. Keep file and media organization and transfer progress as described above.

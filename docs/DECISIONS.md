@@ -38,6 +38,12 @@ Small, durable decisions only. Add a dated entry when an actual choice changes; 
 
 [Issue #46](https://github.com/openUrain/Zibblu/issues/46) 在隔离的 Windows 和 Docker 环境实现 [v2 投递协议](ARCHITECTURE.md#m1-local-first-rfc)，采用新库和新本地资料结构。离线文字默认可投递 72 小时，文件、上传、设备和清理任务由各自的部署参数控制。候选生产期限、生产清理及任何旧数据重置须由 Owner 单独批准。
 
+## D-019 · Always UI 成为现行 UI 设计方法
+
+**2026-11-20 · Owner 明确确认。** Zibblu 后续 UI 设计、局部优化与审查使用 [Always UI](https://github.com/handFOOLed/always-ui)（`creative` / `design` / `improve` 和独立 `check`），强制先读各模式要求的 reference、优先复用已有设计 Token，缺失时从分类 `value-presets.md` 选数值，不凭个人偏好创造视觉预设。原 `interaction-design-rules` Skill 已删除，不再调用。
+
+此决定**取代早期 2026-11-14 问卷中作为默认审美处方的 Apple/iMessage 等表述**，也取代跨文件复制维护的泛用 UI 规则；不废除 D-012—D-017 中明确的产品/平台行为及安全承诺（Lavender 品牌、各平台微信交互基线、正常/私密聊天主题与文件媒体分界、权限、无障碍、已经批准的组件）。`creative` 仍需 Owner 对所改区域明确授权。现行契约见 [DESIGN_SYSTEM](DESIGN_SYSTEM.md)，来源和安装见 [SKILLS](SKILLS.md)。
+
 ## Open decisions
 
 1. Online-message encryption protocol and key lifecycle; do not claim E2EE until implemented.
