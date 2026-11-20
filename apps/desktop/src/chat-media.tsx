@@ -5,7 +5,7 @@ import { api, errorMessage, fileExpired } from "./api";
 import type { Attachment, Message, Transfer } from "./api";
 import { canPreview, mediaKind, readAttachmentPage } from "./attachment-media";
 import { Blank, Dialog, usePage } from "./common";
-import { AttachmentDownload, SharedFile } from "./files";
+import { AttachmentDownload, SharedFile, TransferList } from "./files";
 
 type ChatMediaScope = {
   conversation: string; revision: number; recalled: ReadonlySet<number>; hidden: ReadonlySet<number>;
@@ -66,13 +66,19 @@ export function ChatAttachment({ message, transfer, onChanged, open, expired }: 
   </div>;
 }
 
-export function MediaHistory({ conversation, revision, recalled, hidden, open }: ChatMediaScope & {
-  open: (message: Message) => void;
+export function MediaHistory({ conversation, revision, recalled, hidden, open, transfers, onChanged }: ChatMediaScope & {
+  open: (message: Message) => void; transfers: Transfer[]; onChanged: () => void;
 }) {
   const [name, setName] = useState("");
+  const downloads = transfers.filter(job => job.conversation_id === conversation && job.direction === "download"
+    && job.status !== "complete" && mediaKind(job.attachment));
   return <>
     <FloatingField fieldClass="search media-search" label="Search media by file name" prefixIcon={<Search size={16} />} type="search"
         value={name} onChange={event => setName(event.target.value)} />
+    {downloads.length > 0 && <details className="media-transfers">
+      <summary>Transfers ({downloads.length})</summary>
+      <TransferList transfers={downloads} onChanged={onChanged} inChat />
+    </details>}
     <MediaResults key={name} {...{ conversation, revision, recalled, hidden, name, open }} />
   </>;
 }
