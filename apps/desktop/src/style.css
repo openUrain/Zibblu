@@ -715,6 +715,8 @@ button.profile-row:hover { background: var(--hover); }
   --profile-popup-radius: 8px;
   --profile-card-close-size: 32px;
   --profile-row-arrow: 17px;
+  --profile-focus-halo: 0 0 4px 1px color-mix(in srgb, var(--accent) 20%, transparent);
+  --profile-focus-shadow: 0 0 0 1px var(--accent), var(--profile-focus-halo);
   position: fixed; inset: var(--profile-popup-inset) auto auto var(--rail-width); margin: 0;
   width: min(var(--profile-popup-width), calc(100% - var(--rail-width) - var(--profile-popup-inset)));
   max-width: none; max-height: calc(100dvh - 2 * var(--profile-popup-inset)); overflow: hidden;
@@ -767,12 +769,20 @@ button.profile-row:hover { background: var(--hover); }
 .profile-card-cover:enabled:hover { background: var(--hover); color: var(--accent); }
 .profile-card-cover:enabled:hover img, .profile-card-avatar:enabled:hover .avatar { opacity: .8; }
 .profile-card-name:enabled:hover { color: var(--accent); }
-.profile-popup :is(button, input[type="range"], .profile-crop):focus-visible {
+.profile-popup :is(button, input[type="range"], .profile-crop):focus-visible:where(:not(.profile-row)) {
   outline: none;
-  box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px color-mix(in srgb, var(--accent) 13%, transparent);
+  box-shadow: var(--profile-focus-shadow);
 }
+.profile-popup .button.primary:focus-visible { border-color: var(--panel); }
 .profile-popup .profile-row:focus-visible {
-  box-shadow: inset 0 0 0 1px var(--accent), inset 0 0 0 4px color-mix(in srgb, var(--accent) 13%, transparent);
+  position: relative; outline: none;
+}
+.profile-popup .profile-row:focus-visible::after {
+  content: ""; position: absolute; inset: 4px; pointer-events: none;
+  border-radius: var(--profile-popup-radius); corner-shape: squircle; box-shadow: var(--profile-focus-shadow);
+}
+.profile-popup .floating-field:has(> :is(input, textarea):focus) {
+  box-shadow: 0 0 0 1px var(--tint), var(--profile-focus-halo);
 }
 @media (forced-colors: active) {
   .profile-popup :is(button, input[type="range"], .profile-crop):focus-visible { outline: 2px solid Highlight; }
