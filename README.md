@@ -178,6 +178,7 @@ Replies stay in memory for your sign-in. To share one, use **Visible to** on the
 ## Documentation
 
 - [Product and UX](docs/PRODUCT.md)
+- [Current UI design & Always UI workflow](docs/DESIGN_SYSTEM.md) — Zibblu product constraints plus the current Always UI design/check method
 - [Architecture and boundaries](docs/ARCHITECTURE.md)
 - [Self-hosting and retention settings](docs/ONLINE_DEPLOYMENT.md#enterprise-self-hosting)
 - [Security and privacy](docs/SECURITY.md)
@@ -185,7 +186,7 @@ Replies stay in memory for your sign-in. To share one, use **Visible to** on the
 - [Decision log](docs/DECISIONS.md)
 - [Codex working rules](AGENTS.md)
 - [Pull request template](.github/PULL_REQUEST_TEMPLATE.md) — concise human-readable implementation and review report
-- [Repository Skills](docs/SKILLS.md) — vendored Codex skills and usage boundaries
+- [Repository Skills](docs/SKILLS.md) — vendored engineering Skills, Always UI setup and usage boundaries
 
 ## Development workflow
 
@@ -193,9 +194,9 @@ Replies stay in memory for your sign-in. To share one, use **Visible to** on the
 
 The [GitHub Actions CI workflow](.github/workflows/ci.yml) runs on PRs targeting `main` and pushes to `main`. It currently checks **M1 Rust/PostgreSQL integration**, **React/TypeScript build**, and **Windows Tauri Rust compilation** (after building the frontend assets). These checks do **not** verify an installer, real Windows GUI behavior, or M2 LAN-only peer communication. Record those acceptance results separately in each PR.
 
-Codex automatic review and CI are complementary: review comments are not passing test results. Before merging, the Owner checks relevant CI results, outstanding actionable review findings and the PR's known limitations. Branch protection for this private GitHub Free organization repository is currently **not enforced**; these checks are an Owner-maintained process, not a GitHub-enforced merge gate.
+Codex automatic review and CI are complementary: review comments are not passing test results. Before merging, the Owner checks relevant CI results, outstanding actionable review findings and the PR's known limitations. Branch protection and required approvals/checks depend on the live rules for the **public** repository's `main` branch; verify the current PR merge conditions in GitHub rather than relying on historical settings. Owner acceptance and the prohibition on automatic merging still apply.
 
-Use the [stop-that-shit](https://github.com/lennney/stop-that-shit) contract in Codex task prompts (for example `$stop-that-shit change -- ...`). The Skill is now checked into `.agents/skills/` for repository discovery; the optional Guard and its Hooks are **not** installed or activated by this repository. See [Skills](docs/SKILLS.md).
+Use the [stop-that-shit](https://github.com/lennney/stop-that-shit) contract in Codex task prompts (for example `$stop-that-shit change -- ...`). Its optional Guard and Hooks are **not** enabled merely because the Skill is vendored. For UI work, use [Always UI](https://github.com/handFOOLed/always-ui) (`creative` / `design` / `improve` and independent `check`) with required references, preserving Zibblu's platform and security constraints. See [Skills](docs/SKILLS.md).
 
 ---
 
