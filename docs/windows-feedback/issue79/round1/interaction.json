@@ -1,0 +1,47 @@
+{
+  "selected": "",
+  "selectionPolicy": [
+    [
+      ".rail",
+      "none"
+    ],
+    [
+      ".bubble",
+      "text"
+    ],
+    [
+      "textarea",
+      "text"
+    ]
+  ],
+  "composer": [
+    [
+      0,
+      345,
+      "0px",
+      "8px"
+    ],
+    [
+      40,
+      345,
+      "8px",
+      "8px"
+    ],
+    [
+      345.1428527832031,
+      345,
+      "8px",
+      "0px"
+    ]
+  ],
+  "keyboardScroll": 425.1428527832031,
+  "thumb": [
+    "rgba(0, 0, 0, 0.16)",
+    "rgba(0, 0, 0, 0.16)"
+  ],
+  "maximized": "Restore window",
+  "closePrompt": [
+    "Close Zibblu"
+  ],
+  "dismissed": true
+}
