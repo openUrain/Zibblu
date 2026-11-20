@@ -241,7 +241,8 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
     <div className="chat-content">
       <div className="chat-messages" hidden={showFiles}>
         <ChatMessages chat={chat} own={own} revision={revision} latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset} transfers={transfers}
-          changed={changed} refresh={refresh} share={share} aiChat={aiChat} openMedia={setMedia} {...{ hidden, hide, readReceipts, draft, setDraft }} />
+          visible={!showFiles && !profileOpen} changed={changed} refresh={refresh} share={share} aiChat={aiChat} openMedia={setMedia}
+          {...{ hidden, hide, readReceipts, draft, setDraft }} />
       </div>
       {showFiles && <FilesView conversation={chat.id} people={chat.members} transfers={transfers} revision={revision} recalled={recalled} hidden={hidden} onChanged={changed} />}
       {(windows || detailsVisible) && <Dialog mobilePage title={details} className="conversation-drawer"
@@ -345,11 +346,11 @@ function SearchResults({ conversation, search, revision, latestAiSeq, recalled, 
   </div>;
 }
 
-function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, share, aiChat,
+function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset, transfers, visible, changed, refresh, share, aiChat,
   hidden, hide, readReceipts, draft, setDraft, openMedia }: {
   chat: Conversation; own: User; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
   refresh: () => Promise<void>; share: (source: ShareSource) => Promise<void>; aiChat: ChatAssistants;
-  hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean;
+  hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean; visible: boolean;
   openMedia: (message: Message) => void;
 } & ChatDraft) {
   const read = useCallback((before?: number) => api.messages(chat.id, before), [chat.id]);
@@ -425,14 +426,15 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
   }, [chat.id, readThrough, sent, viewed, refresh]);
 
   useLayoutEffect(() => {
-    if (nearBottom.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
-  }, [lastSeq, pending.length, aiChat.replies.length]);
+    const view = viewport.current;
+    if (visible && nearBottom.current && view?.getClientRects().length) view.scrollTop = view.scrollHeight;
+  }, [visible, lastSeq, pending.length, aiChat.replies.length]);
 
   useEffect(() => {
     const view = viewport.current;
     if (!ios || !view) return;
     const resize = new ResizeObserver(() => {
-      if (nearBottom.current) view.scrollTop = view.scrollHeight;
+      if (nearBottom.current && view.getClientRects().length) view.scrollTop = view.scrollHeight;
     });
     resize.observe(view);
     return () => resize.disconnect();
@@ -460,7 +462,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
 
   function checkScroll() {
     const element = viewport.current;
-    if (!element) return;
+    if (!visible || !element?.getClientRects().length) return;
     nearBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
     setAway(!nearBottom.current);
   }
