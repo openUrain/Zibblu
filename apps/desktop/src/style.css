@@ -1140,3 +1140,7 @@ html:has(body.windows .shell) { background: transparent; }
 }
 .media-tile { min-width: 40px; }
 .media-viewer-placeholder.status-icon { position: absolute; }
+
+.contact-group .contact-avatar { margin-inline-start: 8px; }
+.contact-group .contact-avatar .avatar { width: 32px; height: 32px; }
+.private-chat .composer-box > .floating-field { padding-inline-start: 0; --label-start: 8px; }

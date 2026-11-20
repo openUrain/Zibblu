@@ -85,7 +85,7 @@ export function Dialog({ title, close, children, className, onKeyDown, closeDisa
 }) {
   const element = useRef<HTMLDialogElement>(null);
   const drag = useRef<{ x: number; y: number }>(undefined);
-  const movable = !ios && modal;
+  const movable = modal && !(ios && mobilePage);
   useLayoutEffect(() => {
     const dialog = element.current;
     if (!movable || !dialog || !visible) return;

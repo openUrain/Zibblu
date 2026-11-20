@@ -6,7 +6,7 @@ import { api, errorMessage } from "./api";
 import type { CachedProfile, Profile, Session, User } from "./api";
 import { People, PersonAvatar, displayName, placeDialog } from "./common";
 import { actions, t } from "./locale";
-import { phone, useIosBack } from "./ios";
+import { ios, phone, useIosBack } from "./ios";
 import { QrContent } from "./qr";
 import { ProfileImageEditor } from "./profile-image";
 import { useMenu, useMenuAnchor } from "./context-menu";
@@ -203,16 +203,17 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
   const title = editor ? labels[page] : own ? t("Personal information", "个人信息") : t("Profile", "个人资料");
   const saveLabel = busy ? actions.saving : saveError ? actions.retry : page === "greeting" ? t("Send", "发送") : actions.save;
   const qrName = labels.qr;
-  const card = popup && !page;
+  const card = (popup || (ios && !phone && own)) && !page;
+  const quickCard = popup && card;
   const cover = profile?.cover ? api.profileImageUrl(user.id, profile.cover) : undefined;
 
   const content = <section className={"profile-page" + (own ? "" : " contact-profile")} aria-label={popup ? undefined : title} onKeyDown={event => {
     if (!popup && event.key === "Escape") { event.stopPropagation(); back(); }
   }}>
-    <header className={"profile-header" + (card ? " profile-card-header" : "")}>
-      {!card && <button className="icon-button" type="button" ref={backButton} onClick={back} disabled={busy || picking}
+    <header className={"profile-header" + (quickCard ? " profile-card-header" : "")}>
+      {!quickCard && <button className="icon-button" type="button" ref={backButton} onClick={back} disabled={busy || picking}
         aria-label={actions.back}><ChevronLeft size={25} /></button>}
-      <h1 id={heading} className={card ? "sr-only" : undefined}>{title}</h1>
+      <h1 id={heading} className={quickCard ? "sr-only" : undefined}>{title}</h1>
       {contact && !editor && <button className="icon-button" type="button" ref={more} disabled={busy}
         aria-label={t("Contact actions", "联系人操作")} aria-haspopup="menu" aria-expanded={!!menuAnchor && menuAnchor === more.current}
         onClick={event => openMenu(event.currentTarget, [

@@ -353,10 +353,8 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
                 event.currentTarget.form?.requestSubmit();
               }
             }} />
-          <div className="composer-bar private-composer-bar">
             <button className="button primary send-button" type="submit" aria-label="Send private message"
               disabled={busy || !draft.trim() || oversized}>{busy ? "Sending…" : "Send"} <Send size={16} /></button>
-          </div>
         </div>
       </form>
     </> : <div className="private-status" aria-live="polite">

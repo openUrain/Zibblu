@@ -106,10 +106,14 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
 
   function openProfile(user: User) {
     if (windows) {
-      if (nav === "Contacts") setSelectedContact(user.id);
       setQuickProfile({ user, point: profilePoint.current });
       return;
     }
+    openDetails(user);
+  }
+
+  function openDetails(user: User) {
+    if (windows && nav === "Contacts") setSelectedContact(user.id);
     if (document.activeElement instanceof HTMLElement) profileTrigger.current = document.activeElement;
     setProfile(user);
   }
@@ -524,7 +528,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           : <section className="chat-blank"><Blank icon={<MessageCircle size={28} />} title={t("Select a chat", "选择会话")} /></section>}
         {chatProfile && profilePage}
       </div>}
-      {nav === "Contacts" && <Contacts directory={directory} selected={profile?.id ?? (windows ? selectedContact : undefined)} refresh={refresh} create={create}
+      {nav === "Contacts" && <Contacts details={openDetails} directory={directory} selected={profile?.id ?? (windows ? selectedContact : undefined)} refresh={refresh} create={create}
         addContact={() => setNewContact(true)} />}
       {nav === "Files" && <FilesView people={people} revision={revision} recalled={recalled} hidden={hidden} transfers={transfers}
         sources={new Map(directory.conversations.map(chat => [chat.id, chatName(chat, session.user.id, names)]))} onChanged={changed} />}
@@ -655,7 +659,8 @@ function AddContact({ session, close, open }: { session: Session; close: () => v
   </Dialog>;
 }
 
-function Contacts({ directory, selected, refresh, create, addContact }: {
+function Contacts({ directory, selected, refresh, create, addContact, details }: {
+  details: (user: User) => void;
   directory: Directory; selected?: string; refresh: () => Promise<void>; create: (request: ConversationRequest) => Promise<void>;
   addContact: () => void;
 }) {
@@ -695,7 +700,7 @@ function Contacts({ directory, selected, refresh, create, addContact }: {
     {ios && <header className="workspace-heading"><h1>{tabLabels.Contacts}</h1></header>}
     <form className="chat-list-head" role={windows ? "search" : undefined} onSubmit={event => {
       event.preventDefault();
-      if (query && filtered.length === 1) open?.(filtered[0].user);
+      if (query && filtered.length === 1) details(filtered[0].user);
     }}>
       <FloatingField fieldClass="search" label={t("Search contacts", "搜索联系人")} prefixIcon={<Search size={17} />}
         type="search" value={search} onChange={event => {
@@ -735,13 +740,15 @@ function Contacts({ directory, selected, refresh, create, addContact }: {
       {[...groups].map(([letter, entries]) => <div className={letter ? "contact-group" : undefined} key={letter}>
         {letter && <h2 className="contact-group-letter">{letter}</h2>}
         {entries.map(({ user, name, showHandle }) => <div className="contact-row" key={user.id}>
+          {windows && <button className="contact-avatar icon-button" type="button" onClick={() => open?.(user)}
+            aria-label={t("View profile", "查看资料") + " " + name}><PersonAvatar user={user} /></button>}
           <button className="person-link contact-name" aria-current={selected === user.id || undefined}
-            data-contact-id={windows ? user.id : undefined} onClick={() => open?.(user)}
+            data-contact-id={windows ? user.id : undefined} onClick={() => details(user)}
             {...menu([
-              { label: t("View profile", "查看资料"), icon: <UserRound size={17} />, action: () => open?.(user) },
+              { label: t("View profile", "查看资料"), icon: <UserRound size={17} />, action: () => details(user) },
               { label: t("Message", "发消息"), icon: <MessageSquare size={17} />, action: () => void perform(() => create({ kind: "direct", contact_id: user.id })) },
             ])}>
-            <PersonAvatar user={user} />
+            {!windows && <PersonAvatar user={user} />}
             {showHandle ? <span className="contact-identity"><strong>{name}</strong><small>@{user.handle}</small></span> : <strong>{name}</strong>}
             {ios && <ChevronRight size={20} aria-hidden />}
           </button>

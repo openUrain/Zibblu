@@ -1,0 +1,24 @@
+{
+  "avatar": {
+    "rect": {
+      "x": 217,
+      "y": 166,
+      "width": 280,
+      "height": 265
+    },
+    "viewport": [
+      534,
+      711
+    ]
+  },
+  "longPress": "WebView2 touch input",
+  "dateLabels": [
+    "23:57",
+    "昨天",
+    "前天",
+    "星期五",
+    "星期五",
+    "11月20日",
+    "2026年11月20日"
+  ]
+}
