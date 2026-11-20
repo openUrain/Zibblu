@@ -609,6 +609,26 @@ svg { vertical-align: middle; }
 .contacts .contact-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .contact-name small, .contact-greeting { display: block; }
 .contact-greeting { margin-top: 3px; white-space: pre-wrap; }
+.windows .contacts-layout { grid-template-rows: minmax(0, 1fr); }
+.windows .contacts-screen .chat-list-head { padding-block-start: 12px; }
+.windows .contacts-screen .new-conversation { background: var(--soft); border-radius: 8px; corner-shape: squircle; }
+.windows .contacts-screen .new-conversation:hover { background: var(--hover); }
+.windows .contacts-list { --contact-group-height: 32px; scroll-padding-block-start: var(--contact-group-height); }
+.contact-group-letter {
+  position: sticky; inset-block-start: 0; z-index: 1; display: flex; align-items: center; gap: 8px;
+  min-height: var(--contact-group-height); margin: 0; padding-inline: 12px;
+  background: var(--bg); color: var(--muted); font-size: 13px; font-weight: 600;
+}
+.contact-group-letter::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.contact-group .contact-row { border: 0; }
+.contact-group .contact-name { gap: 12px; min-height: 48px; }
+.contact-group .contact-name .avatar { width: 32px; height: 32px; border-radius: 8px; corner-shape: squircle; }
+.contact-group .contact-name strong { font-weight: 600; }
+.contact-group .contact-identity { min-width: 0; }
+.contact-group .contact-identity :is(strong, small) { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.contact-group .contact-identity small { font-size: 12px; }
+.windows .contacts-list > .list-empty { padding: 24px 12px; text-align: center; }
+.contact-detail-empty { color: var(--muted); text-align: center; }
 .settings-card { padding: 17px; margin-bottom: 13px; }
 .settings-card h2 { display: flex; align-items: center; gap: 8px; font-size: 16px; margin-bottom: 14px; }
 .settings-card h2 svg { color: var(--accent); }
@@ -869,9 +889,13 @@ button.profile-row:hover { background: var(--hover); }
   .windows-topbar { padding-inline-end: 0; gap: 4px; }
   .windows-topbar .chat-actions { gap: 2px; }
   .chat-layout, .workspace-content.contacts-layout { grid-template-columns: minmax(0, 1fr); }
-  .contacts-layout > .chat-blank, .profile-open .contacts-layout > .contacts-screen,
+  .contacts-layout > .chat-blank, body:not(.windows) .profile-open .contacts-layout > .contacts-screen,
   .chat-layout:not(.mobile-chat-open) > :is(.chat-view, .chat-blank, .private-chat),
   .mobile-chat-open > .chat-list { display: none; }
+  .windows .contacts-layout > :is(.contacts-screen, .profile-page) { grid-area: 1 / 1; }
+  .windows .contacts-layout > .contacts-screen { border-inline-end: 0; }
+  /* Keep the list's scroll container laid out while the profile covers it. */
+  .windows .profile-open .contacts-layout > .contacts-screen { visibility: hidden; }
   .chat-profile-open > .chat-list { display: none; }
   .chat-list { border: 0; }
   .mobile-back { display: inline-flex; }
@@ -889,6 +913,8 @@ button.profile-row:hover { background: var(--hover); }
     forced-color-adjust: none; background: Highlight; color: HighlightText;
   }
   .chat-row.selected :is(small, time) { color: HighlightText; }
+  .windows .contact-group .contact-name[aria-current] small { color: HighlightText; }
+  .windows .contacts-screen .contact-name[aria-current]:focus-visible { outline-color: HighlightText; }
   .windows .conversation-row.selected:hover { background: Highlight; }
   .windows :is(.conversation-row, .chat-view .chat-heading .person-link, .conversation-drawer button):focus-visible {
     outline: 2px solid Highlight; outline-offset: -2px; box-shadow: none;
