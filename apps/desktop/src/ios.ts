@@ -5,6 +5,7 @@ import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 const ipad = /iPad/.test(navigator.userAgent)
   || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 export const ios = ipad || /iPhone|iPod/.test(navigator.userAgent);
+export const phone = ios && !ipad;
 const regularWidth = window.matchMedia("(min-width: 700px)");
 const backActions = new Map<() => void, number>();
 

@@ -1,0 +1,54 @@
+{
+  "viewport": [
+    1664,
+    971
+  ],
+  "menu": [
+    "Start group chat",
+    "Add friend",
+    "Private chat QR code"
+  ],
+  "dialog": [
+    {
+      "x": 612,
+      "y": 325.5,
+      "width": 440,
+      "height": 320
+    },
+    {
+      "x": 692,
+      "y": 380.5,
+      "width": 440,
+      "height": 320
+    }
+  ],
+  "empty": {
+    "height": 56,
+    "scroll": 56,
+    "history": 800,
+    "resize": "none"
+  },
+  "long": {
+    "height": 112,
+    "scroll": 176,
+    "history": 744,
+    "resize": "none"
+  },
+  "Chat": true,
+  "Privacy": true,
+  "narrow": [
+    874,
+    971
+  ],
+  "tools": [
+    "Attach a file",
+    "Attach a folder",
+    "Paste image"
+  ],
+  "media": {
+    "x": 562.328125,
+    "y": 202.5,
+    "width": 524.328125,
+    "height": 524.328125
+  }
+}

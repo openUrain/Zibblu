@@ -117,10 +117,6 @@
 .ios .composer { padding: 5px 8px; border-top: 1px solid var(--line); background: var(--bg); }
 .ios .composer textarea { min-height: 44px; max-height: 28lvh; padding: 10px; border-radius: 5px; background: var(--panel); }
 .ios .composer-bar { padding: 2px 0; }
-.ios .composer-box:not(.ai-composer, :has(.composer-quote, .pasted-image, .drop-hint)) {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: end; gap: 4px;
-}
-.ios .composer-box:not(.ai-composer, :has(.composer-quote, .pasted-image, .drop-hint)) .composer-bar { display: contents; }
 .ios .send-button { min-height: 44px; }
 .ios .chat-header { min-height: 52px; gap: 4px; padding-inline: 6px 8px; }
 .ios .chat-header .button { min-height: 44px; }

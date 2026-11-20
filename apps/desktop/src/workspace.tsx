@@ -3,7 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import {
   ArrowRight, CircleUserRound, FolderOpen, Info, LogOut, Menu, MessageCircle, MessageSquare,
-  Radar, ScanLine, Search, Settings, UserRoundPlus, UsersRound, X,
+  Radar, Search, Settings, Shield, UserRoundPlus, UsersRound, X,
   ChevronLeft, ChevronRight, UserRound,
 } from "lucide-react";
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -20,12 +20,12 @@ import { actions, t } from "./locale";
 import { ChatList, ChatView } from "./chat";
 import { FilesView } from "./files";
 import { NearbyDevices, PrivateChatView, PrivateInvitationOverlay, PrivateTargets, usePrivateRooms } from "./private-chat";
-import { ScanQr, ShareQr } from "./qr";
+import { QrContent, ScanQr, ShareQr } from "./qr";
 import type { SharedCode } from "./qr";
 import { ProfileView } from "./profile";
 import { useMenu, useMenuAnchor, useRowMenu } from "./context-menu";
 import { CloseActionChoices, WindowControls, windows } from "./window-chrome";
-import { ios, useIpadSplit, useIosBack } from "./ios";
+import { ios, phone, useIpadSplit, useIosBack } from "./ios";
 
 const pages = [
   { name: "Chats", Icon: MessageSquare }, { name: "Contacts", Icon: UsersRound },
@@ -55,7 +55,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [profile, setProfile] = useState<User>();
   const [selectedContact, setSelectedContact] = useState<string>();
-  const [ownProfileOpen, setOwnProfileOpen] = useState(false);
+  const [quickProfile, setQuickProfile] = useState<{ user: User; point: { x: number; y: number } }>();
+  const profilePoint = useRef({ x: 0, y: 0 });
   const profileTrigger = useRef<HTMLElement>(null);
   const refreshInFlight = useRef<Promise<void> | null>(null);
   const appliedRevision = useRef(0);
@@ -104,12 +105,16 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }, []);
 
   function openProfile(user: User) {
-    if (windows && user.id === session.user.id) {
-      setOwnProfileOpen(true);
+    if (windows) {
+      setQuickProfile({ user, point: profilePoint.current });
       return;
     }
-    if (document.activeElement instanceof HTMLElement) profileTrigger.current = document.activeElement;
+    openDetails(user);
+  }
+
+  function openDetails(user: User) {
     if (windows && nav === "Contacts") setSelectedContact(user.id);
+    if (document.activeElement instanceof HTMLElement) profileTrigger.current = document.activeElement;
     setProfile(user);
   }
 
@@ -258,7 +263,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }, []);
 
   const active = directory.conversations.find(chat => chat.id === selected);
-  const activeId = nav === "Chats" && !privateOpen && !profile && !ownProfileOpen ? active?.id : undefined;
+  const activeId = nav === "Chats" && !privateOpen && !profile && !quickProfile ? active?.id : undefined;
   useEffect(() => {
     const connected = privateRooms.filter(room => room.phase === "connected");
     const opened = connected.find(room => !joined.current.has(room.id) && room.conversation === selected);
@@ -316,7 +321,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       setNewChat(false);
       setNewContact(false);
       setProfile(undefined);
-      setOwnProfileOpen(false);
+      setQuickProfile(undefined);
       showPrivate(payload.id, payload.conversation);
     });
     return () => { void accepted.then(unlisten => unlisten()); };
@@ -432,11 +437,15 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     refresh={refresh} close={closeProfile} edited={profileEdited}
     message={() => create({ kind: "direct", contact_id: profile.id })} />;
   return <People.Provider value={{ remarks: names, avatars: directory.avatars, online: connected, open: openProfile }}>
-  <main className={"shell" + (conversationOpen ? " conversation-open" : "") + (profile ? " profile-open" : "")
+  <main onClickCapture={event => {
+    const target = (event.target as Element).closest("button")?.getBoundingClientRect();
+    profilePoint.current = event.detail ? { x: event.clientX, y: event.clientY }
+      : { x: target?.right ?? 0, y: target?.top ?? 0 };
+  }} className={"shell" + (conversationOpen ? " conversation-open" : "") + (profile ? " profile-open" : "")
     + (ipadSplit ? " ipad-split" : "")}>
     <nav className="rail" aria-label="Main navigation">
       <button className="rail-brand icon-button" aria-label={t("Your profile", "我的资料")} title={t("Your profile", "我的资料")}
-        aria-haspopup={windows ? "dialog" : undefined} aria-expanded={windows ? ownProfileOpen : undefined}
+        aria-haspopup={windows ? "dialog" : undefined} aria-expanded={windows ? quickProfile?.user.id === session.user.id : undefined}
         onClick={() => openProfile(session.user)}><PersonAvatar user={session.user} /></button>
       <div className="rail-links">{pages.map(({ name, Icon }) =>
         <button key={name} aria-label={tabLabels[name]} title={tabLabels[name]}
@@ -476,8 +485,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
         <div className="chat-actions">
         <button className="icon-button" aria-label="Nearby devices" title="Nearby devices"
           onClick={() => setNearby(true)}><Radar size={20} /></button>
-        <button className="icon-button" aria-label="Scan QR code" title="Scan QR code"
-          onClick={() => setScanning(true)}><ScanLine size={20} /></button>
+
         <div className={"connection " + (connected ? "connected" : "disconnected")} role="status">
           <span className="connection-dot" />{connection}
         </div></div>
@@ -497,7 +505,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           open={selectChat} newChat={() => setNewChat(true)} addContact={() => setNewContact(true)}
           rooms={privateRooms} activePrivate={privateId}
           openPrivate={selectPrivate} createQr={() => void createPrivateCode()}
-          nearby={() => setNearby(true)} scan={() => setScanning(true)} />
+          scan={() => setScanning(true)} />
         {privateId ? <PrivateChatView key={privateId} id={privateId} own={session.user}
             isContact={id => directory.contacts.some(person => person.id === id)}
             draft={drafts["private/" + privateId]?.text ?? ""}
@@ -507,7 +515,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             visibleOnNarrow={mobileChat}
             requested={chatPage?.id === active.id ? chatPage : undefined}
             latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset}
-            hidden={hidden} hide={seq => hide(active.id, seq)} readReceipts={directory.read_receipts && connected && !profile}
+            hidden={hidden} hide={seq => hide(active.id, seq)} readReceipts={directory.read_receipts && connected && !profile && !quickProfile}
             draft={drafts[active.id] ?? { text: "" }} setDraft={change => setDraft(active.id, change)}
             transfers={transfers} changed={changed} refresh={refresh} back={() => setMobileChat(false)}
             pasteFiles={() => pasteFiles(active.id)}
@@ -520,7 +528,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           : <section className="chat-blank"><Blank icon={<MessageCircle size={28} />} title={t("Select a chat", "选择会话")} /></section>}
         {chatProfile && profilePage}
       </div>}
-      {nav === "Contacts" && <Contacts directory={directory} selected={profile?.id ?? (windows ? selectedContact : undefined)} refresh={refresh} create={create}
+      {nav === "Contacts" && <Contacts details={openDetails} directory={directory} selected={profile?.id ?? (windows ? selectedContact : undefined)} refresh={refresh} create={create}
         addContact={() => setNewContact(true)} />}
       {nav === "Files" && <FilesView people={people} revision={revision} recalled={recalled} hidden={hidden} transfers={transfers}
         sources={new Map(directory.conversations.map(chat => [chat.id, chatName(chat, session.user.id, names)]))} onChanged={changed} />}
@@ -531,6 +539,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           <span><strong>{displayName(session.user, names)}</strong><small className="muted">@{session.user.handle}</small></span><ChevronRight size={20} />
         </button>
         <div className="phone-me-actions">
+          <button className="drawer-action" onClick={() => setNearby(true)}><Radar size={19} /> {t("Nearby devices", "附近设备")} <ChevronRight size={17} /></button>
           <button className="drawer-action" onClick={() => navigate("Settings")}><Settings size={19} /> Settings <ChevronRight size={17} /></button>
           <button className="drawer-action" onClick={() => setAbout(true)}><Info size={19} /> About Zibblu <ChevronRight size={17} /></button>
         </div>
@@ -558,8 +567,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       </section>}
       </div>
     </div>
-    {ownProfileOpen && <ProfileView popup user={session.user} session={session} relationVersion="other"
-      reconnecting={connection === "Reconnecting"} refresh={refresh} close={() => setOwnProfileOpen(false)}
+    {quickProfile && <ProfileView key={quickProfile.user.id} popup point={quickProfile.point} user={quickProfile.user} session={session}
+      message={async () => { await create({ kind: "direct", contact_id: quickProfile.user.id }); setQuickProfile(undefined); }}
+      relationVersion={directory.contacts.some(person => person.id === quickProfile.user.id) ? "contact"
+        : directory.pending_contacts.find(request => request.user.id === quickProfile.user.id)?.request_id ?? "other"}
+      reconnecting={connection === "Reconnecting"} refresh={refresh} close={() => setQuickProfile(undefined)}
       edited={profileEdited} />}
     {about && <About close={() => setAbout(false)} />}
     {privateTargets && <PrivateTargets people={privateTargets.members.filter(user => user.id !== session.user.id)}
@@ -576,7 +588,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     {newChat && <NewChat contacts={directory.contacts} create={create} close={() => setNewChat(false)} findPeople={() => {
       setNewChat(false); navigate("Contacts"); setNewContact(true);
     }} />}
-    {newContact && <AddContact close={() => setNewContact(false)} open={user => {
+    {newContact && <AddContact session={session} close={() => setNewContact(false)} open={user => {
       setNewContact(false);
       openProfile(user);
     }} />}
@@ -613,14 +625,14 @@ function About({ close }: { close: () => void }) {
   </Dialog>;
 }
 
-function AddContact({ close, open }: { close: () => void; open: (user: User) => void }) {
+function AddContact({ session, close, open }: { session: Session; close: () => void; open: (user: User) => void }) {
   const { remarks } = useContext(People);
   const [handle, setHandle] = useState("");
   const [found, setFound] = useState<User>();
   const [failure, setFailure] = useState("");
   const [busy, setBusy] = useState(false);
 
-  return <Dialog title={t("Add contact", "添加联系人")} mobilePage close={close} closeDisabled={busy}>
+  return <Dialog className="add-friend" title={t("Add friend", "添加朋友")} mobilePage close={close} closeDisabled={busy}>
     <div className="contact-search">
       <form onSubmit={async event => {
         event.preventDefault();
@@ -638,6 +650,7 @@ function AddContact({ close, open }: { close: () => void; open: (user: User) => 
           {busy ? t("Searching…", "搜索中…") : t("Search", "搜索")}
         </button>
       </form>
+      {phone && <QrContent code={{ kind: "contact", name: t("My QR code", "我的二维码"), value: session.user.handle }} server={session.server} />}
       {found && <button className="drawer-action search-result" onClick={() => open(found)}>
         <PersonAvatar user={found} /><span>{displayName(found, remarks)} <small>@{found.handle}</small></span><ChevronRight size={17} />
       </button>}
@@ -646,7 +659,8 @@ function AddContact({ close, open }: { close: () => void; open: (user: User) => 
   </Dialog>;
 }
 
-function Contacts({ directory, selected, refresh, create, addContact }: {
+function Contacts({ directory, selected, refresh, create, addContact, details }: {
+  details: (user: User) => void;
   directory: Directory; selected?: string; refresh: () => Promise<void>; create: (request: ConversationRequest) => Promise<void>;
   addContact: () => void;
 }) {
@@ -686,7 +700,7 @@ function Contacts({ directory, selected, refresh, create, addContact }: {
     {ios && <header className="workspace-heading"><h1>{tabLabels.Contacts}</h1></header>}
     <form className="chat-list-head" role={windows ? "search" : undefined} onSubmit={event => {
       event.preventDefault();
-      if (query && filtered.length === 1) open?.(filtered[0].user);
+      if (query && filtered.length === 1) details(filtered[0].user);
     }}>
       <FloatingField fieldClass="search" label={t("Search contacts", "搜索联系人")} prefixIcon={<Search size={17} />}
         type="search" value={search} onChange={event => {
@@ -726,13 +740,15 @@ function Contacts({ directory, selected, refresh, create, addContact }: {
       {[...groups].map(([letter, entries]) => <div className={letter ? "contact-group" : undefined} key={letter}>
         {letter && <h2 className="contact-group-letter">{letter}</h2>}
         {entries.map(({ user, name, showHandle }) => <div className="contact-row" key={user.id}>
+          {windows && <button className="contact-avatar icon-button" type="button" onClick={() => open?.(user)}
+            aria-label={t("View profile", "查看资料") + " " + name}><PersonAvatar user={user} /></button>}
           <button className="person-link contact-name" aria-current={selected === user.id || undefined}
-            data-contact-id={windows ? user.id : undefined} onClick={() => open?.(user)}
+            data-contact-id={windows ? user.id : undefined} onClick={() => details(user)}
             {...menu([
-              { label: t("View profile", "查看资料"), icon: <UserRound size={17} />, action: () => open?.(user) },
+              { label: t("View profile", "查看资料"), icon: <UserRound size={17} />, action: () => details(user) },
               { label: t("Message", "发消息"), icon: <MessageSquare size={17} />, action: () => void perform(() => create({ kind: "direct", contact_id: user.id })) },
             ])}>
-            <PersonAvatar user={user} />
+            {!windows && <PersonAvatar user={user} />}
             {showHandle ? <span className="contact-identity"><strong>{name}</strong><small>@{user.handle}</small></span> : <strong>{name}</strong>}
             {ios && <ChevronRight size={20} aria-hidden />}
           </button>
@@ -748,7 +764,7 @@ function NewChat({ contacts, create, close, findPeople }: {
   contacts: User[]; create: (request: ConversationRequest) => Promise<void>; close: () => void; findPeople: () => void;
 }) {
   const { remarks } = useContext(People);
-  const [group, setGroup] = useState(false);
+  const [group, setGroup] = useState(true);
   const [title, setTitle] = useState("");
   const [members, setMembers] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -810,7 +826,9 @@ function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, se
   const { remarks } = useContext(People);
   const sections = [
     { id: "account", label: t("Account and devices", "账号与设备"), Icon: CircleUserRound },
-    { id: "general", label: t("General", "通用"), Icon: Settings },
+    ...(windows ? [{ id: "general" as const, label: t("General", "通用"), Icon: Settings }] : []),
+    { id: "chat", label: t("Chat", "聊天"), Icon: MessageCircle },
+    { id: "privacy", label: t("Privacy", "隐私"), Icon: Shield },
     { id: "assistants", label: t("AI assistants", "AI 助理"), Icon: MessageSquare },
   ] as const;
   type Section = typeof sections[number]["id"];
@@ -874,6 +892,7 @@ function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, se
         aria-current={id === section ? "page" : undefined} aria-disabled={!!pending} onClick={() => {
           if (pending) return;
           focusAfterNavigation.current = compact() && !detailOpen;
+          setSaved(false);
           setSection(id);
           setDetailOpen(true);
         }}>
@@ -897,28 +916,31 @@ function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, se
         {pending === "devices" && <p className="settings-feedback muted" role="status">{t("Loading devices…", "正在加载设备…")}</p>}
         {retryError("devices")}
       </section>}
-      {section === "general" && <>
-        {windows && <section className="settings-group">
+      {section === "general" && <section className="settings-group">
           <h2>{t("Window behavior", "窗口行为")}</h2>
           <div className="settings-row" aria-disabled={!!pending}>
             <CloseActionChoices action={closeAction} choose={action => void run("preferences", () => setCloseAction(action))} />
           </div>
         </section>}
-        <section className="settings-group">
-          <h2>{t("Chat and privacy", "聊天与隐私")}</h2>
+      {section === "chat" && <section className="settings-group">
+          <h2>{sectionLabel}</h2>
           <label className="choice setting-switch settings-row">
             <span>{t("Read receipts", "消息回执")}<small>{t("Both people must enable receipts to share delivery and read status in direct chats.", "双方都开启后，才会在单聊中共享送达和已读状态。")}</small></span>
             <input type="checkbox" role="switch" checked={readReceipts} aria-disabled={!!pending}
               onChange={event => { const enabled = event.target.checked; void run("preferences", () => setReadReceipts(enabled)); }} />
             <span className="switch-track" aria-hidden="true" />
           </label>
+        </section>}
+      {section === "privacy" && <section className="settings-group">
+          <h2>{sectionLabel}</h2>
           <label className="choice setting-switch settings-row">
             <span>{t("Pause private invitation pop-ups", "暂停私聊邀请弹窗")}<small>{t("Pending invitations stay in Private chats.", "待处理的邀请仍保留在私密聊天中。")}</small></span>
             <input type="checkbox" role="switch" checked={privateQuiet} aria-disabled={!!pending}
               onChange={event => { const quiet = event.target.checked; void run("preferences", () => setPrivateQuiet(quiet)); }} />
             <span className="switch-track" aria-hidden="true" />
           </label>
-        </section>
+        </section>}
+      {["general", "chat", "privacy"].includes(section) && <>
         <div className="settings-feedback settings-save-status" role="status">
           {pending === "preferences" ? actions.saving : saved ? actions.saved : ""}
         </div>

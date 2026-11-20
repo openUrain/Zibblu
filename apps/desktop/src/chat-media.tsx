@@ -1,5 +1,5 @@
 import { FloatingField } from "./floating-field";
-import { ChevronLeft, ChevronRight, Image, Play, RotateCcw, Search, Video } from "lucide-react";
+import { ChevronLeft, ChevronRight, Image, LoaderCircle, Play, RotateCcw, Search, Video } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage, fileExpired } from "./api";
 import type { Attachment, Message, Transfer } from "./api";
@@ -35,7 +35,7 @@ function MediaTile({ file, open, failed }: { file: Attachment; open: () => void;
     failed?.();
   }
 
-  return <button ref={element} type="button" className="media-tile" onClick={open}
+  return <button ref={element} type="button" className="media-tile" title={state === "loading" ? "Loading preview" : undefined} onClick={open}
     aria-label={`Open ${kind === "video" ? "video" : "image"} ${file.name}`}>
     {state !== "failed" && (kind === "image"
       ? <img src={api.mediaUrl(file.id)} loading="lazy" alt="" onLoad={() => setState("ready")} onError={unavailable} />
@@ -45,7 +45,7 @@ function MediaTile({ file, open, failed }: { file: Attachment; open: () => void;
       {kind === "video" ? <Video size={22} /> : <Image size={22} />}
       <span>{file.name}</span><small>{canPreview(file) ? "Preview unavailable" : "Download to open"}</small>
     </span> : <>
-      {state === "loading" && <span className="media-tile-status" role="status">Loading preview…</span>}
+      {state === "loading" && <span className="media-tile-status" role="status" title="Loading preview" aria-label="Loading preview"><LoaderCircle size={16} aria-hidden /></span>}
       {kind === "video" && <span className="media-play" aria-hidden="true"><Play size={20} fill="currentColor" /></span>}
     </>}
   </button>;
@@ -166,18 +166,21 @@ function ViewerMedia({ file }: { file: Attachment }) {
   const [state, setState] = useState<PreviewState>(supported ? "loading" : "failed");
   const [attempt, setAttempt] = useState(0);
   const [zoom, setZoom] = useState(100);
+  const [ratio, setRatio] = useState<number>();
 
   return <>
-    <div className="media-viewer-stage" tabIndex={zoom > 100 ? 0 : undefined} aria-label={zoom > 100 ? "Pan zoomed image" : undefined}>
+    <div className="media-viewer-stage" style={state === "ready" && ratio ? {
+      aspectRatio: ratio, width: "min(100%, " + (54 * ratio) + "dvh)", height: "auto",
+    } : undefined} tabIndex={zoom > 100 ? 0 : undefined} aria-label={zoom > 100 ? "Pan zoomed image" : undefined}>
       {state !== "failed" && (video
         ? <video key={attempt} src={api.mediaUrl(file.id)} controls controlsList="nodownload noremoteplayback"
           playsInline preload="auto" disablePictureInPicture aria-label={file.name}
-          onLoadedData={() => setState("ready")} onError={() => setState("failed")} />
+          onLoadedData={({ currentTarget }) => { setRatio(currentTarget.videoWidth / currentTarget.videoHeight); setState("ready"); }} onError={() => setState("failed")} />
         : <div className="media-viewer-image" style={{ width: zoom + "%", height: zoom + "%" }}>
           <img key={attempt} src={api.mediaUrl(file.id)} alt={file.name}
-            onLoad={() => setState("ready")} onError={() => { setZoom(100); setState("failed"); }} />
+            onLoad={({ currentTarget }) => { setRatio(currentTarget.naturalWidth / currentTarget.naturalHeight); setState("ready"); }} onError={() => { setZoom(100); setState("failed"); }} />
         </div>)}
-      {state === "loading" && <p className="media-viewer-placeholder" role="status">Loading preview…</p>}
+      {state === "loading" && <p className="media-viewer-placeholder status-icon" tabIndex={0} role="status" title="Loading preview" aria-label="Loading preview"><LoaderCircle size={16} aria-hidden /></p>}
       {state === "failed" && <div className="media-viewer-placeholder">
         <p role="status">{supported ? "Preview unavailable. You can try again or save the attachment." : "Download this attachment to open it."}</p>
         {supported && <button className="button subtle small" type="button" onClick={() => {

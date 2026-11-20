@@ -1,17 +1,19 @@
-const hour = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-const date = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric" });
-
-export function dateTimeLabel(value: number) {
-  return `${date.format(value)} ${hour.format(value)}`;
+function calendarDay(date: Date) {
+  return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000;
 }
 
 export function messageTimeLabel(value: number, now = new Date()) {
-  const day = new Date(value).toDateString();
-  if (day === now.toDateString()) return hour.format(value);
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  return day === yesterday.toDateString() ? `昨天 ${hour.format(value)}` : dateTimeLabel(value);
+  const date = new Date(value);
+  const days = calendarDay(now) - calendarDay(date);
+  if (days === 0) return [date.getHours(), date.getMinutes()].map(n => String(n).padStart(2, "0")).join(":");
+  if (days === 1) return "昨天";
+  if (days === 2) return "前天";
+  if (days >= 3 && days < 7) return "星期" + "日一二三四五六"[date.getDay()];
+  const monthDay = (date.getMonth() + 1) + "月" + date.getDate() + "日";
+  return date.getFullYear() === now.getFullYear() ? monthDay : date.getFullYear() + "年" + monthDay;
 }
+
+export const dateTimeLabel = messageTimeLabel;
 
 export function startsTimeGroup(value: number, previous?: number) {
   return previous === undefined || value - previous > 10 * 60_000

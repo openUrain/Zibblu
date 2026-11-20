@@ -1,0 +1,68 @@
+{
+  "viewport": [
+    1264,
+    811
+  ],
+  "menu": [
+    "Start group chat",
+    "Add friend",
+    "Private chat QR code"
+  ],
+  "dialog": [
+    {
+      "x": 412,
+      "y": 245.5,
+      "width": 440,
+      "height": 320
+    },
+    {
+      "x": 492,
+      "y": 300.5,
+      "width": 440,
+      "height": 320
+    }
+  ],
+  "empty": {
+    "height": 56,
+    "scroll": 56,
+    "history": 640,
+    "resize": "none"
+  },
+  "long": {
+    "height": 112,
+    "scroll": 176,
+    "history": 584,
+    "resize": "none"
+  },
+  "imeClipboard": "WebView2 composition + Ctrl+C/V",
+  "Chat": true,
+  "Privacy": true,
+  "narrow": [
+    534,
+    711
+  ],
+  "tools": [
+    "Attach a file",
+    "Attach a folder",
+    "Paste image"
+  ],
+  "media": {
+    "x": 413.03125,
+    "y": 122.5,
+    "width": 437.9375,
+    "height": 437.9375
+  },
+  "portrait.png": {
+    "x": 522.515625,
+    "y": 122.5,
+    "width": 218.96875,
+    "height": 437.9375
+  },
+  "wide.mp4": {
+    "x": 242.71875,
+    "y": 122.5,
+    "width": 778.546875,
+    "height": 437.921875
+  },
+  "broken": "Preview unavailable"
+}
