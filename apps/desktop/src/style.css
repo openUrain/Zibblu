@@ -212,8 +212,9 @@ svg { vertical-align: middle; }
 .inline-error { overflow-wrap: anywhere; padding: 9px 11px; border-radius: 8px; background: var(--danger-bg); color: var(--danger); line-height: 1.45; }
 
 .shell {
+  --rail-width: 60px;
   --list-width: clamp(224px, 25vw, 280px);
-  display: grid; grid-template-columns: 60px minmax(0, 1fr); height: 100dvh; overflow: hidden;
+  display: grid; grid-template-columns: var(--rail-width) minmax(0, 1fr); height: 100dvh; overflow: hidden;
 }
 .rail {
   display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 12px 8px;
@@ -707,6 +708,75 @@ button.profile-row:hover { background: var(--hover); }
 .profile-zoom { display: flex; align-items: center; gap: 12px; min-height: 44px; }
 .profile-zoom input { flex: 1; min-width: 0; accent-color: var(--primary); }
 .profile-zoom output { min-width: 4ch; text-align: end; font-variant-numeric: tabular-nums; }
+.profile-popup {
+  --profile-popup-width: 280px;
+  --profile-popup-inset: 12px;
+  --profile-popup-padding: 12px;
+  --profile-popup-radius: 8px;
+  --profile-card-close-size: 32px;
+  --profile-row-arrow: 17px;
+  position: fixed; inset: var(--profile-popup-inset) auto auto var(--rail-width); margin: 0;
+  width: min(var(--profile-popup-width), calc(100% - var(--rail-width) - var(--profile-popup-inset)));
+  max-width: none; max-height: calc(100dvh - 2 * var(--profile-popup-inset)); overflow: hidden;
+  padding: 0; border: 2px solid var(--line); border-radius: var(--profile-popup-radius); corner-shape: squircle;
+  box-shadow: var(--shadow); font-variant-numeric: tabular-nums;
+}
+.profile-popup[open] { display: flex; }
+.profile-popup::backdrop { background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.profile-popup .profile-page { background: var(--panel); }
+.profile-popup .profile-header {
+  flex: none; min-height: 44px; padding-inline: 4px; border-bottom: 0;
+}
+.profile-popup .profile-card-header {
+  position: absolute; inset: var(--profile-popup-padding) var(--profile-popup-padding) auto auto;
+  z-index: 1; display: block; min-height: 0; padding: 0; background: transparent;
+}
+.profile-card-header .icon-button {
+  width: var(--profile-card-close-size); min-width: var(--profile-card-close-size); height: var(--profile-card-close-size);
+  border: 0; border-radius: var(--profile-popup-radius); background: var(--panel);
+}
+.profile-popup .profile-content { width: 100%; padding: var(--profile-popup-padding); }
+.profile-popup .profile-rows { border: 0; }
+.profile-popup .profile-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) var(--profile-row-arrow);
+  min-height: 40px; padding: 4px 8px; gap: 8px;
+}
+.profile-popup .profile-row + .profile-row { border-top-width: 2px; }
+.profile-popup button.profile-row:disabled:hover { background: transparent; }
+.profile-popup .profile-value, .profile-card-name, .profile-card-identity small {
+  min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.profile-card-photo { display: grid; }
+.profile-card-photo > button { grid-area: 1 / 1; }
+.profile-card-cover, .profile-card-avatar, .profile-card-name { border: 0; padding: 0; }
+.profile-card-cover {
+  display: grid; place-items: center; overflow: hidden; aspect-ratio: 3;
+  border-radius: var(--profile-popup-radius); corner-shape: squircle;
+  color: var(--muted); background: var(--soft);
+}
+.profile-card-cover img { width: 100%; height: 100%; object-fit: cover; }
+.profile-card-avatar {
+  align-self: end; justify-self: start; margin-inline-start: var(--profile-popup-padding); transform: translateY(50%);
+  border-radius: var(--profile-popup-radius); background: var(--panel);
+}
+.profile-card-avatar .avatar { border-radius: inherit; corner-shape: squircle; }
+.profile-card-identity { display: grid; gap: 4px; padding: 32px var(--profile-popup-padding) var(--profile-popup-padding); }
+.profile-card-name {
+  justify-self: start; max-width: 100%; background: transparent; text-align: start; font-size: 18px; font-weight: 600;
+}
+.profile-card-cover:enabled:hover { background: var(--hover); color: var(--accent); }
+.profile-card-cover:enabled:hover img, .profile-card-avatar:enabled:hover .avatar { opacity: .8; }
+.profile-card-name:enabled:hover { color: var(--accent); }
+.profile-popup :is(button, input[type="range"], .profile-crop):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px color-mix(in srgb, var(--accent) 13%, transparent);
+}
+.profile-popup .profile-row:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent), inset 0 0 0 4px color-mix(in srgb, var(--accent) 13%, transparent);
+}
+@media (forced-colors: active) {
+  .profile-popup :is(button, input[type="range"], .profile-crop):focus-visible { outline: 2px solid Highlight; }
+}
 .clipboard-error {
   position: fixed; z-index: 21; inset: auto 12px 12px; margin-inline-start: auto; width: fit-content; max-width: calc(100% - 24px);
   display: flex; align-items: baseline; gap: 10px;
@@ -718,7 +788,7 @@ button.profile-row:hover { background: var(--hover); }
   .chat-files .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 740px) {
-  .shell { grid-template-columns: 61px minmax(0, 1fr); }
+  .shell { --rail-width: 61px; }
   .rail { padding-inline: 4px; }
   .topbar, .chat-header { padding-inline: 13px; }
   .windows-topbar { padding-inline-end: 0; gap: 4px; }

@@ -1,6 +1,6 @@
 import { FloatingField } from "./floating-field";
-import { ChevronLeft, ChevronRight, MessageCircle, MoreHorizontal, QrCode, UserRoundMinus } from "lucide-react";
-import { useContext, useEffect, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, Image, MessageCircle, MoreHorizontal, QrCode, UserRoundMinus, X } from "lucide-react";
+import { useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api, errorMessage } from "./api";
 import type { CachedProfile, Profile, Session, User } from "./api";
@@ -21,25 +21,25 @@ const labels: Record<Page, string> = {
   remove: t("Remove contact", "删除联系人"),
 };
 
-function Row({ label, children, choose, disabled }: {
-  label: string; children?: ReactNode; choose: () => void; disabled?: boolean;
+function Row({ label, children, choose, disabled, entry }: {
+  label: string; children?: ReactNode; choose: () => void; disabled?: boolean; entry?: Page | "details";
 }) {
-  return <button className="profile-row" disabled={disabled} onClick={choose}>
+  return <button className="profile-row" disabled={disabled} onClick={choose} data-profile-entry={entry}>
     <span>{label}</span><span className="profile-value">{children}</span><ChevronRight size={17} aria-hidden />
   </button>;
 }
 
-export function ProfileView({ session, user, relationVersion, reconnecting, close, refresh, edited, message }: {
+export function ProfileView({ session, user, relationVersion, reconnecting, close, refresh, edited, message, popup }: {
   session: Session; user: User; relationVersion: string; reconnecting: boolean;
   close: () => void; refresh: () => Promise<void>; edited: (id: string, patch: Partial<Profile>) => void;
-  message: () => Promise<void>;
-}) {
+} & ({ popup: true; message?: never } | { popup?: false; message: () => Promise<void> })) {
   const { remarks } = useContext(People);
   const openMenu = useMenu();
   const menuAnchor = useMenuAnchor();
   const more = useRef<HTMLButtonElement>(null);
   const own = user.id === session.user.id;
   const [snapshot, setSnapshot] = useState<{ data: CachedProfile; relation: string }>();
+  const [details, setDetails] = useState(false);
   const [page, setPage] = useState<Page>();
   const [photo, setPhoto] = useState<ArrayBuffer>();
   const [picking, setPicking] = useState(false);
@@ -50,6 +50,10 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
   const [retry, setRetry] = useState(0);
   const serial = useRef(0);
   const backButton = useRef<HTMLButtonElement>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const heading = useId();
+  const outsidePress = useRef(false);
+  const returnEntry = useRef<Page | "details">(undefined);
   const current = snapshot?.relation === relationVersion ? snapshot.data : undefined;
   const profile = current?.profile;
   const contact = profile?.relation === "contact";
@@ -85,10 +89,29 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
   }, [current]);
 
   useEffect(() => {
-    if (page === undefined) backButton.current?.focus({ preventScroll: true });
-  }, [page]);
+    if (!popup && page === undefined) backButton.current?.focus({ preventScroll: true });
+  }, [page, popup]);
+
+  useLayoutEffect(() => {
+    const element = dialog.current;
+    element?.showModal();
+    return () => element?.close();
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!popup) return;
+    const entry = returnEntry.current;
+    returnEntry.current = undefined;
+    if (entry) {
+      const trigger = dialog.current?.querySelector<HTMLButtonElement>(`[data-profile-entry="${entry}"]:enabled`);
+      (trigger ?? backButton.current)?.focus();
+    } else if ((details && !page) || page === "qr" || page === "avatar" || page === "cover") {
+      backButton.current?.focus();
+    }
+  }, [details, page, popup]);
 
   function show(next: Page | undefined) {
+    if (popup && next === undefined) returnEntry.current = page;
     setSaveError("");
     setSaved(false);
     setPhoto(undefined);
@@ -98,11 +121,16 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
   function back() {
     if (busy || picking) return;
     if (page) show(undefined);
-    else close();
+    else if (details) {
+      show(undefined);
+      returnEntry.current = "details";
+      setDetails(false);
+    } else close();
   }
   useIosBack(back, 10);
 
   async function pick(field: ImageField) {
+    const trigger = document.activeElement;
     setPicking(true);
     setSaveError("");
     try {
@@ -110,12 +138,14 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
       if (image.byteLength) {
         setPhoto(image);
         setPage(field);
+        return;
       }
     } catch (error) {
       setSaveError(errorMessage(error));
     } finally {
       setPicking(false);
     }
+    if (popup && trigger instanceof HTMLElement) requestAnimationFrame(() => trigger.focus());
   }
 
   async function save(action: () => Promise<Partial<Profile>>) {
@@ -168,15 +198,18 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
   const title = editor ? labels[page] : own ? t("Personal information", "个人信息") : t("Profile", "个人资料");
   const saveLabel = busy ? actions.saving : saveError ? actions.retry : page === "greeting" ? t("Send", "发送") : actions.save;
   const qrName = labels.qr;
+  const card = popup && !details && !page;
+  const cover = profile?.cover ? api.profileImageUrl(user.id, profile.cover) : undefined;
 
-  return <section className={"profile-page" + (own ? "" : " contact-profile")} aria-label={title} onKeyDown={event => {
-    if (event.key === "Escape") { event.stopPropagation(); back(); }
+  const content = <section className={"profile-page" + (own ? "" : " contact-profile")} aria-label={popup ? undefined : title} onKeyDown={event => {
+    if (!popup && event.key === "Escape") { event.stopPropagation(); back(); }
   }}>
-    <header className="profile-header">
-      <button className="icon-button" type="button" ref={backButton} onClick={back} disabled={busy || picking} aria-label={actions.back}>
-        <ChevronLeft size={25} />
+    <header className={"profile-header" + (card ? " profile-card-header" : "")}>
+      <button className="icon-button" type="button" ref={backButton} onClick={back} disabled={busy || picking}
+        aria-label={card ? t("Close profile", "关闭个人资料") : actions.back}>
+        {card ? <X size={20} /> : <ChevronLeft size={25} />}
       </button>
-      <h1>{title}</h1>
+      <h1 id={heading} className={card ? "sr-only" : undefined}>{title}</h1>
       {contact && !editor && <button className="icon-button" type="button" ref={more} disabled={busy}
         aria-label={t("Contact actions", "联系人操作")} aria-haspopup="menu" aria-expanded={!!menuAnchor && menuAnchor === more.current}
         onClick={event => openMenu(event.currentTarget, [
@@ -220,17 +253,41 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
         </div>
       </form>}
       {!editor && <>
-        {own ? <div className="profile-rows">
-          <Row label={labels.avatar} choose={() => void pick("avatar")} disabled={!profile || picking}>
+        {card ? <>
+          <div className="profile-card-photo">
+            <button className="profile-card-cover" type="button" aria-label={labels.cover} title={labels.cover}
+              data-profile-entry="cover" onClick={() => void pick("cover")} disabled={!profile || picking}>
+              {cover ? <img src={cover} alt="" /> : <Image size={20} aria-hidden />}
+            </button>
+            <button className="profile-card-avatar" type="button" aria-label={labels.avatar} title={labels.avatar}
+              data-profile-entry="avatar" onClick={() => void pick("avatar")} disabled={!profile || picking}>
+              <PersonAvatar user={user} version={profile?.avatar} large />
+            </button>
+          </div>
+          <div className="profile-card-identity">
+            <button className="profile-card-name" type="button" aria-label={`${labels.display_name}: ${name}`} title={name}
+              data-profile-entry="display_name" onClick={() => show("display_name")} disabled={!profile}>{name}</button>
+            <small className="muted">@{user.handle}</small>
+          </div>
+          <div className="profile-rows">
+            <Row label={labels.bio} entry="bio" choose={() => show("bio")} disabled={!profile}>{profile?.bio}</Row>
+            <Row label={qrName} entry="qr" choose={() => show("qr")}><QrCode size={20} aria-hidden /></Row>
+            <Row label={t("Edit profile", "编辑资料")} entry="details" choose={() => {
+              show(undefined);
+              setDetails(true);
+            }} />
+          </div>
+        </> : own ? <div className="profile-rows">
+          <Row label={labels.avatar} entry="avatar" choose={() => void pick("avatar")} disabled={!profile || picking}>
             <PersonAvatar user={user} version={profile?.avatar} large />
           </Row>
-          <Row label={labels.display_name} choose={() => show("display_name")} disabled={!profile}>{name}</Row>
+          <Row label={labels.display_name} entry="display_name" choose={() => show("display_name")} disabled={!profile}>{name}</Row>
           <div className="profile-row profile-static"><span>{t("Username", "账号")}</span><span className="profile-value">@{user.handle}</span></div>
-          <Row label={labels.cover} choose={() => void pick("cover")} disabled={!profile || picking}>
-            {profile?.cover && <img className="profile-cover-thumb" src={api.profileImageUrl(user.id, profile.cover)} alt="" />}
+          <Row label={labels.cover} entry="cover" choose={() => void pick("cover")} disabled={!profile || picking}>
+            {cover && <img className="profile-cover-thumb" src={cover} alt="" />}
           </Row>
-          <Row label={labels.bio} choose={() => show("bio")} disabled={!profile}>{profile?.bio}</Row>
-          <Row label={qrName} choose={() => show("qr")}><QrCode size={21} /></Row>
+          <Row label={labels.bio} entry="bio" choose={() => show("bio")} disabled={!profile}>{profile?.bio}</Row>
+          <Row label={qrName} entry="qr" choose={() => show("qr")}><QrCode size={21} /></Row>
         </div> : <>
           <div className="profile-person"><PersonAvatar user={user} version={profile?.avatar} large />
             <div><h2>{name}</h2><small className="muted">@{user.handle}</small></div>
@@ -238,7 +295,7 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
           {profile?.cover && <img className="profile-cover" src={api.profileImageUrl(user.id, profile.cover)} alt="" />}
           {profile?.bio && <p className="profile-bio">{profile.bio}</p>}
           {contact && <div className="profile-rows"><Row label={labels.notes} choose={() => show("notes")}>{profile.notes?.remark}</Row></div>}
-          {contact && <button className="button primary profile-direct" disabled={busy} onClick={async () => {
+          {contact && message && <button className="button primary profile-direct" disabled={busy} onClick={async () => {
             setBusy(true);
             setSaveError("");
             try { await message(); }
@@ -259,4 +316,18 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
       {saveError && <p className="inline-error" role="alert">{saveError}</p>}
     </div>
   </section>;
+  if (!popup) return content;
+  return <dialog className="profile-popup" ref={dialog} aria-labelledby={heading}
+    onCancel={event => { event.preventDefault(); back(); }}
+    onPointerDown={event => {
+      const { left, top, right, bottom } = event.currentTarget.getBoundingClientRect();
+      outsidePress.current = event.target === event.currentTarget
+        && (event.clientX < left || event.clientX >= right || event.clientY < top || event.clientY >= bottom);
+    }}
+    onClick={event => {
+      if (outsidePress.current && event.target === event.currentTarget) back();
+      outsidePress.current = false;
+    }}>
+    {content}
+  </dialog>;
 }

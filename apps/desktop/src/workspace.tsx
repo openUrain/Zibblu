@@ -52,6 +52,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [hidden, setHidden] = useState<ReadonlySet<number>>(new Set());
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [profile, setProfile] = useState<User>();
+  const [ownProfileOpen, setOwnProfileOpen] = useState(false);
   const profileTrigger = useRef<HTMLElement>(null);
   const refreshInFlight = useRef<Promise<void> | null>(null);
   const appliedRevision = useRef(0);
@@ -100,6 +101,10 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }, []);
 
   function openProfile(user: User) {
+    if (windows && user.id === session.user.id) {
+      setOwnProfileOpen(true);
+      return;
+    }
     if (document.activeElement instanceof HTMLElement) profileTrigger.current = document.activeElement;
     setProfile(user);
   }
@@ -226,7 +231,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }, []);
 
   const active = directory.conversations.find(chat => chat.id === selected);
-  const activeId = nav === "Chats" && !privateOpen && !profile ? active?.id : undefined;
+  const activeId = nav === "Chats" && !privateOpen && !profile && !ownProfileOpen ? active?.id : undefined;
   useEffect(() => {
     const connected = privateRooms.filter(room => room.phase === "connected");
     const opened = connected.find(room => !joined.current.has(room.id) && room.conversation === selected);
@@ -284,6 +289,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       setNewChat(false);
       setNewContact(false);
       setProfile(undefined);
+      setOwnProfileOpen(false);
       showPrivate(payload.id, payload.conversation);
     });
     return () => { void accepted.then(unlisten => unlisten()); };
@@ -397,6 +403,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     + (ipadSplit ? " ipad-split" : "")}>
     <nav className="rail" aria-label="Main navigation">
       <button className="rail-brand icon-button" aria-label={t("Your profile", "我的资料")} title={t("Your profile", "我的资料")}
+        aria-haspopup={windows ? "dialog" : undefined} aria-expanded={windows ? ownProfileOpen : undefined}
         onClick={() => openProfile(session.user)}><PersonAvatar user={session.user} /></button>
       <div className="rail-links">{pages.map(({ name, Icon }) =>
         <button key={name} aria-label={tabLabels[name]} title={tabLabels[name]}
@@ -512,6 +519,9 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       </section>}
       </div>
     </div>
+    {ownProfileOpen && <ProfileView popup user={session.user} session={session} relationVersion="other"
+      reconnecting={connection === "Reconnecting"} refresh={refresh} close={() => setOwnProfileOpen(false)}
+      edited={profileEdited} />}
     {about && <About close={() => setAbout(false)} />}
     {privateTargets && <PrivateTargets people={privateTargets.members.filter(user => user.id !== session.user.id)}
       close={() => setPrivateTargets(undefined)} start={invited => startPrivate(privateTargets, invited)} />}
