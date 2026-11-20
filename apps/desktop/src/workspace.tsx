@@ -335,13 +335,6 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     } catch (error) { setFailure(errorMessage(error)); }
   }
 
-  async function showGroupCode(chat: Conversation) {
-    try {
-      const invite = await api.groupInvite(chat.id);
-      setShareCode({ kind: "group", name: chat.title ?? "Group invite", value: invite.code, expiresAt: invite.expires_at });
-    } catch (error) { setFailure(errorMessage(error)); }
-  }
-
   async function create(request: ConversationRequest) {
     const id = await api.create(request);
     selectChat(id);
@@ -470,7 +463,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             draft={drafts["private/" + privateId]?.text ?? ""}
             setDraft={change => setDraft("private/" + privateId, previous => ({ text: change(previous.text) }))}
             back={backFromChat} showCode={showPrivateCode} />
-          : active ? <ChatView key={active.id} chat={active} own={session.user} revision={revision} profileOpen={!!profile}
+          : active ? <ChatView key={active.id} chat={active} own={session.user} server={session.server} revision={revision} profileOpen={!!profile}
             visibleOnNarrow={mobileChat}
             requested={chatPage?.id === active.id ? chatPage : undefined}
             latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset}
@@ -478,7 +471,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             draft={drafts[active.id] ?? { text: "" }} setDraft={change => setDraft(active.id, change)}
             transfers={transfers} changed={changed} refresh={refresh} back={() => setMobileChat(false)}
             share={source => share(active.id, source)} openPrivate={() => void invitePrivate(active)}
-            groupCode={() => void showGroupCode(active)} aiChat={{
+            aiChat={{
               assistants, settings: () => navigate("Settings", true), replies: aiReplies.filter(reply => reply.conversation === active.id),
               answered: reply => setAiReplies(current => [...current, reply]),
               dismiss: id => setAiReplies(current => current.filter(reply => reply.id !== id)),

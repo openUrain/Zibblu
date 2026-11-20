@@ -233,6 +233,20 @@ pub(crate) fn verified_mime(bytes: &[u8]) -> Result<&'static str> {
     Ok(format.to_mime_type())
 }
 
+#[cfg(windows)]
+pub(crate) fn clipboard_png(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut decoder = image::codecs::bmp::BmpDecoder::new_without_file_header(Cursor::new(bytes))
+        .context(DAMAGED)?;
+    check_decoder(&mut decoder)?;
+    let pixels = still(decoder)?.into_rgba8();
+    let png = encode_png(&pixels)?;
+    ensure!(
+        png.len() <= MAX_PASTED_IMAGE_BYTES,
+        "Pasted images can be up to 16 MiB."
+    );
+    Ok(png)
+}
+
 pub(crate) fn check_stored_profile(bytes: &[u8]) -> Result<()> {
     stored_profile_decoder(bytes).map(|_| ())
 }

@@ -1,10 +1,10 @@
 import { FloatingField } from "./floating-field";
 import {
-  ArrowDown, ArrowLeft, ArrowRight, AtSign, Check, CheckCheck, Copy, Download, FilePlus2, FolderOpen, Ghost, LockKeyhole,
+  ArrowDown, ArrowLeft, ArrowRight, AtSign, Check, CheckCheck, ChevronRight, Copy, Download, FolderOpen, Ghost, LockKeyhole,
   Image, LogOut, MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Radar, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, UserRoundPlus, UsersRound, X,
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent } from "react";
+import type { FormEvent, KeyboardEvent, ReactNode } from "react";
 import { ai } from "./ai-api";
 import type { AiReply, Assistant } from "./ai-api";
 import { AiRequest, AssistantMenu, ProviderLogo, ShareAiReply } from "./ai";
@@ -18,6 +18,9 @@ import { ChatAttachment, MediaHistory, MediaViewer } from "./chat-media";
 import { privatePhaseLabel, privateTitle } from "./private-chat";
 import { ios, useIosBack } from "./ios";
 import { actions as actionLabels, t } from "./locale";
+import { ShareQr } from "./qr";
+import type { SharedCode } from "./qr";
+import { windows } from "./window-chrome";
 
 type ChatPage = "details" | "search";
 
@@ -59,15 +62,18 @@ export function ChatList({ chats, own, selected, open, newChat, addContact, room
       {filtered.map(chat => {
         const name = chatName(chat, own.id, remarks);
         const peer = chat.members.find(user => user.id !== own.id);
-        return <button key={chat.id} className={"chat-row" + (chat.id === selected ? " selected" : "")} {...menu([
+        return <button key={chat.id} type="button" className={"chat-row conversation-row" + (chat.id === selected ? " selected" : "")} {...menu([
           { label: t("Chat info", "聊天信息"), icon: <MoreHorizontal size={18} />, action: () => open(chat.id, "details") },
           { label: t("Search chat", "查找聊天内容"), icon: <Search size={18} />, action: () => open(chat.id, "search") },
         ])}
           aria-current={chat.id === selected ? "true" : undefined} onClick={() => open(chat.id)}>
           {chat.title || !peer ? <Avatar name={name} group={!!chat.title} /> : <PersonAvatar user={peer} />}
-          <span className="chat-row-text"><strong>{name}</strong><small>{chat.preview || "New conversation"}</small></span>
-          <span className="chat-row-status"><time title={dateTimeLabel(chat.activity_at)}>{messageTimeLabel(chat.activity_at)}</time>
-            {chat.unread > 0 && <span className="unread-count" aria-label={`${chat.unread} unread messages`}>{chat.unread > 99 ? "99+" : chat.unread}</span>}
+          <span className="chat-row-text"><strong title={name}>{name}</strong><small>{chat.preview || t("New conversation", "新会话")}</small></span>
+          <span className="chat-row-status"><time dateTime={new Date(chat.activity_at).toISOString()} title={dateTimeLabel(chat.activity_at)}>{messageTimeLabel(chat.activity_at)}</time>
+            {chat.unread > 0 && <span className="unread-count">
+              <span aria-hidden="true">{chat.unread > 99 ? "99+" : chat.unread}</span>
+              <span className="sr-only">{t(`${chat.unread} unread messages`, `${chat.unread} 条未读消息`)}</span>
+            </span>}
           </span>
         </button>;
       })}
@@ -93,11 +99,21 @@ type ChatAssistants = {
 
 type ChatDraft = { draft: Draft; setDraft: (change: (draft: Draft) => Draft) => void };
 
-export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, back, share, openPrivate, groupCode, aiChat,
+function DrawerAction({ icon, children, onClick, className = "", next = true, busy }: {
+  icon: ReactNode; children: ReactNode; onClick: (button: HTMLButtonElement) => void; className?: string; next?: boolean; busy?: boolean;
+}) {
+  return <button type="button" className={`drawer-action ${className}`} aria-disabled={busy || undefined}
+    onClick={event => { if (!busy) onClick(event.currentTarget); }}>
+    {icon}<span className="drawer-label">{children}</span>
+    {next && <ChevronRight className="drawer-chevron" size={16} aria-hidden="true" />}
+  </button>;
+}
+
+export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, back, share, openPrivate, aiChat,
   hidden, hide, readReceipts, draft, setDraft, profileOpen, visibleOnNarrow, requested }: {
-  chat: Conversation; own: User; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
+  chat: Conversation; own: User; server: string; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
   refresh: () => Promise<void>; back: () => void; share: (source: ShareSource) => Promise<void>; openPrivate: () => void;
-  groupCode: () => void; aiChat: ChatAssistants; hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean;
+  aiChat: ChatAssistants; hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean;
   profileOpen: boolean; visibleOnNarrow: boolean;
   requested?: { page: ChatPage };
 } & ChatDraft) {
@@ -108,16 +124,27 @@ export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffs
   const [leave, setLeave] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [leaveError, setLeaveError] = useState("");
+  const [invite, setInvite] = useState<SharedCode>();
+  const [invitePending, setInvitePending] = useState(false);
+  const [inviteError, setInviteError] = useState("");
+  const wantInvite = useRef(false);
   const { remarks, open } = useContext(People);
   const name = chatName(chat, own.id, remarks);
   const count = new Intl.NumberFormat(navigator.language).format(chat.members.length);
-  const heading = chat.title ? name + t(" (" + count + ")", "（" + count + "）") : name;
+  const memberCount = t(` (${count})`, `（${count}）`);
+  const heading = chat.title ? name + memberCount : name;
+  const details = chat.title ? t("Group details", "群聊信息") : t("Conversation details", "聊天信息");
   const peer = chat.title ? undefined : chat.members.find(user => user.id !== own.id);
+  const groupMember = !!chat.title && chat.members.some(member => member.id === own.id);
   const chatView = useRef<HTMLElement>(null);
+  const detailsButton = useRef<HTMLButtonElement>(null);
+  const filesBack = useRef<HTMLButtonElement>(null);
+  const drawerReturn = useRef<HTMLButtonElement>(null);
+  const detailsVisible = drawer && !profileOpen && !search && !showFiles && !leave;
   useIosBack(showFiles && !profileOpen ? () => setShowFiles(false) : undefined, 5);
 
   useEffect(() => {
-    if (ios || requested || profileOpen || !visibleOnNarrow) return;
+    if (ios || requested || profileOpen || !visibleOnNarrow || chatView.current?.querySelector(".conversation-drawer[open]")) return;
     const field = chatView.current?.querySelector<HTMLTextAreaElement>(".composer textarea");
     if (field?.getClientRects().length) field.focus({ preventScroll: true });
   }, [requested, profileOpen, visibleOnNarrow]);
@@ -127,7 +154,57 @@ export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffs
     if (requested?.page === "search") setSearch("text");
   }, [requested]);
 
+  useLayoutEffect(() => {
+    if (detailsVisible) drawerReturn.current?.focus({ preventScroll: true });
+    else wantInvite.current = false;
+  }, [detailsVisible]);
+  useLayoutEffect(() => {
+    if (windows && showFiles) filesBack.current?.focus();
+  }, [showFiles]);
+
+  useEffect(() => {
+    if (!windows || !detailsVisible) return;
+    function dismissOutside(event: PointerEvent) {
+      if (document.querySelector("dialog:modal") || !(event.target instanceof Element)) return;
+      if (detailsButton.current?.contains(event.target) || event.target.closest(".conversation-drawer")) return;
+      drawerReturn.current = null;
+      setDrawer(false);
+    }
+    document.addEventListener("pointerdown", dismissOutside, true);
+    return () => document.removeEventListener("pointerdown", dismissOutside, true);
+  }, [detailsVisible]);
+
+  function closeDrawer() {
+    drawerReturn.current = null;
+    setDrawer(false);
+    if (windows) detailsButton.current?.focus({ preventScroll: true });
+  }
+
+  function fromDrawer(button: HTMLButtonElement, action: () => void) {
+    drawerReturn.current = button;
+    action();
+  }
+
+  async function showGroupInvite() {
+    wantInvite.current = true;
+    setInvitePending(true);
+    setInviteError("");
+    try {
+      const code = await api.groupInvite(chat.id);
+      if (wantInvite.current) setInvite({ kind: "group", name, value: code.code, expiresAt: code.expires_at });
+    } catch (error) {
+      if (wantInvite.current) setInviteError(errorMessage(error));
+    } finally {
+      setInvitePending(false);
+    }
+  }
+
   function keepDrawerFocus(event: KeyboardEvent<HTMLDialogElement>) {
+    if (windows && event.key === "Escape") {
+      event.preventDefault();
+      closeDrawer();
+      return;
+    }
     if (event.key !== "Tab") return;
     const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)");
     const first = buttons[0];
@@ -138,48 +215,74 @@ export function ChatView({ chat, own, revision, latestAiSeq, recalled, clockOffs
     }
   }
 
-  return <section className="chat-view" ref={chatView} aria-label={heading}>
+  return <section className="chat-view" ref={chatView} aria-label={heading} onKeyDown={event => {
+    if (windows && showFiles && event.key === "Escape" && !event.defaultPrevented && !document.querySelector("dialog:modal")) {
+      event.preventDefault();
+      setShowFiles(false);
+    }
+  }}>
     <header className="chat-header">
-      <button className="icon-button mobile-back" onClick={back} aria-label="Back to chats"><ArrowLeft size={20} /></button>
-      <div className="chat-heading"><h2>{peer ? <button className="person-link" onClick={() => open?.(peer)}>{name}</button> : heading}</h2></div>
-      {showFiles && <button className="button subtle small" onClick={() => setShowFiles(false)}><ArrowLeft size={15} /> Messages</button>}
+      <button className="icon-button mobile-back" onClick={() => { closeDrawer(); back(); }} aria-label="Back to chats"><ArrowLeft size={20} /></button>
+      <div className="chat-heading"><h2>{peer && open
+        ? <button className="person-link" type="button" title={name} onClick={() => open(peer)}>{name}</button>
+        : <><span className="chat-title" title={name}>{name}</span>{chat.title && <span className="chat-member-count">{memberCount}</span>}</>}</h2></div>
+      {showFiles && <button className="button subtle small" ref={filesBack} onClick={() => setShowFiles(false)}>
+        <ArrowLeft size={16} /> {t("Messages", "消息")}
+      </button>}
       <button className="icon-button" aria-label="Open private chat" title="Open private chat"
         onClick={openPrivate}><Ghost size={23} /></button>
-      <button className="icon-button" aria-label={chat.title ? "Group details" : "Conversation details"}
-        title={chat.title ? "Group details" : "Conversation details"} aria-haspopup="dialog" aria-expanded={drawer}
-        onClick={event => { event.currentTarget.focus(); setDrawer(true); }}><MoreHorizontal size={25} /></button>
+      <button className="icon-button" ref={detailsButton} aria-label={details}
+        title={details} aria-haspopup="dialog" aria-expanded={detailsVisible}
+        onClick={event => {
+          if (detailsVisible) closeDrawer();
+          else { event.currentTarget.focus(); setShowFiles(false); setDrawer(true); }
+        }}><MoreHorizontal size={25} /></button>
     </header>
-    {showFiles
-      ? <FilesView conversation={chat.id} people={chat.members} transfers={transfers} revision={revision} recalled={recalled} hidden={hidden} onChanged={changed} />
-      : <ChatMessages chat={chat} own={own} revision={revision} latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset} transfers={transfers}
-        changed={changed} refresh={refresh} share={share} aiChat={aiChat} openMedia={setMedia} {...{ hidden, hide, readReceipts, draft, setDraft }} />}
-    {drawer && !profileOpen && !search && !showFiles && !leave && <Dialog mobilePage
-      title={chat.title ? t("Group details", "群聊信息") : t("Conversation details", "聊天信息")} className="conversation-drawer"
-      close={() => setDrawer(false)} onKeyDown={keepDrawerFocus}>
-      {chat.title ? <div className="drawer-identity"><Avatar name={name} group large /><strong>{heading}</strong></div>
-        : peer && <button className="drawer-identity drawer-action" onClick={() => open?.(peer)}>
-          <PersonAvatar user={peer} large />
-          <span><strong>{name}</strong><small>View profile</small></span>
-          <ArrowRight size={17} />
-        </button>}
-      {chat.title && <section className="drawer-members">
-        <h3>Members <small>{chat.members.length}</small></h3>
-        <ul>{chat.members.map(member => <li key={member.id}>
-          <button className="drawer-action" onClick={() => open?.(member)}>
-            <PersonAvatar user={member} /><span>{displayName(member, remarks)}</span>
-          </button>
-        </li>)}</ul>
-        <button className="drawer-action" onClick={() => { setDrawer(false); groupCode(); }}><QrCode size={19} /> Group invite QR code</button>
-      </section>}
-      <div className="drawer-actions">
-        <button className="drawer-action" onClick={() => setSearch("text")}><Search size={22} /> Search chat</button>
-        <button className="drawer-action" onClick={() => setShowFiles(true)}><FolderOpen size={22} /> Shared files</button>
-        <button className="drawer-action" onClick={() => setSearch("media")}><Image size={22} /> Photos and videos</button>
-        {chat.title && <button className="drawer-action danger" onClick={() => {
-          setLeaveError(""); setLeave(true);
-        }}><LogOut size={19} /> Leave group</button>}
+    <div className="chat-content">
+      <div className="chat-messages" hidden={showFiles}>
+        <ChatMessages chat={chat} own={own} revision={revision} latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset} transfers={transfers}
+          visible={!showFiles && !profileOpen} changed={changed} refresh={refresh} share={share} aiChat={aiChat} openMedia={setMedia}
+          {...{ hidden, hide, readReceipts, draft, setDraft }} />
       </div>
-    </Dialog>}
+      {showFiles && <FilesView conversation={chat.id} people={chat.members} transfers={transfers} revision={revision} recalled={recalled} hidden={hidden} onChanged={changed} />}
+      {(windows || detailsVisible) && <Dialog mobilePage title={details} className="conversation-drawer"
+        modal={!windows} visible={detailsVisible} close={closeDrawer} onKeyDown={keepDrawerFocus}>
+        {chat.title ? <div className="drawer-identity"><Avatar name={name} group large /><strong>{name}</strong></div>
+          : peer && open && <DrawerAction className="drawer-identity" icon={<PersonAvatar user={peer} large />}
+            onClick={button => fromDrawer(button, () => open(peer))}>
+            <strong>{name}</strong><small>{t("View profile", "查看资料")}</small>
+          </DrawerAction>}
+        {chat.title && <section className="drawer-members">
+          <h3>{t("Members", "群成员")} <small>{count}</small></h3>
+          <ul>{chat.members.map(member => <li key={member.id}>
+            {open ? <DrawerAction icon={<PersonAvatar user={member} />}
+              onClick={button => fromDrawer(button, () => open(member))}>{displayName(member, remarks)}</DrawerAction>
+              : <><PersonAvatar user={member} /> {displayName(member, remarks)}</>}
+          </li>)}</ul>
+          {groupMember && <DrawerAction icon={<QrCode size={20} />} busy={invitePending} onClick={() => void showGroupInvite()}>
+            {invitePending ? t("Generating QR code…", "正在生成二维码…") : t("Group invite QR code", "群邀请二维码")}
+          </DrawerAction>}
+          {inviteError && <p className="inline-error" role="alert">{inviteError}</p>}
+        </section>}
+        <div className="drawer-actions">
+          <DrawerAction icon={<Search size={20} />} onClick={button => fromDrawer(button, () => setSearch("text"))}>
+            {t("Search chat", "查找聊天内容")}
+          </DrawerAction>
+          <DrawerAction icon={<FolderOpen size={20} />} onClick={button => fromDrawer(button, () => setShowFiles(true))}>
+            {t("Shared files", "共享文件")}
+          </DrawerAction>
+          <DrawerAction icon={<Image size={20} />} onClick={button => fromDrawer(button, () => setSearch("media"))}>
+            {t("Photos and videos", "图片与视频")}
+          </DrawerAction>
+        </div>
+        {groupMember && <div className="drawer-actions">
+          <DrawerAction className="danger" icon={<LogOut size={20} />} next={false} onClick={button => fromDrawer(button, () => {
+            setLeaveError(""); setLeave(true);
+          })}>{t("Leave group", "退出群聊")}</DrawerAction>
+        </div>}
+      </Dialog>}
+    </div>
+    {invite && <ShareQr code={invite} server={server} close={() => setInvite(undefined)} />}
     {leave && <Dialog title="Leave group" close={() => setLeave(false)} closeDisabled={leaving}>
       <p>You will stop receiving messages from {name}.</p>
       {leaveError && <p className="inline-error" role="alert">{leaveError}</p>}
@@ -243,11 +346,11 @@ function SearchResults({ conversation, search, revision, latestAiSeq, recalled, 
   </div>;
 }
 
-function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, share, aiChat,
+function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset, transfers, visible, changed, refresh, share, aiChat,
   hidden, hide, readReceipts, draft, setDraft, openMedia }: {
   chat: Conversation; own: User; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
   refresh: () => Promise<void>; share: (source: ShareSource) => Promise<void>; aiChat: ChatAssistants;
-  hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean;
+  hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean; visible: boolean;
   openMedia: (message: Message) => void;
 } & ChatDraft) {
   const read = useCallback((before?: number) => api.messages(chat.id, before), [chat.id]);
@@ -323,14 +426,15 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
   }, [chat.id, readThrough, sent, viewed, refresh]);
 
   useLayoutEffect(() => {
-    if (nearBottom.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
-  }, [lastSeq, pending.length, aiChat.replies.length]);
+    const view = viewport.current;
+    if (visible && nearBottom.current && view?.getClientRects().length) view.scrollTop = view.scrollHeight;
+  }, [visible, lastSeq, pending.length, aiChat.replies.length]);
 
   useEffect(() => {
     const view = viewport.current;
     if (!ios || !view) return;
     const resize = new ResizeObserver(() => {
-      if (nearBottom.current) view.scrollTop = view.scrollHeight;
+      if (nearBottom.current && view.getClientRects().length) view.scrollTop = view.scrollHeight;
     });
     resize.observe(view);
     return () => resize.disconnect();
@@ -358,7 +462,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
 
   function checkScroll() {
     const element = viewport.current;
-    if (!element) return;
+    if (!visible || !element?.getClientRects().length) return;
     nearBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
     setAway(!nearBottom.current);
   }
@@ -647,14 +751,29 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
 
   async function preparePastedImage(file: File) {
     setFailure("");
-    if (file.size > MAX_IMAGE_BYTES) {
-      setFailure("Pasted images can be up to 16 MiB.");
-      return;
-    }
     setCheckingImage(true);
     try {
+      if (file.size > MAX_IMAGE_BYTES) {
+        setFailure("Pasted images can be up to 16 MiB.");
+        return;
+      }
       const type = await api.checkPastedImage(await file.arrayBuffer());
       setDraft(previous => ({ ...previous, image: new File([file], file.name, { type }) }));
+    } catch (error) { setFailure(errorMessage(error)); }
+    finally { setCheckingImage(false); }
+  }
+
+  async function pasteFromClipboard() {
+    textarea.current?.focus();
+    setFailure("");
+    setCheckingImage(true);
+    try {
+      const bytes = await api.readClipboardImage();
+      if (!bytes.byteLength) {
+        setFailure(t("There’s no image on the clipboard.", "剪贴板里没有图片。"));
+        return;
+      }
+      setDraft(previous => ({ ...previous, image: new File([bytes], "clipboard.png", { type: "image/png" }) }));
     } catch (error) { setFailure(errorMessage(error)); }
     finally { setCheckingImage(false); }
   }
@@ -712,19 +831,22 @@ function Composer({ conversation, refresh, share, changed, aiChat, page, loading
             onClick={() => setDraft(previous => ({ ...previous, image: undefined }))}><X size={16} /></button>
         </div>}
         <div className="composer-bar">
-          <div className="composer-attachments">
+          <div className="composer-attachments" role="group" aria-label={t("Message tools", "消息工具")}>
             {assistant ? <span className="ai-composer-target"><ProviderLogo provider={assistant.provider} /> @{assistant.name}</span> : <>
               <button className="icon-button" type="button" aria-label="Attach a file" title="Attach a file"
                 onClick={() => void pick("file")} disabled={preparing}><Paperclip size={20} /></button>
               {!ios && <button className="icon-button" type="button" aria-label="Attach a folder" title="Attach a folder"
-                onClick={() => void pick("folder")} disabled={preparing}><FilePlus2 size={20} /></button>}
+                onClick={() => void pick("folder")} disabled={preparing}><FolderOpen size={20} /></button>}
+              {windows && <button className="icon-button" type="button"
+                aria-label={t("Paste image", "粘贴图片")} title={t("Paste image (Ctrl+V)", "粘贴图片（Ctrl+V）")}
+                onClick={() => void pasteFromClipboard()} disabled={sending || checkingImage}><Image size={20} /></button>}
             </>}
             <button className="icon-button ai-mention-button" type="button" aria-label="Mention an AI assistant"
               aria-controls={menu ? menuId : undefined} aria-expanded={menu} title="Mention an AI assistant" onClick={() => {
                 setMenu(!menu);
                 setMenuIndex(0);
                 textarea.current?.focus();
-              }}><AtSign size={19} /></button>
+              }}><AtSign size={20} /></button>
             {preparing && <span className="drop-hint" role="status">Preparing attachment…</span>}
             {checkingImage && <span className="drop-hint" role="status">Checking image…</span>}
           </div>
