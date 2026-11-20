@@ -73,6 +73,11 @@ pub fn run() {
             {
                 let window = builder
                     .window_classname(window_class)
+                    .transparent(true)
+                    .effects(tauri::utils::config::WindowEffectsConfig {
+                        effects: vec![tauri::utils::WindowEffect::Acrylic],
+                        ..Default::default()
+                    })
                     .visible(false)
                     .decorations(false)
                     .build()?;

@@ -6,6 +6,7 @@ import { api, errorMessage, fileExpired } from "./api";
 import type { Attachment, FileFilter, Message, Transfer, User } from "./api";
 import { mediaKind, readAttachmentPage } from "./attachment-media";
 import { Blank, Dialog, People, PersonAvatar, bytes, dateTimeLabel, displayName, usePage } from "./common";
+import { windows } from "./window-chrome";
 import { ios } from "./ios";
 import { actions, t } from "./locale";
 
@@ -203,8 +204,12 @@ export function FilesView({ conversation, people, transfers, revision, recalled,
     setTab(next);
     document.getElementById(`${tabsId}-${next}-tab`)?.focus();
   }
+  const desktopLibrary = windows && !conversation;
+  const searchField = <FloatingField fieldClass="search file-search" label="Search file names" prefixIcon={<Search size={16} />}
+             type="search" value={name} onChange={event => setName(event.target.value)} />;
   return <div className={"files-view" + (conversation ? " chat-files" : "")}>
-    {!conversation && <header className="workspace-heading"><h1>Files</h1></header>}
+    {desktopLibrary && tab === "shared" && <div className="chat-list-head">{searchField}</div>}
+    {!conversation && <header className={desktopLibrary ? "sr-only" : "workspace-heading"}><h1>Files</h1></header>}
     {!conversation && <div className="file-tabs" role="tablist" aria-label="Files view">
       {(Object.keys(fileTabs) as FileTab[]).map(id => <button key={id} type="button" role="tab"
         id={`${tabsId}-${id}-tab`} aria-controls={`${tabsId}-${id}-panel`} aria-selected={tab === id}
@@ -216,8 +221,7 @@ export function FilesView({ conversation, people, transfers, revision, recalled,
       aria-labelledby={conversation ? undefined : `${tabsId}-shared-tab`} id={`${tabsId}-shared-panel`}>
     {tab === "shared" && <>
       <div className="file-filters">
-        <FloatingField fieldClass="search file-search" label="Search file names" prefixIcon={<Search size={16} />}
-             type="search" value={name} onChange={event => setName(event.target.value)} />
+        {!desktopLibrary && searchField}
         {!conversation && <select aria-label="Shared by" value={person} onChange={event => setPerson(event.target.value)}>
           <option value="">All senders</option>
           {people.map(user => <option key={user.id} value={user.id}>{displayName(user, remarks)}</option>)}

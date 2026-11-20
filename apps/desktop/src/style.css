@@ -1013,3 +1013,83 @@ button.profile-row:hover { background: var(--hover); }
   .shared-list .shared-file:not(:has(.transfer-progress, .inline-error, .file-preview-status)) { grid-template-columns: minmax(0, 1fr); }
   .workspace-heading h1 { font-size: 27px; }
 }
+
+/* The native acrylic is visible only through the shared navigation surface. */
+html:has(body.windows .shell) { background: transparent; }
+.windows {
+  --shell-inset: 4px;
+  --search-inline: 12px;
+  --search-block: 8px;
+  --edge-fade: 8px;
+  --divider: linear-gradient(to right, transparent, var(--line) var(--edge-fade),
+    var(--line) calc(100% - var(--edge-fade)), transparent);
+}
+.windows .shell { background: color-mix(in srgb, var(--bg) 75%, transparent); }
+.windows .shell .rail, .windows .windows-topbar { background: transparent; border: 0; }
+.windows .workspace-content {
+  margin: 0 var(--shell-inset) var(--shell-inset) 0;
+  border-radius: 8px; overflow: clip; background: var(--panel);
+}
+.windows .chat-list-head, .windows .contacts-screen .chat-list-head {
+  padding: var(--search-block) var(--search-inline);
+}
+.windows .workspace-content > .files-view { padding: 0 var(--search-inline) 16px; }
+.windows .files-view > .chat-list-head { padding-inline: 0; }
+.windows .chat-list-head .floating-field { height: 36px; }
+.windows .chat-list-head .floating-field > input { min-height: 0; height: 100%; }
+.windows .floating-field { border-width: 1px; }
+.windows .floating-field:has(> :is(input, textarea):focus),
+.windows .profile-popup .floating-field:has(> :is(input, textarea):focus) {
+  border-color: var(--accent); box-shadow: var(--shadow);
+}
+.windows :is(select, input:not([type="range"], [type="radio"], [type="checkbox"])):not(.floating-field > *):focus-visible {
+  outline: none; border-color: var(--accent); box-shadow: var(--shadow);
+}
+@media (forced-colors: active) {
+  .windows :is(select, input):not(.floating-field > *):focus-visible { outline: 2px solid Highlight; }
+}
+.windows ::selection { background: #ccc; color: #222; }
+.windows :is(.contact-row, .chat-header, .file-tabs, .tabs, .settings-screen > header, .profile-row + .profile-row,
+  .settings-row, .shared-list > .shared-file + .shared-file, .transfer-list > .shared-file + .shared-file,
+  .profile-header, .profile-rows, .ai-settings-provider, .ai-snapshot details, .private-rows, .private-people,
+  .composer, .drawer-actions, .drawer-members) {
+  border-image-source: var(--divider); border-image-slice: 1; border-image-width: 1;
+}
+.windows :is(.chat-list, .contacts-layout > .contacts-screen, .conversation-drawer) {
+  border-image: linear-gradient(to bottom, transparent, var(--line) var(--edge-fade),
+    var(--line) calc(100% - var(--edge-fade)), transparent) 1;
+}
+.windows .conversation-drawer { border-inline-start-width: 1px; }
+.windows .chat-row { border-bottom: 0; }
+.windows .chat-row::after {
+  content: ""; position: absolute; height: 1px; bottom: 0; left: 32px; right: var(--search-inline);
+  background: var(--divider); pointer-events: none;
+}
+.windows .contact-group-letter::after, .windows .conversation-drawer .drawer-actions .drawer-action + .drawer-action::before {
+  border: 0; height: 1px; background: var(--divider);
+}
+.windows .conversation-drawer :is(.drawer-actions, .drawer-members),
+.windows .profile-popup .profile-row + .profile-row { border-top-width: 1px; }
+@media (hover: hover) and (forced-colors: none) {
+  .windows * { scrollbar-color: transparent transparent; }
+  .windows :is(:hover, :focus-visible, :has(:focus-visible)) { scrollbar-color: var(--scroll-thumb) transparent; }
+}
+
+/* Inactive scroll timelines leave both edges opaque when the content fits. */
+@property --clip-top { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --clip-bottom { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@keyframes reveal-clipped-top { to { --clip-top: var(--edge-fade); } }
+@keyframes reveal-clipped-bottom { from { --clip-bottom: var(--edge-fade); } }
+@keyframes mask-overflow {
+  from, to { mask-image: linear-gradient(to bottom, transparent, black var(--clip-top),
+    black calc(100% - var(--clip-bottom)), transparent); }
+}
+@supports (animation-timeline: scroll(self)) {
+  .windows :is(.chat-rows, .timeline, .composer-transfers, textarea, .chat-search-results, .private-status,
+    .invitees, .files-view, .settings-page, .contacts-list, .dialog-contacts, .drawer-members ul,
+    .settings-nav, .settings-detail, .profile-content, .ai-snapshot, .ai-message-options, .media-viewer-stage, dialog) {
+    animation: reveal-clipped-top linear both, reveal-clipped-bottom linear both, mask-overflow linear both;
+    animation-timeline: scroll(self block), scroll(self block), scroll(self block);
+    animation-range: 0px 1px, calc(100% - 1px) 100%, normal;
+  }
+}
