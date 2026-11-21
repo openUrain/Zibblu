@@ -1,5 +1,6 @@
 import { Minus, Square, Copy, X } from "lucide-react";
 import { useEffect, useId, useState } from "react";
+import type { ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { errorMessage } from "./api";
 import type { CloseAction } from "./api";
@@ -7,6 +8,17 @@ import { Dialog } from "./common";
 
 export const windows = navigator.userAgent.includes("Windows");
 const appWindow = getCurrentWindow();
+
+export function WindowDrag({ className = "", children }: { className?: string; children?: ReactNode }) {
+  return <div className={`window-drag ${className}`} data-tauri-drag-region={windows ? "" : undefined}
+    onPointerDown={event => {
+      if (!windows || event.pointerType !== "mouse" || event.button !== 0 || event.target !== event.currentTarget) return;
+      const field = document.activeElement;
+      // Tauri cancels the default mousedown behavior when starting a native window drag.
+      if ((field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement)
+          && field.parentElement?.matches(".floating-field")) field.blur();
+    }}>{children}</div>;
+}
 
 export function WindowControls() {
   const [maximized, setMaximized] = useState(false);
