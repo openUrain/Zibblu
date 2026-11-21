@@ -12,7 +12,7 @@ import { api, errorMessage, fileExpired } from "./api";
 import type { Conversation, Draft, Message, MessageReceipt, Page, PrivateSummary, ShareSource, Transfer, User } from "./api";
 import { MAX_IMAGE_BYTES } from "./attachment-media";
 import { Avatar, Blank, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName, messageTimeLabel, startsTimeGroup, usePage } from "./common";
-import { copyText, useMenu, useMenuAnchor, useRowMenu } from "./context-menu";
+import { copyText, useEditMenu, useMenu, useMenuAnchor, useRowMenu } from "./context-menu";
 import { FilesView, TransferList, useAttachmentSave } from "./files";
 import { ChatAttachment, MediaHistory, MediaViewer } from "./chat-media";
 import { privatePhaseLabel, privateTitle } from "./private-chat";
@@ -643,12 +643,19 @@ function QuotedMessage({ conversation, seq, known, hidden }: { conversation: str
     : <span>Message unavailable</span>}</div>;
 }
 
+function syncComposerScrollEdges(editor: HTMLTextAreaElement) {
+  const { scrollTop, scrollHeight, clientHeight } = editor;
+  editor.toggleAttribute("data-clipped-top", scrollTop > 0);
+  editor.toggleAttribute("data-clipped-bottom", scrollHeight - clientHeight - scrollTop > 1);
+}
+
 function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, page, loading, older, draft: saved, setDraft, quoteUnavailable }: {
   conversation: string; refresh: () => Promise<void>; share: (source: ShareSource) => Promise<void>; pasteFiles: () => Promise<boolean>; changed: () => void;
   aiChat: ChatAssistants; page?: Page; loading: boolean; older: () => Promise<void>; quoteUnavailable: boolean;
 } & ChatDraft) {
   const { remarks } = useContext(People);
   const openTools = useMenu();
+  const openEditMenu = useEditMenu();
   const toolsAnchor = useMenuAnchor();
   const draft = saved.text;
   const quote = quoteUnavailable ? undefined : saved.quote;
@@ -669,6 +676,18 @@ function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, p
   const ambiguous = !quote && matches.length > 1;
   const suggestions = aiChat.assistants.filter(entry => entry.name.toLowerCase().startsWith(prefix));
   const activeOption = suggestions[menuIndex];
+
+  useLayoutEffect(() => {
+    if (windows && textarea.current) syncComposerScrollEdges(textarea.current);
+  }, [draft]);
+
+  useEffect(() => {
+    const editor = textarea.current;
+    if (!windows || !editor) return;
+    const resize = new ResizeObserver(() => syncComposerScrollEdges(editor));
+    resize.observe(editor);
+    return () => resize.disconnect();
+  }, []);
 
   useLayoutEffect(() => {
     const id = crypto.randomUUID();
@@ -777,14 +796,14 @@ function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, p
     }
   }
 
-  async function pasteFromClipboard() {
-    textarea.current?.focus();
+  async function pasteClipboardAttachment() {
+    if (sending || checkingImage || await checkClipboardFiles()) return;
     setFailure("");
     setCheckingImage(true);
     try {
       const bytes = await api.readClipboardImage();
       if (!bytes.byteLength) {
-        setFailure(t("There’s no image on the clipboard.", "剪贴板里没有图片。"));
+        setFailure(t("There’s nothing to paste from the clipboard.", "剪贴板里没有可粘贴的内容。"));
         return;
       }
       setDraft(previous => ({ ...previous, image: new File([bytes], "clipboard.png", { type: "image/png" }) }));
@@ -801,55 +820,72 @@ function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, p
       {ambiguous && <p className="inline-error" role="alert">Rename one of the matching assistants in Settings.</p>}
       {menu && <AssistantMenu id={menuId} assistants={suggestions} active={menuIndex}
         choose={choose} settings={aiChat.settings} />}
-      <div className={"composer-box" + (assistant ? " ai-composer" : "")}>
-        <FloatingField multiline ref={textarea} id={menuId + "-message"} label={assistant ? t("AI prompt", "AI 提示词") : t("Message", "消息")}
-          aria-autocomplete="list" aria-controls={menu ? menuId : undefined}
-          aria-activedescendant={menu && activeOption ? menuId + "-" + menuIndex : undefined}
-          rows={2}
-          value={draft} onChange={event => {
-            const value = event.target.value;
-            setDraft(previous => ({ ...previous, text: value, nonce: undefined }));
-            const input = event.nativeEvent as InputEvent;
-            const typedAt = input.inputType === "insertText" && input.data === "@";
-            setMenu((menu || typedAt) && /^\s*@[\p{L}\p{N}_-]*$/u.test(value));
-            setMenuIndex(0);
-          }}
-          onPaste={event => {
-            const file = Array.from(event.clipboardData.items).find(item => item.kind === "file" && item.type.startsWith("image/"))?.getAsFile();
-            if (!file) return;
-            event.preventDefault();
-            if (sending || checkingImage) return;
-            const files = clipboardFileCheck.current;
-            void (async () => {
-              if (!windows || !(await (files ?? checkClipboardFiles()))) await preparePastedImage(file);
-            })();
-          }}
-          onKeyDown={event => {
-            if (event.nativeEvent.isComposing) return;
-            if (windows && event.nativeEvent.isTrusted && event.ctrlKey && !event.altKey && !event.shiftKey
-                && event.key.toLowerCase() === "v" && !event.repeat && !sending && !checkingImage) {
-              // Explorer's native file list may not reach the WebView's paste event.
-              const files = checkClipboardFiles();
-              clipboardFileCheck.current = files;
-              void files.then(() => {
-                if (clipboardFileCheck.current === files) clipboardFileCheck.current = undefined;
-              });
-            }
-            if (menu && event.key === "Escape") {
+      <div className="composer-box">
+        <div className={"composer-input" + (assistant ? " ai-composer" : "")}>
+          {!assistant && <button className="icon-button composer-plus" type="button" title={t("Message tools", "消息工具")}
+            aria-label={t("Message tools", "消息工具")} aria-haspopup="menu" aria-expanded={toolsAnchor?.classList.contains("composer-plus") ?? false}
+            onClick={event => openTools(event.currentTarget, [
+              { label: t("Attach a file", "附件"), icon: <Paperclip size={18} />, disabled: preparing, action: () => void pick("file") },
+              ...(!ios ? [{ label: t("Attach a folder", "文件夹"), icon: <FolderOpen size={18} />, disabled: preparing, action: () => void pick("folder") }] : []),
+            ])}><Plus size={20} /></button>}
+          <FloatingField multiline ref={textarea} id={menuId + "-message"} label={assistant ? t("AI prompt", "AI 提示词") : t("Message", "消息")}
+            className="composer-text"
+            aria-autocomplete="list" aria-controls={menu ? menuId : undefined}
+            aria-activedescendant={menu && activeOption ? menuId + "-" + menuIndex : undefined}
+            rows={windows ? 1 : 2}
+            onScroll={windows ? event => syncComposerScrollEdges(event.currentTarget) : undefined}
+            onContextMenu={windows ? event => openEditMenu(event, pasteClipboardAttachment) : undefined}
+            value={draft} onChange={event => {
+              const value = event.target.value;
+              setDraft(previous => ({ ...previous, text: value, nonce: undefined }));
+              const input = event.nativeEvent as InputEvent;
+              const typedAt = input.inputType === "insertText" && input.data === "@";
+              setMenu((menu || typedAt) && /^\s*@[\p{L}\p{N}_-]*$/u.test(value));
+              setMenuIndex(0);
+            }}
+            onPaste={event => {
+              const file = Array.from(event.clipboardData.items).find(item => item.kind === "file" && item.type.startsWith("image/"))?.getAsFile();
+              if (!file) return;
               event.preventDefault();
-              setMenu(false);
-            }
-            if (menu && suggestions.length > 0 && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-              event.preventDefault();
-              const step = event.key === "ArrowDown" ? 1 : -1;
-              setMenuIndex(index => (index + step + suggestions.length) % suggestions.length);
-            }
-            if (!ios && event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              if (menu && activeOption) choose(activeOption);
-              else event.currentTarget.form?.requestSubmit();
-            }
-          }} />
+              if (sending || checkingImage) return;
+              const files = clipboardFileCheck.current;
+              void (async () => {
+                if (!windows || !(await (files ?? checkClipboardFiles()))) await preparePastedImage(file);
+              })();
+            }}
+            onKeyDown={event => {
+              if (event.nativeEvent.isComposing) return;
+              if (windows && event.nativeEvent.isTrusted && event.ctrlKey && !event.altKey && !event.shiftKey
+                  && event.key.toLowerCase() === "v" && !event.repeat && !sending && !checkingImage) {
+                // Explorer's native file list may not reach the WebView's paste event.
+                const files = checkClipboardFiles();
+                clipboardFileCheck.current = files;
+                void files.then(() => {
+                  if (clipboardFileCheck.current === files) clipboardFileCheck.current = undefined;
+                });
+              }
+              if (menu && event.key === "Escape") {
+                event.preventDefault();
+                setMenu(false);
+              }
+              if (menu && suggestions.length > 0 && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+                event.preventDefault();
+                const step = event.key === "ArrowDown" ? 1 : -1;
+                setMenuIndex(index => (index + step + suggestions.length) % suggestions.length);
+              }
+              if (!ios && event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                if (menu && activeOption) choose(activeOption);
+                else event.currentTarget.form?.requestSubmit();
+              }
+            }} />
+          <button className="button primary send-button" type="submit"
+            disabled={(!draft.trim() && !pastedImage) || ambiguous || quoteUnavailable || oversized || sending || checkingImage || (!!assistant && (!view || !prompt))}
+            aria-label={assistant ? "Choose AI context" : sending ? "Sending message" : "Send message"}>
+            {assistant ? <>Choose context <ArrowRight size={16} /></>
+              : <span>{sending ? t("Sending…", "发送中…") : t("Send", "发送")}</span>}
+          </button>
+        </div>
         {saved.quote && <div className="message-quote composer-quote"><Reply size={15} />
           {quote ? <span><strong>{displayName(quote.sender, remarks)}</strong> {quote.text ?? quote.attachment?.name}</span> : <span>Message unavailable</span>}
           <button className="icon-button" type="button" aria-label="Remove quote" disabled={sending}
@@ -860,21 +896,8 @@ function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, p
           <button className="icon-button" type="button" disabled={sending || checkingImage} aria-label="Remove pasted image"
             onClick={() => setDraft(previous => ({ ...previous, image: undefined }))}><X size={16} /></button>
         </div>}
-        {!assistant && <button className="icon-button composer-plus" type="button" title={t("Message tools", "消息工具")}
-          aria-label={t("Message tools", "消息工具")} aria-haspopup="menu" aria-expanded={toolsAnchor?.classList.contains("composer-plus") ?? false}
-          onClick={event => openTools(event.currentTarget, [
-            { label: t("Attach a file", "附件"), icon: <Paperclip size={18} />, disabled: preparing, action: () => void pick("file") },
-            ...(!ios ? [{ label: t("Attach a folder", "文件夹"), icon: <FolderOpen size={18} />, disabled: preparing, action: () => void pick("folder") }] : []),
-            ...(windows ? [{ label: t("Paste image", "粘贴图片"), icon: <Image size={18} />, disabled: sending || checkingImage, action: () => void pasteFromClipboard() }] : []),
-          ])}><Plus size={20} /></button>}
         {preparing && <span className="drop-hint" role="status">Preparing attachment…</span>}
         {checkingImage && <span className="drop-hint" role="status">Checking image…</span>}
-          <button className="button primary send-button" type="submit"
-            disabled={(!draft.trim() && !pastedImage) || ambiguous || quoteUnavailable || oversized || sending || checkingImage || (!!assistant && (!view || !prompt))}
-            aria-label={assistant ? "Choose AI context" : sending ? "Sending message" : "Send message"}>
-            {assistant ? <>Choose context <ArrowRight size={16} /></>
-              : <span>{sending ? t("Sending…", "发送中…") : t("Send", "发送")}</span>}
-          </button>
       </div>
     </form>
     {view && request && <AiRequest view={view} draft={request.id} assistant={request.assistant} prompt={request.prompt}

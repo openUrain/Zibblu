@@ -15,8 +15,10 @@ export function copyText(text: string) {
 export type MenuItem = { label: string; action: () => void; disabled?: boolean; icon?: ReactNode };
 type Menu = { x: number; y: number; anchor: HTMLElement; items: MenuItem[]; restoreFocus: HTMLElement | null };
 const OpenMenu = createContext<(anchor: HTMLElement, items: MenuItem[], point?: { x: number; y: number }) => void>(() => {});
+const OpenEditMenu = createContext<(event: MouseEvent<HTMLElement>, pasteAttachment: () => Promise<void>) => void>(() => {});
 const MenuAnchor = createContext<HTMLElement | undefined>(undefined);
 export const useMenu = () => useContext(OpenMenu);
+export const useEditMenu = () => useContext(OpenEditMenu);
 export const useMenuAnchor = () => useContext(MenuAnchor);
 
 export function useRowMenu() {
@@ -117,7 +119,7 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     };
   }, [menu]);
 
-  function context(event: MouseEvent<HTMLDivElement>) {
+  function context(event: MouseEvent<HTMLElement>, pasteAttachment?: () => Promise<void>) {
     if (event.defaultPrevented || !(event.target instanceof Element)) return;
     const target = event.target instanceof HTMLElement ? event.target : event.target.parentElement ?? event.currentTarget;
     const privateChat = !!target.closest(".private-chat");
@@ -144,6 +146,7 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
         void api.pasteText().then(value => {
           if (!field.isConnected || document.activeElement !== field) return;
           if (value === null) {
+            if (pasteAttachment) return pasteAttachment();
             setFailure(t("Use Ctrl+V to paste an image.", "按 Ctrl+V 粘贴图片。"));
             return;
           }
@@ -158,7 +161,7 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
       event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : undefined);
   }
 
-  return <OpenMenu.Provider value={open}><MenuAnchor.Provider value={menu?.anchor}><div onContextMenu={context}>
+  return <OpenMenu.Provider value={open}><OpenEditMenu.Provider value={context}><MenuAnchor.Provider value={menu?.anchor}><div onContextMenu={context}>
     {children}
     {failure && createPortal(<div className="clipboard-error inline-error" role="alert">
       {failure}<button type="button" className="text-button" onClick={() => setFailure("")}>{t("Dismiss", "关闭")}</button>
@@ -183,5 +186,5 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
       {menu.items.map(item => <button type="button" role="menuitem" key={item.label} disabled={item.disabled}
         onClick={() => { close(true); item.action(); }}>{item.icon}{item.label}</button>)}
     </div>, menu.anchor.closest("dialog, .private-chat") ?? document.body)}
-  </div></MenuAnchor.Provider></OpenMenu.Provider>;
+  </div></MenuAnchor.Provider></OpenEditMenu.Provider></OpenMenu.Provider>;
 }
