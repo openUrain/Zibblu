@@ -65,13 +65,18 @@ pub(crate) async fn read_files(window: &WebviewWindow) -> Result<Vec<std::path::
 }
 
 #[cfg(windows)]
+pub(crate) fn write_image(window: &WebviewWindow, png: &[u8], dib: &[u8]) -> anyhow::Result<()> {
+    windows::write_image(window.hwnd()?.0 as _, png, dib)
+}
+
+#[cfg(windows)]
 mod windows {
     use anyhow::{Context, Result, ensure};
     use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, ptr::null_mut, thread, time::Duration};
     use windows_sys::Win32::{
         Foundation::{GlobalFree, HWND},
         System::{
-            DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, SetClipboardData},
+            DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData},
             Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
             Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT},
         },
@@ -189,6 +194,33 @@ mod windows {
                 GlobalUnlock(data);
                 if EmptyClipboard() != 0 && !SetClipboardData(FORMAT, data).is_null() {
                     // Windows owns the memory after SetClipboardData succeeds.
+                    return Ok(());
+                }
+            }
+        }
+        unsafe { GlobalFree(data) };
+        anyhow::bail!("Could not write to the clipboard. Try again.")
+    }
+
+    pub(super) fn write_image(owner: HWND, png: &[u8], dib: &[u8]) -> Result<()> {
+        let _clipboard = Clipboard::open(owner)?;
+        let png_format = unsafe { RegisterClipboardFormatW(windows_sys::w!("PNG")) };
+        ensure!(png_format != 0 && unsafe { EmptyClipboard() } != 0, "Could not prepare the clipboard");
+        put_bytes(png_format, png)?;
+        // PNG is already on the clipboard when a legacy bitmap format is unavailable.
+        let _ = put_bytes(u32::from(CF_DIB), dib);
+        Ok(())
+    }
+
+    fn put_bytes(format: u32, bytes: &[u8]) -> Result<()> {
+        let data = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len()) };
+        ensure!(!data.is_null(), "Could not prepare clipboard image");
+        let ptr = unsafe { GlobalLock(data) }.cast::<u8>();
+        if !ptr.is_null() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+                GlobalUnlock(data);
+                if !SetClipboardData(format, data).is_null() {
                     return Ok(());
                 }
             }

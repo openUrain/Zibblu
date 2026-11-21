@@ -16,6 +16,7 @@ function MediaTile({ file, open }: { file: Attachment; open: () => void }) {
   const kind = mediaKind(file);
   const [state, setState] = useState<PreviewState>(canPreview(file) ? "loading" : "failed");
   const [visible, setVisible] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const element = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const target = element.current;
@@ -31,10 +32,16 @@ function MediaTile({ file, open }: { file: Attachment; open: () => void }) {
   }, [file]);
 
   return <button ref={element} type="button" className="media-tile" data-ready={state === "ready" ? "" : undefined}
-    onClick={open}
+    onClick={() => {
+      if (state === "failed" && canPreview(file)) {
+        setState("loading");
+        setAttempt(value => value + 1);
+      }
+      open();
+    }}
     aria-label={`Open ${kind === "video" ? "video" : "image"} ${file.name}`}>
     {visible && state !== "failed" && (kind === "image"
-      ? <img src={api.mediaUrl(file.id, "thumbnail")} alt="" onLoad={() => setState("ready")} onError={() => setState("failed")} />
+      ? <img src={api.mediaUrl(file.id, "thumbnail") + (attempt ? "&retry=" + attempt : "")} alt="" onLoad={() => setState("ready")} onError={() => setState("failed")} />
       : <video src={api.mediaUrl(file.id)} muted playsInline preload="metadata"
         onLoadedMetadata={() => setState("ready")} onError={() => setState("failed")} aria-hidden="true" />)}
     {state === "failed" ? <span className="media-tile-fallback">
@@ -53,7 +60,7 @@ export function ChatAttachment({ message, transfer, onChanged, open, expired }: 
   const file = message.attachment!;
   if (expired || !mediaKind(file) || !canPreview(file)) {
     const previewStatus = mediaKind(file) ? "Download to open" : undefined;
-    return <SharedFile inChat {...{ message, transfer, onChanged, previewStatus, expired }} />;
+    return <SharedFile {...{ message, transfer, onChanged, previewStatus, expired }} />;
   }
   return <div className="chat-media">
     <MediaTile key={file.id} file={file} open={open} />

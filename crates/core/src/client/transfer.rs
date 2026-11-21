@@ -66,6 +66,8 @@ pub struct Transfer {
     pub error: Option<String>,
     #[serde(default)]
     pub sharer: Option<User>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -97,6 +99,7 @@ impl Job {
                 received: 0,
                 error: None,
                 sharer: None,
+                created_at: None,
             },
             destination: None,
             publishing: false,
@@ -110,6 +113,40 @@ impl Job {
 }
 
 impl Client {
+    pub(super) async fn restore_upload_times(&self) -> Result<()> {
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT payload FROM transfers WHERE direction = 'upload'
+             AND json_extract(payload, '$.status') <> 'complete'
+             AND json_extract(payload, '$.created_at') IS NULL",
+        ).fetch_all(&self.db).await?;
+        for row in rows {
+            let mut job: Job = serde_json::from_str(&row)?;
+            let time = fs::metadata(self.spool(job.key())).await.ok()
+                .and_then(|metadata| metadata.created().or_else(|_| metadata.modified()).ok())
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
+            if let Some(time) = time {
+                job.transfer.created_at = Some(time.as_millis() as i64);
+                self.store_job(&job).await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn saved_destination(&self, id: Uuid) -> Result<Option<PathBuf>> {
+        self.ensure_open()?;
+        let file = self.attachment(id).await?.attachment.context("This attachment is unavailable")?;
+        let job = self.job((id, Direction::Download)).await?
+            .filter(|job| job.transfer.status == TransferStatus::Complete && job.transfer.attachment == file)
+            .context("Save this attachment before opening it")?;
+        let path = job.destination.context("The save location is unavailable")?;
+        let verified = tokio::task::spawn_blocking(move || verify_file(&path, &file).ok().map(|()| (path, file)))
+            .await?;
+        self.ensure_open()?;
+        let Some((path, file)) = verified else { return Ok(None) };
+        ensure!(self.attachment(id).await?.attachment == Some(file), "This attachment is unavailable");
+        Ok(Some(path))
+    }
+
     pub async fn transfers(&self) -> Result<Vec<Transfer>> {
         let rows: Vec<(String, Option<String>)> = sqlx::query_as(
             "SELECT t.payload, json_extract(i.payload, '$.sender') FROM transfers t
@@ -190,11 +227,13 @@ impl Client {
     ) -> Result<Transfer> {
         let mut job = Job::new(attachment, conversation, Direction::Upload);
         job.transfer.sharer = Some(self.user.clone());
+        job.transfer.created_at = Some(self.server_now());
         job.transfer.status = TransferStatus::Queued;
         if let Err(error) = self.store_job(&job).await {
             let _ = fs::remove_file(self.spool(job.key())).await;
             return Err(error);
         }
+        self.history_changed();
         let mut workers = self.workers.lock().await;
         self.launch(job, &mut workers).await
     }
@@ -310,6 +349,9 @@ impl Client {
             .bind(direction.as_str())
             .execute(&self.db)
             .await?;
+        if direction == Direction::Upload {
+            self.history_changed();
+        }
         Ok(())
     }
 
@@ -876,4 +918,65 @@ fn publish_verified(
     temp.persist_noclobber(destination)
         .context("Could not publish the download. Choose an unused filename.")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{AttachmentKind, DeviceSession, FileFilter};
+    use super::super::Api;
+
+    #[tokio::test]
+    async fn shared_files_keep_the_upload_position_and_cursor_after_publication() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let session = || DeviceSession {
+            user: User { id: Uuid::nil(), handle: "file_fixture".into() },
+            device_id: Uuid::nil(),
+            cursor: Uuid::nil(),
+        };
+        let open = || Client::open(root.path(), Api::new("http://127.0.0.1:7841").unwrap(), session(), false);
+        let client = open().await?;
+        let conversation = Uuid::new_v4();
+        let attachment = |name: &str| Attachment {
+            id: Uuid::new_v4(), kind: AttachmentKind::File, name: name.into(), size: 1, sha256: "0".repeat(64),
+        };
+        let message = |seq, file: Attachment, created_at| Message {
+            seq, conversation_id: conversation, sender: session().user, created_at, text: None,
+            attachment: Some(file), ai_provider: None, recalled: false, reply_to: None, nonce: None,
+            expires_at: None, expired: None, pending: None, local_file: false,
+        };
+        let pending = attachment("pending.txt");
+        let mut upload = Job::new(pending.clone(), conversation, Direction::Upload);
+        upload.transfer.created_at = Some(200);
+        upload.transfer.status = TransferStatus::Failed;
+        client.store_job(&upload).await?;
+        let mut tx = client.db.begin().await?;
+        persist_message(&mut tx, message(10, attachment("old.txt"), 100)).await?;
+        persist_message(&mut tx, message(11, attachment("new.txt"), 300)).await?;
+        tx.commit().await?;
+        drop(client);
+
+        let client = open().await?;
+        let filter = || FileFilter { conversation_id: Some(conversation), include_transfer_rows: true, ..Default::default() };
+        let before = client.files(filter(), None).await?.items;
+        assert_eq!(before.iter().map(|message| message.created_at).collect::<Vec<_>>(), [300, 200, 100]);
+        assert_eq!(before[1].sender.handle, "file_fixture");
+        let pending_cursor = before[1].seq;
+        assert!(pending_cursor < 0);
+        assert_eq!(client.transfers().await?[0].status, TransferStatus::Failed);
+        assert_eq!(client.files(FileFilter::default(), None).await?.items.len(), 2);
+
+        upload.transfer.status = TransferStatus::Complete;
+        let mut tx = client.db.begin().await?;
+        persist_message(&mut tx, message(12, pending.clone(), 400)).await?;
+        store_job(&mut tx, &upload).await?;
+        tx.commit().await?;
+        let after = client.files(filter(), None).await?.items;
+        assert_eq!(after.iter().map(|message| message.seq).collect::<Vec<_>>(), [11, 12, 10]);
+        assert_eq!(after[1].attachment.as_ref(), Some(&pending));
+        assert_eq!(after[1].created_at, 400);
+        assert_eq!(client.files(filter(), Some(pending_cursor)).await?.items[0].seq, 10);
+        assert_eq!(client.files(FileFilter { oldest_first: true, ..filter() }, Some(pending_cursor)).await?.items[0].seq, 11);
+        Ok(())
+    }
 }

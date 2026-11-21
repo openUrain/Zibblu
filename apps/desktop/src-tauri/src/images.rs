@@ -13,6 +13,7 @@ use zibblu_core::{MAX_PASTED_IMAGE_BYTES, MAX_PROFILE_IMAGE_BYTES};
 
 const MAX_EDGE: u32 = 8192;
 const MAX_PIXELS: u64 = 16_000_000;
+const MAX_STATIC_PNG_PREVIEW_PIXELS: u64 = 4096 * 4096;
 const MAX_ANIMATION_PIXELS: u64 = 64_000_000;
 const MAX_FRAMES: u64 = 240;
 const MAX_DECODER_BYTES: u64 = 128 * 1024 * 1024;
@@ -30,17 +31,25 @@ fn limits() -> Limits {
 }
 
 fn check_dimensions(width: u32, height: u32) -> Result<u64> {
+    check_pixel_limit(width, height, MAX_PIXELS)
+}
+
+fn check_pixel_limit(width: u32, height: u32, max_pixels: u64) -> Result<u64> {
     let pixels = u64::from(width) * u64::from(height);
     ensure!(
-        width > 0 && height > 0 && width <= MAX_EDGE && height <= MAX_EDGE && pixels <= MAX_PIXELS,
-        "Images can be up to 8192 pixels per side and 16 megapixels in total."
+        width > 0 && height > 0 && width <= MAX_EDGE && height <= MAX_EDGE && pixels <= max_pixels,
+        "Images can be up to {MAX_EDGE} pixels per side and {max_pixels} pixels in total."
     );
     Ok(pixels)
 }
 
 fn check_decoder(decoder: &mut impl ImageDecoder) -> Result<u64> {
+    check_decoder_limit(decoder, MAX_PIXELS)
+}
+
+fn check_decoder_limit(decoder: &mut impl ImageDecoder, max_pixels: u64) -> Result<u64> {
     let (width, height) = decoder.dimensions();
-    let pixels = check_dimensions(width, height)?;
+    let pixels = check_pixel_limit(width, height, max_pixels)?;
     ensure!(
         decoder.total_bytes() <= MAX_DECODER_BYTES,
         "This image needs too much memory to decode."
@@ -163,15 +172,16 @@ fn still(mut decoder: impl ImageDecoder) -> Result<DynamicImage> {
     Ok(image)
 }
 
-fn decode(format: ImageFormat, bytes: &[u8]) -> Result<DynamicImage> {
+fn decode(format: ImageFormat, bytes: &[u8], preview: bool) -> Result<DynamicImage> {
     let source = Cursor::new(bytes);
     match format {
         ImageFormat::Png => {
             let mut decoder = PngDecoder::with_limits(source, limits())?;
-            let pixels = check_decoder(&mut decoder)?;
             if decoder.is_apng()? {
+                let pixels = check_decoder(&mut decoder)?;
                 animation(decoder.apng()?.into_frames(), pixels)
             } else {
+                check_decoder_limit(&mut decoder, if preview { MAX_STATIC_PNG_PREVIEW_PIXELS } else { MAX_PIXELS })?;
                 still(decoder)
             }
         }
@@ -202,6 +212,10 @@ fn decode(format: ImageFormat, bytes: &[u8]) -> Result<DynamicImage> {
 }
 
 fn read(bytes: &[u8]) -> Result<(ImageFormat, DynamicImage)> {
+    decode_image(bytes, false)
+}
+
+fn decode_image(bytes: &[u8], preview: bool) -> Result<(ImageFormat, DynamicImage)> {
     ensure!(
         bytes.len() <= MAX_PASTED_IMAGE_BYTES,
         "Images can be up to 16 MiB."
@@ -220,7 +234,7 @@ fn read(bytes: &[u8]) -> Result<(ImageFormat, DynamicImage)> {
         })
         .with_context(|| format!("Choose a {FORMATS} image."))?;
     let decoded =
-        decode(format, bytes).map_err(|error| match error.downcast_ref::<ImageError>() {
+        decode(format, bytes, preview).map_err(|error| match error.downcast_ref::<ImageError>() {
             Some(ImageError::Limits(_)) => anyhow!("This image exceeds the size or memory limit."),
             Some(_) => anyhow!("{DAMAGED}"),
             None => error,
@@ -234,9 +248,20 @@ pub(crate) fn verified_mime(bytes: &[u8]) -> Result<&'static str> {
 }
 
 pub(crate) fn preview_image(bytes: &[u8]) -> Result<(&'static str, Vec<u8>)> {
-    let (format, image) = read(bytes)?;
+    let (format, image) = decode_image(bytes, true)?;
     let thumbnail = encode_png(&image.thumbnail(320, 320).into_rgba8())?;
     Ok((format.to_mime_type(), thumbnail))
+}
+
+#[cfg(windows)]
+pub(crate) fn clipboard_formats(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+    let (format, image) = decode_image(bytes, true)?;
+    let rgba = image.into_rgba8();
+    let png = if format == ImageFormat::Png { bytes.to_vec() } else { encode_png(&rgba)? };
+    let mut bmp = Cursor::new(Vec::new());
+    DynamicImage::from(rgba).write_to(&mut bmp, ImageFormat::Bmp)?;
+    // CF_DIB starts at the bitmap information header, after the BMP file header.
+    Ok((png, bmp.into_inner().split_off(14)))
 }
 
 #[cfg(windows)]
@@ -307,6 +332,21 @@ pub(crate) fn profile_png(bytes: &[u8]) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use image::{Frame, RgbImage, RgbaImage, codecs::gif::GifEncoder};
+
+    #[test]
+    fn static_four_k_square_png_preview_preserves_alpha() -> Result<()> {
+        let mut png = Cursor::new(Vec::new());
+        let mut pixels = RgbaImage::from_pixel(4096, 4096, image::Rgba([80, 20, 180, 124]));
+        pixels.put_pixel(0, 0, image::Rgba([0, 0, 0, 0]));
+        DynamicImage::from(pixels).write_to(&mut png, ImageFormat::Png)?;
+        assert!(verified_mime(png.get_ref()).is_err());
+        let (mime, thumbnail) = preview_image(png.get_ref())?;
+        assert_eq!(mime, "image/png");
+        let (_, resized) = read(&thumbnail)?;
+        assert_eq!((resized.width(), resized.height()), (320, 320));
+        assert_eq!(resized.into_rgba8().get_pixel(160, 160).0[3], 124);
+        Ok(())
+    }
 
     #[test]
     fn allowed_formats_decode_and_convert_to_png() -> Result<()> {

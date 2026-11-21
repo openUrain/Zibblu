@@ -66,7 +66,7 @@ Profile snapshots and bounded image data use the signed-in client’s existing p
 
 服务端复核每个窗口实际提供的序号及当前权限。游标与页绑定到认证的设备。设备间的同步位置彼此独立，前台查看有本设备的精确落盘证明才推进单聊回执。双方开启时，发送者只能查询当前末条自发普通单聊的状态；偏好切换后的资格从提交水位重新计算。未读计数和预览在 SQLite 按可见历史计算。
 
-Delete for me hides the message in the current SQLite profile, including search, quotes, file history and AI selection. An incomplete transfer remains manageable in Transfers. Other devices and other accounts retain their own views. Quotes reference a message in the same conversation and resolve against each viewer's authorized history. Normal drafts live in the signed-in renderer's memory. Private drafts also clear on session termination or disconnect.
+Delete for me hides the message in the current SQLite profile, including search, quotes, file history and AI selection. An unfinished download remains manageable from its existing transfer record in Shared files. Other devices and other accounts retain their own views. Quotes reference a message in the same conversation and resolve against each viewer's authorized history. Normal drafts live in the signed-in renderer's memory. Private drafts also clear on session termination or disconnect.
 
 Normal group join codes are renewable bearer invitations available to group members. The server stores a hash and expires each code after seven days. QR admission records a message sequence cutoff, enforced on synchronized messages, previews and file downloads. Existing group members retain the history they could already access.
 

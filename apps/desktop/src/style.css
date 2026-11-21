@@ -568,17 +568,6 @@ svg { vertical-align: middle; }
   margin: 0 0 16px; padding: 0 0 6px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
 }
 .tabs .choice { width: auto; min-height: 36px; padding-inline: 8px; font-weight: 600; }
-.file-tabs {
-  display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; border-bottom: 1px solid var(--line);
-}
-.file-tabs button {
-  display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 4px 8px;
-  border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-weight: 600;
-}
-.file-tabs button:hover { background: var(--hover); }
-.file-tabs button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--accent); }
-.file-tabs button:focus-visible { outline-offset: -2px; }
-.tab-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .file-filters {
   --file-filter-height: 36px;
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px;
@@ -587,13 +576,55 @@ svg { vertical-align: middle; }
 .file-filters .file-search > input:not([type="checkbox"], [type="radio"], [type="range"]) {
   min-height: calc(var(--file-filter-height) - 4px); padding-block: 4px;
 }
-.file-filters select { flex: 0 1 128px; width: auto; }
-.file-filters select[aria-label="Type"] { flex-basis: 96px; }
-.file-filters :is(select, .file-sort) { min-height: var(--file-filter-height); padding: 4px 8px; border-radius: 8px; }
-.file-filters .file-sort { margin-inline-start: auto; font-weight: 500; }
-.ios :is(.file-tabs button, .file-filters) { --file-filter-height: 44px; min-height: 44px; }
+.file-filters .zibblu-selector { width: auto; min-height: var(--file-filter-height); }
+.file-sort {
+  display: inline-flex; flex: none; align-items: center; gap: 8px; min-height: var(--file-filter-height);
+  padding: 4px 8px; border: 0; background: transparent; color: var(--ink); font-weight: 500;
+}
+.file-sort-arrows { display: grid; gap: 2px; }
+.file-sort-arrows i {
+  width: 0; height: 0; border: 4px solid transparent; border-block-start-width: 0;
+  border-block-end-color: var(--muted);
+}
+.file-sort-arrows i + i {
+  border-block-end-width: 0; border-block-start-width: 4px; border-block-start-color: var(--accent);
+}
+.file-sort[aria-pressed="true"] i:first-child { border-block-end-color: var(--accent); }
+.file-sort[aria-pressed="true"] i + i { border-block-start-color: var(--muted); }
+.ios .file-filters { --file-filter-height: 44px; }
 .shared-list, .transfer-list { min-width: 0; }
-.shared-list > .shared-file + .shared-file, .transfer-list > .shared-file + .shared-file { border-top: 1px solid var(--line); }
+.shared-list > .library-file + .library-file, .transfer-list > .shared-file + .shared-file { border-top: 1px solid var(--line); }
+.library-file {
+  display: grid; grid-template-columns: minmax(0, 1fr) 184px; align-items: center; gap: 12px;
+  min-width: 0; min-height: 64px; padding: 8px 12px; background: var(--panel);
+}
+.library-file .file-main { gap: 8px; }
+.library-file .file-icon { width: 32px; height: 40px; }
+.library-file .file-info { gap: 4px; }
+.library-meta {
+  display: flex; gap: 6px; align-items: center; min-width: 0; overflow: hidden; white-space: nowrap;
+  font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.library-meta > :not(.library-sender) { flex: none; }
+.library-meta .avatar { width: 16px; height: 16px; border-radius: 4px; font-size: 10px; }
+.library-sender { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.library-actions { display: flex; justify-content: flex-end; align-items: center; gap: 4px; min-width: 0; }
+.library-actions .button { min-width: 72px; white-space: nowrap; border-color: transparent; background: var(--soft); }
+.library-actions .button:hover:not(:disabled) { background: var(--hover); }
+.library-error, .library-expired { color: var(--danger); font-size: 12px; }
+.library-error { display: inline-flex; }
+.library-transfer { display: flex; justify-content: flex-end; align-items: center; gap: 4px; min-width: 0; }
+.library-progress { display: grid; gap: 4px; min-width: 0; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.library-progress span { overflow: hidden; text-overflow: ellipsis; }
+.library-progress progress { width: 100%; height: 4px; accent-color: var(--accent); }
+.library-transfer .icon-button { width: 28px; min-width: 28px; height: 28px; }
+.library-transfer .icon-button.danger:hover:not(:disabled) { color: var(--danger); background: var(--danger-bg); }
+@media (max-width: 600px) {
+  .library-file { grid-template-columns: minmax(0, 1fr) 152px; gap: 8px; padding-inline: 4px; }
+  .library-transfer { gap: 2px; }
+  .library-transfer .icon-button { width: 24px; min-width: 24px; }
+}
+.shared-file { border-top: 1px solid var(--line); }
 .shared-file {
   min-width: 0; width: 100%; padding: 12px 16px; background: var(--panel);
 }
@@ -620,17 +651,19 @@ svg { vertical-align: middle; }
 }
 .file-icon[data-tone="archive"] { background: var(--amber-bg); color: var(--amber); }
 .file-icon[data-tone="document"] { background: var(--blue-bg); color: var(--blue); }
-.file-icon[data-tone="media"] { background: var(--green-bg); color: var(--green); }
+.file-icon[data-tone="media"], .file-icon[data-tone="sheet"] { background: var(--green-bg); color: var(--green); }
+.file-icon[data-tone="word"] { background: var(--blue-bg); color: var(--blue); }
+.file-icon[data-tone="slides"] { background: var(--amber-bg); color: var(--amber); }
+.file-icon[data-tone="pdf"] { background: var(--danger-bg); color: var(--danger); }
 .file-info { display: grid; flex: 1; min-width: 0; gap: 4px; }
 .file-info small { font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .file-name {
   display: flex; width: fit-content; max-width: 100%; min-width: 0; padding: 0; border: 0;
   background: transparent; text-align: start; font-size: 14px;
 }
-.file-name:hover { color: var(--accent); }
+.file-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .file-name strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.file-name strong + strong { flex: none; max-width: 50%; }
-.full-file-name { overflow-wrap: anywhere; user-select: text; }
+.file-name strong + strong { flex: none; max-width: 100%; }
 .media-transfers { margin-top: 12px; }
 .media-transfers summary { width: fit-content; padding: 8px 0; cursor: pointer; }
 .verified { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; font-weight: 650; color: var(--green); }
@@ -1034,7 +1067,6 @@ button.profile-row:hover { background: var(--hover); }
     outline: 2px solid Highlight; outline-offset: -2px; box-shadow: none;
   }
   .windows .conversation-row.selected:focus-visible { outline-color: HighlightText; }
-  .file-tabs button[aria-selected="true"] { border-bottom-color: Highlight; }
   .settings-nav button[aria-current="page"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
   .settings-nav button[aria-current="page"]:focus-visible { outline-color: HighlightText; }
   .settings-detail .setting-switch .switch-track,
@@ -1048,7 +1080,6 @@ button.profile-row:hover { background: var(--hover); }
 @media (max-width: 505px) {
   .windows .conversation-drawer { width: 100%; border-inline-start: 0; }
   .composer-attachments { flex-wrap: wrap; }
-  .shared-list .shared-file:not(:has(.transfer-progress, .inline-error, .file-preview-status)) { grid-template-columns: minmax(0, 1fr); }
   .workspace-heading h1 { font-size: 27px; }
 }
 
@@ -1112,8 +1143,8 @@ html:has(body.windows .shell) { background: transparent; }
   .windows :is(select, input):not(.floating-field > *):focus-visible { outline: 2px solid Highlight; }
 }
 .windows ::selection { background: #ccc; color: #222; }
-.windows :is(.contact-row, .chat-header, .file-tabs, .tabs, .settings-screen > header, .profile-row + .profile-row,
-  .settings-row, .shared-list > .shared-file + .shared-file, .transfer-list > .shared-file + .shared-file,
+.windows :is(.contact-row, .chat-header, .tabs, .settings-screen > header, .profile-row + .profile-row,
+  .settings-row, .shared-list > .library-file + .library-file, .transfer-list > .shared-file + .shared-file,
   .profile-header, .profile-rows, .ai-settings-provider, .ai-snapshot details, .private-rows, .private-people,
   .composer, .drawer-actions, .drawer-members) {
   border-image-source: var(--divider); border-image-slice: 1; border-image-width: 1;

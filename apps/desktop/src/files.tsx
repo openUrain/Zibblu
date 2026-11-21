@@ -1,68 +1,50 @@
 import { FloatingField } from "./floating-field";
-import { Archive, ArrowDown, ArrowUp, Clock, Check, Download, File, FileText, FolderOpen, Image, MessageSquare, Pause, Play, RotateCcw, Search, Share, Trash2, Video } from "lucide-react";
-import { useCallback, useContext, useId, useState } from "react";
-import type { ChangeEvent, KeyboardEvent } from "react";
+import { Archive, Check, CircleAlert, Clock, Download, ExternalLink, File, FileSpreadsheet, FileText, FileType2, FolderOpen, Image, Pause, Play, Presentation, RotateCcw, Search, Share, Trash2, Video } from "lucide-react";
+import { useCallback, useContext, useState } from "react";
+import type { ChangeEvent } from "react";
 import { api, errorMessage, fileExpired } from "./api";
-import type { Attachment, FileFilter, Message, Transfer, User } from "./api";
+import type { Attachment, FileFilter, Message, Transfer } from "./api";
 import { mediaKind, readAttachmentPage } from "./attachment-media";
-import { Blank, Dialog, People, PersonAvatar, bytes, dateTimeLabel, displayName, usePage } from "./common";
+import { Blank, People, PersonAvatar, bytes, dateTimeLabel, displayName, usePage } from "./common";
 import { windows } from "./window-chrome";
 import { ios } from "./ios";
 import { actions, t } from "./locale";
 import { WorkspaceSearchField } from "./workspace-search";
+import { Selector } from "./selector";
+import { decimalSize, splitFileName } from "./file-labels";
 
-export function FileIcon({ file }: { file: Attachment }) {
+export function FileIcon({ file, library = false }: { file: Attachment; library?: boolean }) {
   const media = mediaKind(file);
-  const archive = /\.(zip|7z|rar|tar|gz|bz2|xz)$/i.test(file.name);
-  const document = /\.(pdf|docx?|xlsx?|pptx?|odt|txt|rtf|csv|md)$/i.test(file.name);
-  const Icon = file.kind === "folder" ? FolderOpen : archive ? Archive : media === "image" ? Image
+  const type = file.name.split(".").at(-1)?.toLowerCase() ?? "";
+  const archive = /^(zip|7z|rar|tar|gz|bz2|xz)$/.test(type);
+  const document = /^(pdf|docx?|xlsx?|pptx?|odt|txt|rtf|csv|md)$/.test(type);
+  const standard = file.kind === "folder" ? FolderOpen : archive ? Archive : media === "image" ? Image
     : media === "video" ? Video : document ? FileText : File;
-  const tone = file.kind === "folder" || archive ? "archive" : media ? "media" : document ? "document" : undefined;
-  return <span className="file-icon" data-tone={tone} aria-hidden="true"><Icon size={20} /></span>;
-}
-
-function extensionStart(name: string) {
-  const dot = name.match(/\.tar\.(gz|bz2|xz)$/i)?.index ?? name.lastIndexOf(".");
-  return dot > 0 && dot < name.length - 1 ? dot : name.length;
+  const format = !library || file.kind === "folder" ? undefined : /^(docx?|odt)$/.test(type) ? "word"
+    : /^(xlsx?|csv|ods)$/.test(type) ? "sheet" : /^(pptx?|odp)$/.test(type) ? "slides" : type === "pdf" ? "pdf" : undefined;
+  const Icon = format === "sheet" ? FileSpreadsheet : format === "slides" ? Presentation
+    : format === "pdf" ? FileType2 : library && !format && document ? File : standard;
+  const tone = file.kind === "folder" || archive ? "archive" : media ? "media" : !library && document ? "document" : undefined;
+  return <span className="file-icon" data-tone={format ?? tone} aria-hidden="true"><Icon size={20} /></span>;
 }
 
 function FileName({ name }: { name: string }) {
-  const [open, setOpen] = useState(false);
-  const split = extensionStart(name);
-  return <>
-    <button className="file-name" type="button" title={name} aria-label={name} aria-haspopup="dialog" onClick={() => setOpen(true)}>
-      <strong dir="auto">{name.slice(0, split)}</strong>{split < name.length && <strong dir="ltr">{name.slice(split)}</strong>}
-    </button>
-    {open && <Dialog title={t("File name", "文件名")} close={() => setOpen(false)}>
-      <p className="full-file-name" dir="auto">{name}</p>
-    </Dialog>}
-  </>;
+  const [stem, extension] = splitFileName(name);
+  return <span className="file-name" title={name} tabIndex={0} dir="ltr">
+    <strong dir="auto">{stem}</strong>{extension && <strong>{extension}</strong>}
+  </span>;
 }
 
-export function SharedFile({ message, transfer, onChanged, source, inChat = false, previewStatus, expired = fileExpired(message) }: {
-  message: Message; transfer?: Transfer; onChanged: () => void; source?: string; inChat?: boolean; previewStatus?: string; expired?: boolean;
+export function SharedFile({ message, transfer, onChanged, previewStatus, expired = fileExpired(message) }: {
+  message: Message; transfer?: Transfer; onChanged: () => void; previewStatus?: string; expired?: boolean;
 }) {
   const file = message.attachment!;
-  const { remarks, open } = useContext(People);
-  const sender = displayName(message.sender, remarks);
-  const extension = file.name.slice(extensionStart(file.name) + 1).toUpperCase();
-  const media = mediaKind(file);
-  const type = file.kind === "folder" ? "Folder ZIP" : media === "image" ? "Image"
-    : media === "video" ? "Video" : extension.length > 8 || !extension ? "File" : extension;
-  return <article className={"shared-file" + (inChat ? " chat-file-card" : "")} aria-label={file.name}>
+  return <article className="shared-file chat-file-card">
     <div className="file-main">
       <FileIcon file={file} />
       <div className="file-info">
         <FileName name={file.name} />
-        <small>{type} · {bytes(file.size)}</small>
-        {!inChat && <div className="file-origin">
-          <button className="person-link file-sharer" type="button" onClick={() => open?.(message.sender)}
-            title={`View ${sender}'s profile`}><PersonAvatar user={message.sender} /><span>{sender}</span></button>
-          {source && <span className="file-source" title={source}><MessageSquare size={12} aria-hidden="true" />
-            <span className="sr-only">Conversation </span><span>{source}</span>
-          </span>}
-          <time dateTime={new Date(message.created_at).toISOString()}>{dateTimeLabel(message.created_at)}</time>
-        </div>}
+        <small>{file.kind === "folder" ? "Folder" : (splitFileName(file.name)[1].slice(1).toUpperCase() || "File")} · {bytes(file.size)}</small>
       </div>
     </div>
     {expired || transfer?.status === "expired"
@@ -82,7 +64,12 @@ export function useAttachmentSave(onChanged: () => void) {
     if (saving) return;
     setSaving(true);
     setFailure("");
-    try { if (await api.save(id)) onChanged(); }
+    try {
+      if (await api.save(id)) {
+        onChanged();
+        return true;
+      }
+    }
     catch (error) { setFailure(errorMessage(error)); }
     finally { setSaving(false); }
   }
@@ -111,8 +98,8 @@ export function AttachmentDownload({ file, transfer, onChanged, hideSave = false
   </div>;
 }
 
-function TransferProgress({ transfer, onChanged, chooseNew, choosing }: {
-  transfer: Transfer; onChanged: () => void; chooseNew?: () => void; choosing?: boolean;
+function TransferProgress({ transfer, onChanged, chooseNew, choosing, compact = false }: {
+  transfer: Transfer; onChanged: () => void; chooseNew?: () => void; choosing?: boolean; compact?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
@@ -134,6 +121,35 @@ function TransferProgress({ transfer, onChanged, chooseNew, choosing }: {
     try { await api.transferAction(name, transfer); onChanged(); }
     catch (error) { setFailure(errorMessage(error)); }
     finally { setBusy(false); }
+  }
+
+  const pause = running || queued;
+  const recovery = failed ? t("Retry", "重试") : t("Resume", "继续");
+  const error = failure || transfer.error;
+  if (compact) {
+    const compactStatus = expired ? t("Expired", "已过期") : failed ? t("Failed", "失败")
+      : queued ? t("Queued", "排队中") : running
+        ? percentage === 100 ? t("Verifying", "校验中")
+          : transfer.direction === "upload" ? t("Uploading", "上传中") : t("Downloading", "下载中")
+        : t("Paused", "已暂停");
+    const actionLabel = pause ? t("Pause", "暂停") : recovery;
+    return <div className="library-transfer">
+      <div className="library-progress" title={error ?? undefined} tabIndex={error ? 0 : undefined}>
+        <span role={error ? "alert" : "status"} className={error ? "danger" : ""} aria-label={error ? compactStatus + ": " + error : undefined}>
+          {compactStatus} {percentage}%
+        </span>
+        <progress max={100} value={percentage} aria-label={compactStatus + " " + transfer.attachment.name} />
+      </div>
+      {!expired && <button className="icon-button" type="button" disabled={busy}
+        aria-label={actionLabel} title={actionLabel} onClick={() => void action(pause ? "pause" : "resume")}>
+        {pause ? <Pause size={16} /> : failed ? <RotateCcw size={16} /> : <Play size={16} />}
+      </button>}
+      {!pause && !expired && chooseNew && <button className="icon-button" type="button" disabled={busy || choosing}
+        title={t("Choose save location", "选择保存位置")} aria-label={t("Choose save location", "选择保存位置")}
+        onClick={chooseNew}><Download size={16} /></button>}
+      {!pause && <button className="icon-button danger" type="button" disabled={busy} title={t("Discard transfer", "丢弃传输")}
+        aria-label={t("Discard transfer", "丢弃传输")} onClick={() => void action("discard")}><Trash2 size={16} /></button>}
+    </div>;
   }
 
   return <div className="transfer-progress">
@@ -180,99 +196,116 @@ export function TransferList({ transfers, onChanged, inChat = false }: {
     </div>)}</div>;
 }
 
-const fileTabs = { shared: "Shared files", transfers: "Transfers" } as const;
-type FileTab = keyof typeof fileTabs;
-
-export function FilesView({ conversation, people, transfers, revision, recalled, hidden, onChanged, sources }: {
-  conversation?: string; people: User[]; transfers: Transfer[]; revision: number; recalled: ReadonlySet<number>;
-  hidden: ReadonlySet<number>; onChanged: () => void; sources?: ReadonlyMap<string, string>;
+export function FilesView({ conversation, transfers, revision, recalled, hidden, onChanged }: {
+  conversation?: string; transfers: Transfer[]; revision: number; recalled: ReadonlySet<number>;
+  hidden: ReadonlySet<number>; onChanged: () => void;
 }) {
-  const { remarks } = useContext(People);
-  const [tab, setTab] = useState<FileTab>("shared");
-  const tabsId = useId();
-  const [person, setPerson] = useState("");
   const [kind, setKind] = useState<Attachment["kind"] | "">("");
   const [oldestFirst, setOldestFirst] = useState(false);
   const [name, setName] = useState("");
-  const jobs = transfers.filter(transfer => !mediaKind(transfer.attachment)
-    && (!conversation || transfer.conversation_id === conversation));
-  const pending = jobs.filter(transfer => transfer.status !== "complete").length;
-  function navigateTab(event: KeyboardEvent<HTMLButtonElement>) {
-    const next = event.key === "Home" ? "shared" : event.key === "End" ? "transfers"
-      : ["ArrowLeft", "ArrowRight"].includes(event.key) ? (tab === "shared" ? "transfers" : "shared") : undefined;
-    if (!next) return;
-    event.preventDefault();
-    setTab(next);
-    document.getElementById(`${tabsId}-${next}-tab`)?.focus();
-  }
   const desktopLibrary = windows && !conversation;
-  const search = {
-    value: name,
-    onChange: (event: ChangeEvent<HTMLInputElement>) => setName(event.target.value),
-  };
+  const search = { value: name, onChange: (event: ChangeEvent<HTMLInputElement>) => setName(event.target.value) };
   return <div className={"files-view" + (conversation ? " chat-files" : "")}>
-    {desktopLibrary && tab === "shared" && <div className="chat-list-head">
+    {!conversation && <header className={desktopLibrary ? "sr-only" : "workspace-heading"}><h1>{t("Shared files", "共享文件")}</h1></header>}
+    {desktopLibrary && <div className="chat-list-head">
       <WorkspaceSearchField {...search} label={t("Search files", "搜索文件")} />
     </div>}
-    {!conversation && <header className={desktopLibrary ? "sr-only" : "workspace-heading"}><h1>Files</h1></header>}
-    {!conversation && <div className="file-tabs" role="tablist" aria-label="Files view">
-      {(Object.keys(fileTabs) as FileTab[]).map(id => <button key={id} type="button" role="tab"
-        id={`${tabsId}-${id}-tab`} aria-controls={`${tabsId}-${id}-panel`} aria-selected={tab === id}
-        tabIndex={tab === id ? 0 : -1} onClick={() => setTab(id)} onKeyDown={navigateTab}>
-        {fileTabs[id]}{id === "transfers" && pending > 0 && <span className="tab-count">{pending}</span>}
-      </button>)}
-    </div>}
-    <div hidden={tab !== "shared"} role={conversation ? undefined : "tabpanel"}
-      aria-labelledby={conversation ? undefined : `${tabsId}-shared-tab`} id={`${tabsId}-shared-panel`}>
-    {tab === "shared" && <>
-      <div className="file-filters">
-        {!desktopLibrary && <FloatingField {...search} label="Search file names" fieldClass="search file-search" prefixIcon={<Search size={16} />} type="search" />}
-        {!conversation && <select aria-label="Shared by" value={person} onChange={event => setPerson(event.target.value)}>
-          <option value="">All senders</option>
-          {people.map(user => <option key={user.id} value={user.id}>{displayName(user, remarks)}</option>)}
-        </select>}
-        <select aria-label="Type" value={kind} onChange={event => setKind(event.target.value as typeof kind)}>
-          <option value="">All types</option><option value="file">Files</option><option value="folder">Folders</option>
-        </select>
-          <button className="button subtle file-sort" type="button" onClick={() => setOldestFirst(value => !value)}
-            aria-label={`Sort by time, ${oldestFirst ? "oldest" : "newest"} first`}
-            title={oldestFirst ? "Show newest first" : "Show oldest first"}>
-            {oldestFirst ? <ArrowUp size={16} /> : <ArrowDown size={16} />}{oldestFirst ? "Oldest first" : "Newest first"}
-          </button>
-      </div>
-      <SharedHistory key={JSON.stringify([conversation, person, kind, oldestFirst, name])} {...{
-        conversation, person, kind, oldestFirst, name, revision, recalled, hidden, jobs, onChanged, sources,
-      }} />
-    </>}
+    <div className="file-filters">
+      {!desktopLibrary && <FloatingField {...search} label={t("Search file names", "按文件名搜索")}
+        fieldClass="search file-search" prefixIcon={<Search size={16} />} type="search" />}
+      <Selector aria-label={t("File type", "文件类型")} value={kind} onChange={event => setKind(event.target.value as typeof kind)}>
+        <option value="">{t("All types", "所有类型")}</option><option value="file">{t("Files", "文件")}</option><option value="folder">{t("Folders", "文件夹")}</option>
+      </Selector>
+      <button className="file-sort" type="button" onClick={() => setOldestFirst(value => !value)}
+        aria-label="时间排序" aria-pressed={oldestFirst} title={oldestFirst ? "最早优先" : "最新优先"}>
+        时间排序<span className="file-sort-arrows" aria-hidden><i /><i /></span>
+      </button>
     </div>
-    {!conversation && <div role="tabpanel" aria-labelledby={`${tabsId}-transfers-tab`} id={`${tabsId}-transfers-panel`}
-      hidden={tab !== "transfers"} tabIndex={0}>
-      {tab === "transfers" && (jobs.length ? <TransferList transfers={jobs} onChanged={onChanged} />
-        : <Blank icon={<Download size={24} />} title="No file transfers" />)}
-    </div>}
+    <SharedHistory key={JSON.stringify([conversation, kind, oldestFirst, name])} {...{
+      conversation, kind, oldestFirst, name, revision, recalled, hidden, transfers, onChanged,
+    }} />
   </div>;
 }
 
-function SharedHistory({ conversation, person, kind, oldestFirst, name, revision, recalled, hidden, jobs, onChanged, sources }: {
-  conversation?: string; person: string; kind: Attachment["kind"] | ""; oldestFirst: boolean; name: string;
-  revision: number; recalled: ReadonlySet<number>; hidden: ReadonlySet<number>; jobs: Transfer[]; onChanged: () => void;
-  sources?: ReadonlyMap<string, string>;
+function SharedHistory({ conversation, kind, oldestFirst, name, revision, recalled, hidden, transfers, onChanged }: {
+  conversation?: string; kind: Attachment["kind"] | ""; oldestFirst: boolean; name: string;
+  revision: number; recalled: ReadonlySet<number>; hidden: ReadonlySet<number>; transfers: Transfer[]; onChanged: () => void;
 }) {
   const read = useCallback((before?: number) => {
-    const filter: FileFilter = { conversation_id: conversation, sender_id: person || undefined, kind: kind || undefined,
-      name: name.trim() || undefined, oldest_first: oldestFirst };
+    const filter: FileFilter = { conversation_id: conversation, kind: kind || undefined,
+      name: name.trim() || undefined, oldest_first: oldestFirst, include_transfer_rows: true };
     return readAttachmentPage(cursor => api.files(filter, cursor), false, recalled, hidden, before);
-  }, [conversation, person, kind, oldestFirst, name, recalled, hidden]);
+  }, [conversation, kind, oldestFirst, name, recalled, hidden]);
   const { page, failure, loading, older } = usePage(read, revision, recalled, false, undefined, hidden, oldestFirst);
-  const downloads = new Map(jobs.filter(job => job.direction === "download").map(job => [job.attachment.id, job]));
+  const downloads = new Map(transfers.filter(job => job.direction === "download").map(job => [job.attachment.id, job]));
+  const uploads = new Map(transfers.filter(job => job.direction === "upload" && job.status !== "complete").map(job => [job.attachment.id, job]));
   if (failure) return <p className="inline-error" role="alert">{failure}</p>;
   if (!page) return <p className="muted loading" role="status">Loading shared files…</p>;
   if (page.items.length === 0) return <Blank icon={<FolderOpen size={27} />} title="No shared files found">
-    <p>{person || kind || name ? "Try changing the filters." : "Files and folders shared in chats will appear here."}</p>
+    <p>{kind || name ? "Try changing the filters." : "Files and folders shared in chats will appear here."}</p>
   </Blank>;
+  // A publication may replace a local pending row while an older page is being appended.
+  const items = [...new Map(page.items.map(item => [item.attachment!.id, item])).values()];
   return <div className="shared-list">
-    {page.items.map(message => <SharedFile key={message.seq} message={message} source={sources?.get(message.conversation_id)}
-      transfer={downloads.get(message.attachment!.id)} onChanged={onChanged} />)}
+    {items.map(message => {
+      const id = message.attachment!.id;
+      const download = downloads.get(id);
+      const transfer = message.seq < 0 ? uploads.get(id) ?? download : download;
+      return <LibraryFile key={id} {...{ message, transfer, onChanged }} />;
+    })}
     {page.has_more && <button className="button subtle more" disabled={loading} onClick={() => void older()}>Load more files</button>}
   </div>;
+}
+
+function LibraryFile({ message, transfer, onChanged }: { message: Message; transfer?: Transfer; onChanged: () => void }) {
+  const { remarks } = useContext(People);
+  const file = message.attachment!;
+  const sender = displayName(message.sender, remarks);
+  const { save, saving, failure: saveError } = useAttachmentSave(onChanged);
+  const [openError, setOpenError] = useState("");
+  const [opening, setOpening] = useState(false);
+  const [needsSave, setNeedsSave] = useState(false);
+  const saved = windows && transfer?.status === "complete" && !needsSave;
+  const expired = !saved && fileExpired(message);
+  const label = saved ? t("Open", "打开") : actions.save;
+  const error = saveError || openError;
+  const action = async () => {
+    setOpenError("");
+    if (!saved) {
+      if (await save(file.id)) setNeedsSave(false);
+      return;
+    }
+    setOpening(true);
+    try {
+      if (!await api.openSaved(file.id)) setNeedsSave(true);
+    } catch (error) { setOpenError(errorMessage(error)); }
+    finally { setOpening(false); }
+  };
+  return <article className="library-file" data-attachment={file.id}>
+    <div className="file-main">
+      <FileIcon file={file} library />
+      <div className="file-info">
+        <FileName name={file.name} />
+        <div className="library-meta">
+          <PersonAvatar user={message.sender} />
+          <span className="library-sender" title={sender}>{sender}</span>
+          <span>{decimalSize(file.size)}</span>
+          {message.created_at > 0 && <time dateTime={new Date(message.created_at).toISOString()}>
+            {dateTimeLabel(message.created_at)}
+          </time>}
+        </div>
+      </div>
+    </div>
+    <div className="library-actions">
+      {transfer && transfer.status !== "complete" ? <TransferProgress transfer={transfer} onChanged={onChanged} compact
+        chooseNew={message.seq > 0 && transfer.direction === "download" && !ios ? () => void save(file.id) : undefined} choosing={saving} />
+        : expired ? <span role="status" className="library-expired" title="Ask the sender to share this file again.">{t("Expired", "已过期")}</span>
+        : message.seq > 0 && (ios ? <AttachmentDownload file={file} transfer={transfer} onChanged={onChanged} /> :
+          <button className="button subtle small" type="button" disabled={opening || saving} onClick={() => void action()}
+            aria-label={`${label} ${file.name}`}>
+            {saved ? <ExternalLink size={15} /> : <Download size={15} />}{label}
+          </button>)}
+      {error && <span className="library-error" role="alert" tabIndex={0} title={error} aria-label={error}><CircleAlert size={16} /></span>}
+    </div>
+  </article>;
 }

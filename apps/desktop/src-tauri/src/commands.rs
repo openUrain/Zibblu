@@ -37,6 +37,9 @@ pub(crate) struct Desktop {
     pub(crate) private_generation: std::sync::atomic::AtomicU64,
     private_worker: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     attachment_offer: StdMutex<Option<(Uuid, Vec<PathBuf>)>>,
+    pub(crate) image_scope: std::sync::RwLock<Option<crate::image_viewer::ImageScope>>,
+    #[cfg(windows)]
+    pub(crate) image_window: Mutex<()>,
 }
 
 impl Desktop {
@@ -56,6 +59,9 @@ impl Desktop {
             private_generation: std::sync::atomic::AtomicU64::new(0),
             private_worker: Mutex::new(None),
             attachment_offer: StdMutex::new(None),
+            image_scope: Default::default(),
+            #[cfg(windows)]
+            image_window: Mutex::new(()),
         }
     }
 
@@ -232,6 +238,10 @@ impl Desktop {
     ) -> anyhow::Result<()> {
         let cleared = saved_session::clear(&self.data)
             .context("Could not remove the saved sign-in from this device.");
+        self.image_scope.write().expect("image scope").take();
+        if let Some(window) = app.get_webview_window(crate::image_viewer::LABEL) {
+            let _ = window.destroy();
+        }
         self.ai.lock().expect("AI state").clear();
         if let Some(task) = self.outbox_worker.lock().await.take() {
             task.abort();
@@ -1087,7 +1097,8 @@ pub(crate) async fn save_attachment(
     state: State<'_, Desktop>,
     id: Uuid,
 ) -> Result<Option<Transfer>> {
-    let client = state.client().await?;
+    let viewer = window.label() == crate::image_viewer::LABEL;
+    let client = if viewer { crate::image_viewer::authorize(&state, id).await? } else { state.client().await? };
     let message = client.attachment(id).await?;
     let attachment = message
         .attachment
@@ -1117,6 +1128,7 @@ pub(crate) async fn save_attachment(
     }
     #[cfg(not(target_os = "ios"))]
     {
+    let app = window.app_handle().clone();
     let path = tauri::async_runtime::spawn_blocking(move || {
         window
             .dialog()
@@ -1132,9 +1144,56 @@ pub(crate) async fn save_attachment(
     .context("Save dialog was interrupted")?
     .context("Choose a local save location")?;
     match path {
-        Some(path) => Ok(Some(client.queue_download(id, path).await?)),
+        Some(path) => {
+            if viewer {
+                let current = crate::image_viewer::authorize(&state, id).await?;
+                if app.get_webview_window(crate::image_viewer::LABEL).is_none() || !Arc::ptr_eq(&current, &client) {
+                    return Err(anyhow!("The image viewer has closed").into());
+                }
+            }
+            Ok(Some(client.queue_download(id, path).await?))
+        }
         None => Ok(None),
     }
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn open_saved_attachment(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    id: Uuid,
+) -> Result<bool> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+
+        if window.label() != "main" {
+            return Err(anyhow!("Open the attachment from Shared files").into());
+        }
+        let client = state.client().await?;
+        let Some(path) = client.saved_destination(id).await? else {
+            return Ok(false);
+        };
+        if !state.is_current(&client).await {
+            return Err(anyhow!("The session has ended").into());
+        }
+        let owner = window.hwnd().map_err(anyhow::Error::from)?.0 as isize;
+        tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<bool> {
+            let path: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+            let opened = unsafe {
+                ShellExecuteW(owner as _, windows_sys::w!("open"), path.as_ptr(),
+                    std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL)
+            };
+            ensure!(opened as isize > 32, "Windows could not open the saved file. Check the default app and file permissions.");
+            Ok(true)
+        }).await.context("Opening the saved attachment was interrupted")?.map_err(Into::into)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, state, id);
+        Err(anyhow!("Opening saved attachments is available on Windows").into())
     }
 }
 
