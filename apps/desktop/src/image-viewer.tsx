@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ChevronLeft, ChevronRight, Copy, Download, LoaderCircle, Maximize, Minimize, RotateCw, Scan } from "lucide-react";
+import { ChevronLeft, ChevronRight, Copy, Download, LoaderCircle, Maximize, Minimize, RotateCw, Shrink } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent } from "react";
 import { api, errorMessage } from "./api";
@@ -72,6 +72,7 @@ function ImageCanvas({ file, previous, next, download, refresh }: Selection & { 
 
   useEffect(() => {
     const element = stage.current!;
+    element.focus({ preventScroll: true });
     const observer = new ResizeObserver(() => {
       setViewport({ width: element.clientWidth, height: element.clientHeight });
     });
@@ -216,7 +217,7 @@ function ImageCanvas({ file, previous, next, download, refresh }: Selection & { 
         {tool("Next image", <ChevronRight size={18} />, () => void step(true), busy || !next)}
       </div>
       <div>
-        {tool("Fit to window", <Scan size={18} />, () => setScale(), !loaded, view.scale === undefined)}
+        {tool("Fit to window", <Shrink size={18} />, () => setScale(), !loaded, view.scale === undefined)}
         {tool("Original size", <span aria-hidden>1:1</span>, () => setScale(1), !loaded, view.scale === 1)}
         {tool("Rotate clockwise", <RotateCw size={18} />, () => {
           setView(current => ({ ...current, x: 0, y: 0, turn: (current.turn + 1) % 4 }));

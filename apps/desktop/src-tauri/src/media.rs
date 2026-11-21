@@ -15,7 +15,7 @@ use tokio::sync::Semaphore;
 use uuid::Uuid;
 use zibblu_core::{Attachment, CHUNK_SIZE, Client, MAX_PASTED_IMAGE_BYTES, ProfileImage, Transfer};
 
-static IMAGE_JOBS: Semaphore = Semaphore::const_new(2);
+pub(crate) static IMAGE_JOBS: Semaphore = Semaphore::const_new(2);
 const ORIGINAL: i64 = -1;
 const THUMBNAIL: i64 = -2;
 

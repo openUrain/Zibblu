@@ -336,10 +336,13 @@ pub(crate) async fn copy_viewer_image(
             false,
         )
         .await?;
-        let png =
-            tauri::async_runtime::spawn_blocking(move || crate::images::clipboard_formats(&bytes))
-                .await
-                .map_err(anyhow::Error::from)??;
+        let permit = media::IMAGE_JOBS.acquire().await.map_err(anyhow::Error::from)?;
+        let png = tauri::async_runtime::spawn_blocking(move || {
+            let _permit = permit;
+            crate::images::clipboard_formats(&bytes)
+        })
+        .await
+        .map_err(anyhow::Error::from)??;
         authorize(&state, id).await?;
         require(
             window.is_focused().map_err(anyhow::Error::from)?,
