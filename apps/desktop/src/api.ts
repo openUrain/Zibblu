@@ -40,9 +40,11 @@ export type Transfer = {
   attachment: Attachment; conversation_id: string; direction: "upload" | "download";
   status: "running" | "queued" | "paused" | "failed" | "expired" | "complete"; received: number; error: string | null;
   sharer: User | null;
+  created_at?: number;
 };
 export type FileFilter = {
   conversation_id?: string; sender_id?: string; kind?: Attachment["kind"]; name?: string; oldest_first: boolean;
+  include_transfer_rows?: boolean;
 };
 export type ConversationRequest =
   | { kind: "direct"; contact_id: string }
@@ -139,6 +141,7 @@ export const api = {
     convertFileSrc(id, "zibblu-media") + (variant ? "?" + variant : ""),
   openImage: (id: string) => invoke<void>("open_image_viewer", { id }),
   save: (id: string) => invoke<Transfer | null>("save_attachment", { id }),
+  openSaved: (id: string) => invoke<boolean>("open_saved_attachment", { id }),
   transfers: () => invoke<Transfer[]>("transfers"),
   transferAction: (action: "pause" | "resume" | "discard", transfer: Transfer) =>
     invoke<void>(action + "_transfer", { id: transfer.attachment.id, direction: transfer.direction }),

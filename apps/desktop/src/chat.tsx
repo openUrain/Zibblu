@@ -271,7 +271,7 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
           visible={!showFiles && !profileOpen} changed={changed} refresh={refresh} share={share} pasteFiles={pasteFiles} aiChat={aiChat} openMedia={openMedia}
           {...{ hidden, hide, readReceipts, draft, setDraft, historyCache }} />
       </div>
-      {showFiles && <FilesView conversation={chat.id} people={chat.members} transfers={transfers} revision={revision} recalled={recalled} hidden={hidden} onChanged={changed} />}
+      {showFiles && <FilesView conversation={chat.id} transfers={transfers} revision={revision} recalled={recalled} hidden={hidden} onChanged={changed} />}
       {(windows || detailsVisible) && <Dialog mobilePage title={details} className="conversation-drawer"
         modal={!windows} visible={detailsVisible} close={closeDrawer} onKeyDown={keepDrawerFocus}>
         {chat.title ? <div className="drawer-identity"><Avatar name={name} group large /><strong>{name}</strong></div>

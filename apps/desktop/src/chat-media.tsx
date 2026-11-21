@@ -60,7 +60,7 @@ export function ChatAttachment({ message, transfer, onChanged, open, expired }: 
   const file = message.attachment!;
   if (expired || !mediaKind(file) || !canPreview(file)) {
     const previewStatus = mediaKind(file) ? "Download to open" : undefined;
-    return <SharedFile inChat {...{ message, transfer, onChanged, previewStatus, expired }} />;
+    return <SharedFile {...{ message, transfer, onChanged, previewStatus, expired }} />;
   }
   return <div className="chat-media">
     <MediaTile key={file.id} file={file} open={open} />

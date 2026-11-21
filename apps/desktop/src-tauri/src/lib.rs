@@ -203,6 +203,7 @@ pub fn run() {
             commands::cancel_attachment_offer,
             commands::share,
             commands::save_attachment,
+            commands::open_saved_attachment,
             image_viewer::open_image_viewer,
             image_viewer::image_viewer_selection,
             image_viewer::image_viewer_step,

@@ -1,4 +1,5 @@
 import { FloatingField } from "./floating-field";
+import { Selector } from "./selector";
 import {
   AtSign, Bot, ChevronRight, CircleCheck, Clock3, FileText, ListChecks,
   LockKeyhole, MessageSquare, Paperclip, Send, X,
@@ -233,9 +234,9 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
             onChange={() => updateSelection(() => setKind(value))} disabled={disabled}><Icon size={16} /><span>{label}</span></Choice>)}
         </div>
         {kind === "recent" && <label className="ai-recent">Include the latest
-          <select value={limit} onChange={event => updateSelection(() => setLimit(Number(event.target.value)))} disabled={disabled}>
+          <Selector value={limit} onChange={event => updateSelection(() => setLimit(Number(event.target.value)))} disabled={disabled}>
             {[5, 10, 20, 40, 60].map(count => <option key={count} value={count}>{count} text messages</option>)}
-          </select>
+          </Selector>
         </label>}
         {kind === "selected" && <div className="ai-pick-messages">
           <p className="muted">{sequences.length} of {MAX_MESSAGES} selected</p>

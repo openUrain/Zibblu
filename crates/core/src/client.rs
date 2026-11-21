@@ -112,6 +112,8 @@ pub struct FileFilter {
     pub name: Option<String>,
     #[serde(default)]
     pub oldest_first: bool,
+    #[serde(default)]
+    pub include_transfer_rows: bool,
 }
 
 impl Client {
@@ -191,7 +193,7 @@ impl Client {
             .await
             .context("Could not open the local chat history")?;
         let device_re_registered = Self::initialize_history(&db, &session, restore).await?;
-        Ok(Arc::new(Self {
+        let client = Arc::new(Self {
             user: session.user,
             api,
             db,
@@ -206,7 +208,9 @@ impl Client {
             workers: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
             server_clock_offset: AtomicI64::new(0),
-        }))
+        });
+        client.restore_upload_times().await?;
+        Ok(client)
     }
 
     pub fn server(&self) -> &str {
@@ -266,11 +270,47 @@ impl Client {
     }
 
     pub async fn files(&self, filter: FileFilter, before: Option<i64>) -> Result<Page> {
-        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-            "SELECT payload FROM timeline WHERE attachment_id IS NOT NULL AND seq NOT IN (SELECT seq FROM hidden_messages)",
-        );
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
+        if filter.include_transfer_rows {
+            // The local upload rowid keeps the pagination key stable when publication assigns a message sequence.
+            query.push(
+                "WITH file_rows AS (
+                   SELECT i.seq, i.conversation_id, i.attachment_id, i.payload,
+                          coalesce(json_extract(t.payload, '$.created_at'), json_extract(i.payload, '$.created_at')) AS sort_at,
+                          coalesce(-t.rowid, i.seq) AS sort_key
+                   FROM timeline i LEFT JOIN transfers t ON t.id = i.attachment_id AND t.direction = 'upload'
+                   WHERE i.attachment_id IS NOT NULL AND i.seq NOT IN (SELECT seq FROM hidden_messages)
+                   UNION ALL
+                   SELECT -t.rowid, json_extract(t.payload, '$.conversation_id'), t.id,
+                          json_object('seq', -t.rowid, 'conversation_id', json_extract(t.payload, '$.conversation_id'),
+                              'sender', coalesce(json_extract(t.payload, '$.sharer'), json(",
+            ).push_bind(serde_json::to_string(&self.user)?).push(
+                ")), 'created_at', coalesce(json_extract(t.payload, '$.created_at'), 0),
+                          'attachment', json_extract(t.payload, '$.attachment')),
+                          coalesce(json_extract(t.payload, '$.created_at'), 0), -t.rowid
+                   FROM transfers t WHERE t.direction = 'upload' AND json_extract(t.payload, '$.status') <> 'complete'
+                     AND NOT EXISTS (SELECT 1 FROM inbox i WHERE i.attachment_id = t.id)
+                     AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h.attachment_id = t.id)
+                   UNION ALL
+                   SELECT -t.rowid, i.conversation_id, i.attachment_id, json_set(i.payload, '$.seq', -t.rowid),
+                          json_extract(i.payload, '$.created_at'), -t.rowid
+                   FROM transfers t JOIN inbox i ON i.attachment_id = t.id
+                   JOIN hidden_messages h ON h.seq = i.seq
+                   WHERE t.direction = 'download' AND json_extract(t.payload, '$.status') <> 'complete'
+                 ) SELECT payload FROM file_rows WHERE 1",
+            );
+        } else {
+            query.push("SELECT payload FROM timeline WHERE attachment_id IS NOT NULL AND seq NOT IN (SELECT seq FROM hidden_messages)");
+        }
         if let Some(before) = before {
-            push_before(&mut query, before, filter.oldest_first);
+            if filter.include_transfer_rows {
+                query.push(" AND (sort_at, sort_key) ")
+                    .push(if filter.oldest_first { ">" } else { "<" })
+                    .push(" (SELECT sort_at, sort_key FROM file_rows WHERE seq = ")
+                    .push_bind(before).push(" OR sort_key = ").push_bind(before).push(" LIMIT 1)");
+            } else {
+                push_before(&mut query, before, filter.oldest_first);
+            }
         }
         if let Some(id) = filter.conversation_id {
             query
@@ -304,7 +344,9 @@ impl Client {
                 .push(")) > 0");
         }
         query
-            .push(if filter.oldest_first {
+            .push(if filter.include_transfer_rows {
+                if filter.oldest_first { " ORDER BY sort_at, sort_key LIMIT " } else { " ORDER BY sort_at DESC, sort_key DESC LIMIT " }
+            } else if filter.oldest_first {
                 " ORDER BY json_extract(payload, '$.created_at'), seq LIMIT "
             } else {
                 " ORDER BY json_extract(payload, '$.created_at') DESC, seq DESC LIMIT "

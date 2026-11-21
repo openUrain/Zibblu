@@ -1159,6 +1159,45 @@ pub(crate) async fn save_attachment(
 }
 
 #[tauri::command]
+pub(crate) async fn open_saved_attachment(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    id: Uuid,
+) -> Result<bool> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+
+        if window.label() != "main" {
+            return Err(anyhow!("Open the attachment from Shared files").into());
+        }
+        let client = state.client().await?;
+        let Some(path) = client.saved_destination(id).await? else {
+            return Ok(false);
+        };
+        if !state.is_current(&client).await {
+            return Err(anyhow!("The session has ended").into());
+        }
+        let owner = window.hwnd().map_err(anyhow::Error::from)?.0 as isize;
+        tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<bool> {
+            let path: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+            let opened = unsafe {
+                ShellExecuteW(owner as _, windows_sys::w!("open"), path.as_ptr(),
+                    std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL)
+            };
+            ensure!(opened as isize > 32, "Windows could not open the saved file. Check the default app and file permissions.");
+            Ok(true)
+        }).await.context("Opening the saved attachment was interrupted")?.map_err(Into::into)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, state, id);
+        Err(anyhow!("Opening saved attachments is available on Windows").into())
+    }
+}
+
+#[tauri::command]
 pub(crate) async fn transfers(state: State<'_, Desktop>) -> Result<Vec<Transfer>> {
     Ok(state.client().await?.transfers().await?)
 }

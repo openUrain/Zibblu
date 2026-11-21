@@ -473,8 +473,6 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }
 
   const names = useMemo(() => ({ ...directory.names, ...directory.remarks }), [directory.names, directory.remarks]);
-  const people = [...new Map([session.user, ...directory.conversations.flatMap(chat => chat.members)]
-    .map(user => [user.id, user])).values()].sort((a, b) => displayName(a, names).localeCompare(displayName(b, names)));
   const offeredChat = directory.conversations.find(chat => chat.id === offer?.conversation);
   const connected = connection === "Connected";
   const invitation = privateRooms.find(room => room.id === prompt && room.id !== privateId);
@@ -612,8 +610,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       {(windows || nav === "Contacts") && <Contacts active={nav === "Contacts"} details={openDetails} directory={directory}
         selected={windows ? directoryContact?.id : profile?.id} refresh={refresh} create={create}
         openAvatar={openContactCard} addContact={() => setNewContact(true)} />}
-      {nav === "Files" && <FilesView people={people} revision={revision} recalled={recalled} hidden={hidden} transfers={transfers}
-        sources={new Map(directory.conversations.map(chat => [chat.id, chatName(chat, session.user.id, names)]))} onChanged={changed} />}
+      {nav === "Files" && <FilesView revision={revision} recalled={recalled} hidden={hidden} transfers={transfers} onChanged={changed} />}
       {nav === "Me" && <section className="settings-page phone-me">
         <header className="workspace-heading"><h1>{tabLabels.Me}</h1></header>
         <button className="phone-profile drawer-action" onClick={() => openProfile(session.user)}>
