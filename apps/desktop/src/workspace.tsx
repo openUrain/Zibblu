@@ -96,6 +96,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   useEffect(() => {
     if (!ios) return;
     function clearPrivateView() {
+      privateSelection.current += 1;
       setPrivateView(undefined);
       setPrivateTargets(undefined);
       setScanning(false);
@@ -348,11 +349,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }
 
   function selectChat(id: string, page?: "details" | "search") {
-    privateSelection.current += 1;
     if (privateView?.conversation === id && !page) {
       setMobileChat(true);
       return;
     }
+    privateSelection.current += 1;
     setProfile(undefined);
     setPrivateView(undefined);
     setSelected(id);
@@ -494,10 +495,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     setPrivateView(undefined);
     setMobileChat(pairedPrivate);
   }
-  function privateClosed(id: string) {
+  function privateClosed(id: string, selection: number) {
     setDraft("private/" + id, () => ({ text: "" }));
+    if (selection !== privateSelection.current) return;
     setShareCode(code => code?.kind === "private" ? undefined : code);
-    if (id === privateId) returnToNormal();
+    returnToNormal();
   }
   useIosBack(conversationOpen && !ipadSplit ? backFromChat : undefined);
   const splitProfile = ipadSplit && (nav === "Contacts" || nav === "Me");
@@ -509,6 +511,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       : directory.pending_contacts.find(request => request.user.id === profile.id)?.request_id ?? "other"}
     refresh={refresh} close={closeProfile} edited={profileEdited}
     message={() => create({ kind: "direct", contact_id: profile.id })} />;
+  const viewSelection = privateSelection.current;
   return <People.Provider value={{ remarks: names, avatars: directory.avatars, online: connected, open: openProfile }}>
   <main onClickCapture={event => {
     const target = (event.target as Element).closest("button")?.getBoundingClientRect();
@@ -585,7 +588,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             isContact={id => directory.contacts.some(person => person.id === id)}
             draft={drafts["private/" + privateId]?.text ?? ""}
             setDraft={change => setDraft("private/" + privateId, previous => ({ text: change(previous.text) }))}
-            back={backFromChat} showCode={showPrivateCode} onClosed={() => privateClosed(privateId)}
+            back={backFromChat} showCode={showPrivateCode} onClosed={() => privateClosed(privateId, viewSelection)}
             switchMode={pairedPrivate ? returnToNormal : undefined} />
           : active ? <ChatView key={active.id + ":" + (active.joined_after ?? "")} chat={active}
             own={session.user} server={session.server} revision={revision} profileOpen={!!profile} historyCache={historyCache}
