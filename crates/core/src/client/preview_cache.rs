@@ -15,7 +15,8 @@ impl Client {
         Ok(sqlx::query_as(
             "UPDATE media_previews SET touched = ?1
              WHERE message_seq = ?2 AND sha256 = ?3 AND variant = ?4
-               AND EXISTS (SELECT 1 FROM preview_eligible WHERE seq = ?2 AND sha256 = ?3 AND expires_at > ?1)
+               AND EXISTS (SELECT 1 FROM preview_eligible WHERE seq = ?2 AND sha256 = ?3
+                           AND (expires_at IS NULL OR expires_at > ?1))
              RETURNING mime, bytes",
         )
         .bind(self.server_now())
@@ -43,7 +44,7 @@ impl Client {
         sqlx::query(
             "INSERT INTO media_previews (message_seq, sha256, variant, mime, bytes, touched)
              SELECT ?1, ?2, ?3, ?4, ?5, ?6 FROM preview_eligible
-             WHERE seq = ?1 AND sha256 = ?2 AND expires_at > ?6
+             WHERE seq = ?1 AND sha256 = ?2 AND (expires_at IS NULL OR expires_at > ?6)
              ON CONFLICT (message_seq, sha256, variant) DO UPDATE SET touched = excluded.touched",
         )
         .bind(seq)
@@ -76,7 +77,8 @@ impl Client {
         sqlx::query(
             "DELETE FROM media_previews AS p WHERE NOT EXISTS (
                  SELECT 1 FROM preview_eligible
-                 WHERE seq = p.message_seq AND sha256 = p.sha256 AND expires_at > ?
+                 WHERE seq = p.message_seq AND sha256 = p.sha256
+                   AND (expires_at IS NULL OR expires_at > ?)
              )",
         )
         .bind(self.server_now())
@@ -169,10 +171,10 @@ mod tests {
             .execute(&client.db)
             .await?;
         assert!(client.cached_preview(1, "fixture", 5).await?.is_none());
-        sqlx::query("UPDATE inbox SET payload = json_set(payload, '$.expires_at', ?)")
-            .bind(i64::MAX)
+        sqlx::query("UPDATE inbox SET payload = json_remove(payload, '$.expires_at')")
             .execute(&client.db)
             .await?;
+        assert!(client.cached_preview(1, "fixture", 5).await?.is_some());
         for cutoff in [None, Some(1)] {
             sqlx::query("UPDATE directory SET payload = ?")
                 .bind(directory(cutoff))
