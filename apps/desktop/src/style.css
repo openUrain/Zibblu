@@ -453,6 +453,14 @@ svg { vertical-align: middle; }
   border-radius: 8px; background: #191826; color: #fff;
 }
 .media-viewer-stage > video, .media-viewer-image > img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.media-viewer-image { position: relative; }
+.media-viewer-stage > .media-viewer-thumbnail {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; opacity: 1;
+}
+.media-viewer-stage[data-ready] > .media-viewer-thumbnail { visibility: hidden; transition: visibility 0s .2s; }
+@media (prefers-reduced-motion: reduce) {
+  .media-viewer-stage[data-ready] > .media-viewer-thumbnail { transition: none; }
+}
 .media-viewer-placeholder {
   position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 10px; padding: 16px; text-align: center;

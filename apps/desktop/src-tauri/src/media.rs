@@ -286,8 +286,13 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Re
             .body(body)?);
     }
 
-    let thumbnail = request.uri().query() == Some("thumbnail");
-    let (mime, bytes) = image_preview(&client, message.seq, file.clone(), thumbnail).await?;
+    let query = request.uri().query();
+    let (mime, bytes) = if query == Some("cached-thumbnail") {
+        client.cached_preview(message.seq, &file.sha256, THUMBNAIL).await?
+            .context("No cached thumbnail")?
+    } else {
+        image_preview(&client, message.seq, file.clone(), query == Some("thumbnail")).await?
+    };
     ensure_current(app, &client, &file).await?;
     Ok(preview_headers(&mime)
         .header(header::ACCEPT_RANGES, "none")

@@ -135,7 +135,8 @@ export const api = {
     .then(bytes => Array.isArray(bytes) ? new Uint8Array(bytes).buffer : bytes),
   pasteImage: (conversation: string, bytes: ArrayBuffer) =>
     invoke<Transfer>("paste_image", bytes, { headers: { "zibblu-conversation": conversation } }),
-  mediaUrl: (id: string, thumbnail = false) => convertFileSrc(id, "zibblu-media") + (thumbnail ? "?thumbnail" : ""),
+  mediaUrl: (id: string, variant?: "thumbnail" | "cached-thumbnail") =>
+    convertFileSrc(id, "zibblu-media") + (variant ? "?" + variant : ""),
   save: (id: string) => invoke<Transfer | null>("save_attachment", { id }),
   transfers: () => invoke<Transfer[]>("transfers"),
   transferAction: (action: "pause" | "resume" | "discard", transfer: Transfer) =>

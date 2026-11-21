@@ -34,7 +34,7 @@ function MediaTile({ file, open }: { file: Attachment; open: () => void }) {
     onClick={open}
     aria-label={`Open ${kind === "video" ? "video" : "image"} ${file.name}`}>
     {visible && state !== "failed" && (kind === "image"
-      ? <img src={api.mediaUrl(file.id, true)} alt="" onLoad={() => setState("ready")} onError={() => setState("failed")} />
+      ? <img src={api.mediaUrl(file.id, "thumbnail")} alt="" onLoad={() => setState("ready")} onError={() => setState("failed")} />
       : <video src={api.mediaUrl(file.id)} muted playsInline preload="metadata"
         onLoadedMetadata={() => setState("ready")} onError={() => setState("failed")} aria-hidden="true" />)}
     {state === "failed" ? <span className="media-tile-fallback">
@@ -161,10 +161,13 @@ function ViewerMedia({ file }: { file: Attachment }) {
   const [state, setState] = useState<PreviewState>(supported ? "loading" : "failed");
   const [attempt, setAttempt] = useState(0);
   const [zoom, setZoom] = useState(100);
+  const [thumbnailReady, setThumbnailReady] = useState(false);
 
   return <>
     <div className="media-viewer-stage" data-ready={state === "ready" ? "" : undefined}
       tabIndex={zoom > 100 ? 0 : undefined} aria-label={zoom > 100 ? "Pan zoomed image" : undefined}>
+      {!video && supported && state !== "failed" && <img className="media-viewer-thumbnail" alt="" aria-hidden="true"
+        src={api.mediaUrl(file.id, "cached-thumbnail")} onLoad={() => setThumbnailReady(true)} />}
       {state !== "failed" && (video
         ? <video key={attempt} src={api.mediaUrl(file.id)} controls controlsList="nodownload noremoteplayback"
           playsInline preload="auto" disablePictureInPicture aria-label={file.name}
@@ -173,11 +176,11 @@ function ViewerMedia({ file }: { file: Attachment }) {
           <img key={attempt} src={api.mediaUrl(file.id)} alt={file.name}
             onLoad={() => setState("ready")} onError={() => { setZoom(100); setState("failed"); }} />
         </div>)}
-      {state === "loading" && <p className="media-viewer-placeholder" role="status" aria-label="Loading preview"><LoaderCircle className="preview-spinner" size={16} aria-hidden /></p>}
+      {state === "loading" && !thumbnailReady && <p className="media-viewer-placeholder" role="status" aria-label="Loading preview"><LoaderCircle className="preview-spinner" size={16} aria-hidden /></p>}
       {state === "failed" && <div className="media-viewer-placeholder">
         <p role="status">{supported ? "Preview unavailable. You can try again or save the attachment." : "Download this attachment to open it."}</p>
         {supported && <button className="button subtle small" type="button" onClick={() => {
-          setState("loading"); setAttempt(value => value + 1);
+          setThumbnailReady(false); setState("loading"); setAttempt(value => value + 1);
         }}><RotateCcw size={15} /> Retry preview</button>}
       </div>}
     </div>
