@@ -29,10 +29,12 @@ function Row({ label, children, choose, disabled, entry }: {
   </button>;
 }
 
-export function ProfileView({ session, user, relationVersion, reconnecting, close, refresh, edited, message, popup, point }: {
+export function ProfileView({ session, user, relationVersion, reconnecting, close, refresh, edited, message,
+  popup, point, active = true, onContactUnavailable }: {
   session: Session; user: User; relationVersion: string; reconnecting: boolean;
   close: () => void; refresh: () => Promise<void>; edited: (id: string, patch: Partial<Profile>) => void;
   popup?: boolean; point?: { x: number; y: number }; message: () => Promise<void>;
+  active?: boolean; onContactUnavailable?: (id: string) => void;
 }) {
   const { remarks } = useContext(People);
   const openMenu = useMenu();
@@ -40,6 +42,7 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
   const more = useRef<HTMLButtonElement>(null);
   const own = user.id === session.user.id;
   const [snapshot, setSnapshot] = useState<{ data: CachedProfile; relation: string }>();
+  const [checkingCache, setCheckingCache] = useState(!!onContactUnavailable);
   const [page, setPage] = useState<Page>();
   const [photo, setPhoto] = useState<ArrayBuffer>();
   const [picking, setPicking] = useState(false);
@@ -54,30 +57,44 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
   const heading = useId();
   const outsidePress = useRef(false);
   const returnEntry = useRef<Page | "details">(undefined);
+  const directoryDetail = !!onContactUnavailable && !popup;
   const current = snapshot?.relation === relationVersion ? snapshot.data : undefined;
-  const profile = current?.profile;
+  const profile = current && (!onContactUnavailable || current.expires_at > Date.now()) ? current.profile : undefined;
   const contact = profile?.relation === "contact";
 
   useEffect(() => {
+    if (!active) {
+      setPage(undefined);
+      setSaveError("");
+      setSaved(false);
+      return;
+    }
     const load = ++serial.current;
     async function read() {
       setLoadError("");
       const cached = await api.cachedProfile(user.id).catch(() => null);
       if (serial.current !== load) return;
-      if (cached) setSnapshot(previous => previous?.relation === relationVersion ? previous : { data: cached, relation: relationVersion });
+      if (cached) setSnapshot(previous => previous?.relation === relationVersion && previous.data.expires_at > Date.now()
+        ? previous : { data: cached, relation: relationVersion });
+      setCheckingCache(false);
       try {
         const data = await api.profile(user.id);
-        if (serial.current === load) setSnapshot({ data, relation: relationVersion });
+        if (serial.current !== load) return;
+        if (onContactUnavailable && data.profile.relation !== "contact") onContactUnavailable(user.id);
+        else setSnapshot({ data, relation: relationVersion });
       } catch (error) {
         if (serial.current !== load) return;
         const status = typeof error === "object" && error && "status" in error ? error.status : undefined;
-        if (status === 401 || status === 403 || status === 404) setSnapshot(undefined);
+        if (status === 401 || status === 403 || status === 404) {
+          setSnapshot(undefined);
+          onContactUnavailable?.(user.id);
+        }
         setLoadError(errorMessage(error));
       }
     }
     void read();
     return () => { ++serial.current; };
-  }, [user.id, relationVersion, retry, reconnecting]);
+  }, [user.id, relationVersion, retry, reconnecting, active, onContactUnavailable]);
 
   useEffect(() => {
     if (!current) return;
@@ -89,8 +106,8 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
   }, [current]);
 
   useEffect(() => {
-    if (!popup && page === undefined) backButton.current?.focus({ preventScroll: true });
-  }, [page, popup]);
+    if (!popup && !directoryDetail && page === undefined) backButton.current?.focus({ preventScroll: true });
+  }, [page, popup, directoryDetail]);
 
   useLayoutEffect(() => {
     const element = dialog.current;
@@ -121,6 +138,7 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
 
   function show(next: Page | undefined) {
     if (popup && next === undefined) returnEntry.current = page;
+    if (directoryDetail && next === undefined) requestAnimationFrame(() => backButton.current?.focus({ preventScroll: true }));
     setSaveError("");
     setSaved(false);
     setPhoto(undefined);
@@ -197,6 +215,8 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
     });
   }
 
+  if (!active) return null;
+
   const name = profile?.notes?.remark || profile?.display_name || displayName(user, remarks);
   const photoPage = page === "avatar" || page === "cover";
   const editor = page && (own || (page === "notes" || page === "remove" ? contact : profile?.relation === "stranger"));
@@ -207,7 +227,8 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
   const quickCard = popup && card;
   const cover = profile?.cover ? api.profileImageUrl(user.id, profile.cover) : undefined;
 
-  const content = <section className={"profile-page" + (own ? "" : " contact-profile")} aria-label={popup ? undefined : title} onKeyDown={event => {
+  const content = <section className={"profile-page" + (own ? "" : " contact-profile")}
+    data-contact-detail={directoryDetail ? user.id : undefined} aria-label={popup ? undefined : title} onKeyDown={event => {
     if (!popup && event.key === "Escape") { event.stopPropagation(); back(); }
   }}>
     <header className={"profile-header" + (quickCard ? " profile-card-header" : "")}>
@@ -235,7 +256,8 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
             setSaveError("");
             try {
               await api.removeContact(user.id);
-              close();
+              if (onContactUnavailable) onContactUnavailable(user.id);
+              else close();
               void refresh();
             } catch (error) { setSaveError(errorMessage(error)); setBusy(false); }
           }}>{saveError ? actions.retry : labels.remove}</button>
@@ -299,7 +321,8 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
             setBusy(true);
             setSaveError("");
             try { await message(); }
-            catch (error) { setSaveError(errorMessage(error)); setBusy(false); }
+            catch (error) { setSaveError(errorMessage(error)); }
+            finally { setBusy(false); }
           }}><MessageCircle size={18} /> {t("Message", "发消息")}</button>}
           {profile?.relation === "stranger" && <button className="button primary profile-direct" onClick={() => show("greeting")}>
             {t("Add contact", "添加联系人")}
@@ -307,7 +330,7 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
           {profile?.relation === "incoming" && <p className="muted">{t("Respond to this request in Contacts.", "在联系人中处理此请求。")}</p>}
           {profile?.relation === "outgoing" && <p className="muted" role="status">{t("Contact request sent.", "好友请求已发送。")}</p>}
         </>}
-        {!profile && !loadError && <p role="status" className="muted">{t("Loading profile…", "正在读取资料…")}</p>}
+        {!profile && !checkingCache && !loadError && <p role="status" className="muted">{t("Loading profile…", "正在读取资料…")}</p>}
         {loadError && <div className="profile-status" role="status">
           <span>{loadError}</span><button className="text-button" onClick={() => setRetry(value => value + 1)}>{actions.retry}</button>
         </div>}

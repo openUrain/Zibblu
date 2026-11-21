@@ -54,8 +54,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [hidden, setHidden] = useState<ReadonlySet<number>>(new Set());
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [profile, setProfile] = useState<User>();
-  const [selectedContact, setSelectedContact] = useState<string>();
-  const [quickProfile, setQuickProfile] = useState<{ user: User; point: { x: number; y: number } }>();
+  const [selectedContact, setSelectedContact] = useState<{ id: string; narrowDetail: boolean }>();
+  const [quickProfile, setQuickProfile] = useState<{ user: User; point: { x: number; y: number }; fromContacts?: boolean }>();
   const profilePoint = useRef({ x: 0, y: 0 });
   const profileTrigger = useRef<HTMLElement>(null);
   const refreshInFlight = useRef<Promise<void> | null>(null);
@@ -113,24 +113,61 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     openDetails(user);
   }
 
+  const directoryContact = directory.contacts.find(person => person.id === selectedContact?.id);
+  const invalidateContact = useCallback((id: string) => {
+    setSelectedContact(current => current?.id === id ? undefined : current);
+    setQuickProfile(current => current?.fromContacts && current.user.id === id ? undefined : current);
+  }, []);
+  useEffect(() => {
+    if (selectedContact && !directoryContact) invalidateContact(selectedContact.id);
+  }, [selectedContact, directoryContact, invalidateContact]);
+
+  function openContactCard(user: User) {
+    setSelectedContact({ id: user.id, narrowDetail: false });
+    setQuickProfile({ user, point: profilePoint.current, fromContacts: true });
+  }
+
   function openDetails(user: User) {
-    if (windows && nav === "Contacts") setSelectedContact(user.id);
+    if (windows && nav === "Contacts") {
+      setSelectedContact({ id: user.id, narrowDetail: true });
+      requestAnimationFrame(() => {
+        document.querySelector<HTMLButtonElement>(
+          `.contacts-layout > [data-contact-detail="${CSS.escape(user.id)}"] .profile-header button`,
+        )?.focus({ preventScroll: true });
+      });
+      return;
+    }
     if (document.activeElement instanceof HTMLElement) profileTrigger.current = document.activeElement;
     setProfile(user);
   }
 
   function closeProfile() {
     const trigger = profileTrigger.current;
-    const contactId = windows && nav === "Contacts" ? profile?.id : undefined;
     setProfile(undefined);
     requestAnimationFrame(() => {
-      if (trigger?.isConnected) {
-        trigger.focus({ preventScroll: true });
-      } else if (contactId) {
-        const row = document.querySelector<HTMLButtonElement>(`.contacts-screen [data-contact-id="${CSS.escape(contactId)}"]`);
-        if (row) row.focus();
-        else document.querySelector<HTMLInputElement>('.contacts-screen input[type="search"]')?.focus({ preventScroll: true });
+      if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+    });
+  }
+
+  function closeContactDetails(id: string) {
+    const narrow = window.matchMedia("(max-width: 740px)").matches;
+    setSelectedContact(current => {
+      if (current?.id !== id) return current;
+      return narrow ? { id, narrowDetail: false } : undefined;
+    });
+    requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLButtonElement>(`.contacts-screen [data-contact-id="${CSS.escape(id)}"]`);
+      const list = row?.closest(".contacts-list");
+      if (row && list) {
+        const rowBounds = row.getBoundingClientRect();
+        const listBounds = list.getBoundingClientRect();
+        const stickyHeader = Number.parseFloat(getComputedStyle(list).scrollPaddingBlockStart) || 0;
+        if (rowBounds.top >= listBounds.top + stickyHeader && rowBounds.bottom <= listBounds.bottom) {
+          row.focus({ preventScroll: true });
+          return;
+        }
       }
+      document.querySelector<HTMLInputElement>('.contacts-screen input[type="search"]')?.focus({ preventScroll: true });
     });
   }
 
@@ -513,6 +550,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       {ios && !connected && <div className="mobile-connection" role="status">{connection}</div>}
       <div className={"workspace-content" + (splitProfile ? " ipad-profile-layout" : "")
         + (desktopContacts ? " contacts-layout" : "")
+        + (desktopContacts && directoryContact && selectedContact?.narrowDetail ? " contact-detail-open" : "")
         + (profile && !splitProfile && !chatProfile && !desktopContacts ? " profile-replaces-root" : "")}>
       {nav === "Chats" && <div className={"chat-layout" + (mobileChat && (active || privateOpen) ? " mobile-chat-open" : "")
         + (profile && chatProfile ? " chat-profile-open" : "")}>
@@ -543,8 +581,9 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           : <section className="chat-blank"><Blank icon={<MessageCircle size={28} />} title={t("Select a chat", "选择会话")} /></section>}
         {chatProfile && profilePage}
       </div>}
-      {nav === "Contacts" && <Contacts details={openDetails} directory={directory} selected={profile?.id ?? (windows ? selectedContact : undefined)} refresh={refresh} create={create}
-        addContact={() => setNewContact(true)} />}
+      {(windows || nav === "Contacts") && <Contacts active={nav === "Contacts"} details={openDetails} directory={directory}
+        selected={windows ? directoryContact?.id : profile?.id} refresh={refresh} create={create}
+        openAvatar={openContactCard} addContact={() => setNewContact(true)} />}
       {nav === "Files" && <FilesView people={people} revision={revision} recalled={recalled} hidden={hidden} transfers={transfers}
         sources={new Map(directory.conversations.map(chat => [chat.id, chatName(chat, session.user.id, names)]))} onChanged={changed} />}
       {nav === "Me" && <section className="settings-page phone-me">
@@ -573,7 +612,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           setAssistantFailure("");
         }} />} />}
       {!chatProfile && profilePage}
-      {desktopContacts && windows && !profile && <section className="chat-blank contact-detail-empty">
+      {windows && directoryContact && <ProfileView key={directoryContact.id} active={desktopContacts}
+        user={directoryContact} session={session} relationVersion="contact" reconnecting={connection === "Reconnecting"}
+        close={() => closeContactDetails(directoryContact.id)} refresh={refresh} edited={profileEdited}
+        onContactUnavailable={invalidateContact} message={() => create({ kind: "direct", contact_id: directoryContact.id })} />}
+      {desktopContacts && windows && !directoryContact && <section className="chat-blank contact-detail-empty">
         {(directory.contacts.length > 0 || directory.pending_contacts.length > 0)
           && <p>{t("Select a contact", "选择联系人")}</p>}
       </section>}
@@ -582,12 +625,13 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       </section>}
       </div>
     </div>
-    {quickProfile && <ProfileView key={quickProfile.user.id} popup point={quickProfile.point} user={quickProfile.user} session={session}
+    {quickProfile && (!quickProfile.fromContacts || directoryContact?.id === quickProfile.user.id)
+      && <ProfileView key={quickProfile.user.id} popup point={quickProfile.point} user={quickProfile.user} session={session}
       message={async () => { await create({ kind: "direct", contact_id: quickProfile.user.id }); setQuickProfile(undefined); }}
       relationVersion={directory.contacts.some(person => person.id === quickProfile.user.id) ? "contact"
         : directory.pending_contacts.find(request => request.user.id === quickProfile.user.id)?.request_id ?? "other"}
       reconnecting={connection === "Reconnecting"} refresh={refresh} close={() => setQuickProfile(undefined)}
-      edited={profileEdited} />}
+      edited={profileEdited} onContactUnavailable={quickProfile.fromContacts ? invalidateContact : undefined} />}
     {about && <About close={() => setAbout(false)} />}
     {privateTargets && <PrivateTargets people={privateTargets.members.filter(user => user.id !== session.user.id)}
       close={() => setPrivateTargets(undefined)} start={invited => startPrivate(privateTargets, invited)} />}
@@ -674,7 +718,8 @@ function AddContact({ session, close, open }: { session: Session; close: () => v
   </Dialog>;
 }
 
-function Contacts({ directory, selected, refresh, create, addContact, details }: {
+function Contacts({ active, directory, selected, refresh, create, addContact, details, openAvatar }: {
+  active: boolean; openAvatar: (user: User) => void;
   details: (user: User) => void;
   directory: Directory; selected?: string; refresh: () => Promise<void>; create: (request: ConversationRequest) => Promise<void>;
   addContact: () => void;
@@ -684,8 +729,13 @@ function Contacts({ directory, selected, refresh, create, addContact, details }:
   const menu = useRowMenu();
   const [search, setSearch] = useState("");
   const list = useRef<HTMLDivElement>(null);
+  const scrollTop = useRef(0);
   const [failure, setFailure] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useLayoutEffect(() => {
+    if (windows && active && list.current) list.current.scrollTop = scrollTop.current;
+  }, [active]);
 
   async function perform(action: () => Promise<unknown>) {
     if (busy) return;
@@ -696,7 +746,8 @@ function Contacts({ directory, selected, refresh, create, addContact, details }:
     finally { setBusy(false); }
   }
 
-  const windowsContacts = useMemo(() => windows ? orderContacts(contacts, remarks) : [], [contacts, remarks]);
+  const windowsContacts = useMemo(() => active && windows ? orderContacts(contacts, remarks) : [], [active, contacts, remarks]);
+  if (!active) return null;
   const query = search.trim().toLocaleLowerCase();
   const matches = (name: string) => name.toLocaleLowerCase().includes(query);
   const filtered = (windows ? windowsContacts : contacts.map(user => ({
@@ -719,14 +770,18 @@ function Contacts({ directory, selected, refresh, create, addContact, details }:
     }}>
       <FloatingField fieldClass="search" label={t("Search contacts", "搜索联系人")} prefixIcon={<Search size={17} />}
         type="search" value={search} onChange={event => {
-          if (windows && list.current) list.current.scrollTop = 0;
+          if (windows) {
+            scrollTop.current = 0;
+            if (list.current) list.current.scrollTop = 0;
+          }
           setSearch(event.currentTarget.value);
         }} />
       <button type="button" className="icon-button new-conversation" title={t("Add contact", "添加联系人")}
         aria-label={t("Add contact", "添加联系人")} aria-haspopup={windows ? "dialog" : undefined}
         onClick={addContact}><UserRoundPlus size={windows ? 20 : 21} /></button>
     </form>
-    <div className="contacts-list" ref={list}>
+    <div className="contacts-list" ref={list}
+      onScroll={windows ? event => { scrollTop.current = event.currentTarget.scrollTop; } : undefined}>
     {failure && <p className="inline-error" role="alert">{failure}</p>}
     {!query && pending_contacts.length > 0 && <section>
       <h2 className="section-title">{t("Contact requests", "新的朋友")}</h2>
@@ -755,7 +810,7 @@ function Contacts({ directory, selected, refresh, create, addContact, details }:
       {[...groups].map(([letter, entries]) => <div className={letter ? "contact-group" : undefined} key={letter}>
         {letter && <h2 className="contact-group-letter">{letter}</h2>}
         {entries.map(({ user, name, showHandle }) => <div className="contact-row" key={user.id}>
-          {windows && <button className="contact-avatar icon-button" type="button" onClick={() => open?.(user)}
+          {windows && <button className="contact-avatar icon-button" type="button" aria-haspopup="dialog" onClick={() => openAvatar(user)}
             aria-label={t("View profile", "查看资料") + " " + name}><PersonAvatar user={user} /></button>}
           <button className="person-link contact-name" aria-current={selected === user.id || undefined}
             data-contact-id={windows ? user.id : undefined} onClick={() => details(user)}
