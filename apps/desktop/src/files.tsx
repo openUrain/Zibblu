@@ -1,7 +1,7 @@
 import { FloatingField } from "./floating-field";
 import { Archive, ArrowDown, ArrowUp, Clock, Check, Download, File, FileText, FolderOpen, Image, MessageSquare, Pause, Play, RotateCcw, Search, Share, Trash2, Video } from "lucide-react";
 import { useCallback, useContext, useId, useState } from "react";
-import type { KeyboardEvent } from "react";
+import type { ChangeEvent, KeyboardEvent } from "react";
 import { api, errorMessage, fileExpired } from "./api";
 import type { Attachment, FileFilter, Message, Transfer, User } from "./api";
 import { mediaKind, readAttachmentPage } from "./attachment-media";
@@ -9,6 +9,7 @@ import { Blank, Dialog, People, PersonAvatar, bytes, dateTimeLabel, displayName,
 import { windows } from "./window-chrome";
 import { ios } from "./ios";
 import { actions, t } from "./locale";
+import { WorkspaceSearchField } from "./workspace-search";
 
 export function FileIcon({ file }: { file: Attachment }) {
   const media = mediaKind(file);
@@ -205,10 +206,14 @@ export function FilesView({ conversation, people, transfers, revision, recalled,
     document.getElementById(`${tabsId}-${next}-tab`)?.focus();
   }
   const desktopLibrary = windows && !conversation;
-  const searchField = <FloatingField fieldClass="search file-search" label="Search file names" prefixIcon={<Search size={16} />}
-             type="search" value={name} onChange={event => setName(event.target.value)} />;
+  const search = {
+    value: name,
+    onChange: (event: ChangeEvent<HTMLInputElement>) => setName(event.target.value),
+  };
   return <div className={"files-view" + (conversation ? " chat-files" : "")}>
-    {desktopLibrary && tab === "shared" && <div className="chat-list-head">{searchField}</div>}
+    {desktopLibrary && tab === "shared" && <div className="chat-list-head">
+      <WorkspaceSearchField {...search} label={t("Search files", "搜索文件")} />
+    </div>}
     {!conversation && <header className={desktopLibrary ? "sr-only" : "workspace-heading"}><h1>Files</h1></header>}
     {!conversation && <div className="file-tabs" role="tablist" aria-label="Files view">
       {(Object.keys(fileTabs) as FileTab[]).map(id => <button key={id} type="button" role="tab"
@@ -221,7 +226,7 @@ export function FilesView({ conversation, people, transfers, revision, recalled,
       aria-labelledby={conversation ? undefined : `${tabsId}-shared-tab`} id={`${tabsId}-shared-panel`}>
     {tab === "shared" && <>
       <div className="file-filters">
-        {!desktopLibrary && searchField}
+        {!desktopLibrary && <FloatingField {...search} label="Search file names" fieldClass="search file-search" prefixIcon={<Search size={16} />} type="search" />}
         {!conversation && <select aria-label="Shared by" value={person} onChange={event => setPerson(event.target.value)}>
           <option value="">All senders</option>
           {people.map(user => <option key={user.id} value={user.id}>{displayName(user, remarks)}</option>)}

@@ -21,6 +21,7 @@ import { actions as actionLabels, t } from "./locale";
 import { ShareQr } from "./qr";
 import type { SharedCode } from "./qr";
 import { windows } from "./window-chrome";
+import { WorkspaceSearchField } from "./workspace-search";
 
 type ChatPage = "details" | "search";
 
@@ -52,7 +53,8 @@ export function ChatList({ chats, own, selected, open, newChat, addContact, room
       event.preventDefault();
       if (query && filtered.length === 1) open(filtered[0].id);
     }}>
-      <FloatingField fieldClass="search" label={t("Search chats", "搜索聊天")} prefixIcon={<Search size={18} />} type="search" value={search} onChange={event => setSearch(event.target.value)} />
+      <WorkspaceSearchField label={t("Search chats", "搜索聊天")} otherIconSize={18}
+        value={search} onChange={event => setSearch(event.target.value)} />
       {!ios && add}
     </form>
     <div className="chat-rows">

@@ -649,7 +649,6 @@ svg { vertical-align: middle; }
 .contact-name small, .contact-greeting { display: block; }
 .contact-greeting { margin-top: 3px; white-space: pre-wrap; }
 .windows .contacts-layout { grid-template-rows: minmax(0, 1fr); }
-.windows .contacts-screen .chat-list-head { padding-block-start: 12px; }
 .windows .contacts-screen .new-conversation { background: var(--soft); border-radius: 8px; corner-shape: squircle; }
 .windows .contacts-screen .new-conversation:hover { background: var(--hover); }
 .windows .contacts-list { --contact-group-height: 32px; scroll-padding-block-start: var(--contact-group-height); }
@@ -1036,13 +1035,38 @@ html:has(body.windows .shell) { background: transparent; }
   margin: 0 var(--shell-inset) var(--shell-inset) 0;
   border-radius: 8px; overflow: clip; background: var(--panel);
 }
-.windows .chat-list-head, .windows .contacts-screen .chat-list-head {
+.windows .chat-list-head {
+  --workspace-search-height: 36px;
+  --workspace-search-gap: 8px;
+  --workspace-search-row: calc(var(--list-width) - 1px);
+  gap: var(--workspace-search-gap);
   padding: var(--search-block) var(--search-inline);
 }
 .windows .workspace-content > .files-view { padding: 0 var(--search-inline) 16px; }
 .windows .files-view > .chat-list-head { padding-inline: 0; }
-.windows .chat-list-head .floating-field { height: 36px; }
-.windows .chat-list-head .floating-field > input { min-height: 0; height: 100%; }
+.windows .chat-list-head > .workspace-search {
+  --workspace-search-icon-size: 20px;
+  --label-start: calc(9px + var(--workspace-search-icon-size) + 11px - 3px);
+  /* Reserve the list action's space even in the file center. */
+  flex: 0 1 calc(var(--workspace-search-row) - 2 * var(--search-inline) - var(--workspace-search-height) - var(--workspace-search-gap));
+  height: var(--workspace-search-height);
+}
+.windows .workspace-search > .field-icon { flex: none; }
+.windows .workspace-search > .field-icon > svg {
+  inline-size: var(--workspace-search-icon-size);
+  block-size: var(--workspace-search-icon-size);
+}
+.windows .chat-list-head > .workspace-search > input { min-height: 0; height: 100%; }
+.windows .chat-list-head > .icon-button {
+  width: var(--workspace-search-height);
+  min-width: var(--workspace-search-height);
+  height: var(--workspace-search-height);
+}
+@media (max-width: 740px) {
+  .windows .chat-list-head {
+    --workspace-search-row: calc(100vw - var(--rail-width) - var(--shell-inset));
+  }
+}
 .windows .floating-field { border-width: 1px; }
 .windows .floating-field:has(> :is(input, textarea):focus),
 .windows .profile-popup .floating-field:has(> :is(input, textarea):focus) {
