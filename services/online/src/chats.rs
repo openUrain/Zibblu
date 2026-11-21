@@ -20,6 +20,7 @@ struct ChatRow {
     title: Option<String>,
     members: DbJson<Vec<User>>,
     created_at: i64,
+    joined_after: i64,
 }
 
 pub(crate) async fn directory(db: &mut PgConnection, account: Uuid) -> Result<Directory> {
@@ -41,7 +42,7 @@ pub(crate) async fn directory(db: &mut PgConnection, account: Uuid) -> Result<Di
     .fetch_all(&mut *db)
     .await?;
     let conversations = sqlx::query_as::<_, ChatRow>(
-        "SELECT c.id, c.title, roster.members, c.created_at
+        "SELECT c.id, c.title, roster.members, c.created_at, own.joined_after
          FROM members own JOIN conversations c ON own.conversation_id = c.id
          JOIN LATERAL (
              SELECT jsonb_agg(jsonb_build_object('id', a.id, 'handle', a.handle) ORDER BY a.handle) AS members
@@ -105,6 +106,7 @@ pub(crate) async fn directory(db: &mut PgConnection, account: Uuid) -> Result<Di
                 id: row.id,
                 title: row.title,
                 members: row.members.0,
+                joined_after: Some(row.joined_after),
                 activity_at: row.created_at,
                 preview: None,
                 preview_seq: None,

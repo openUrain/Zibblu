@@ -896,10 +896,28 @@ pub(crate) async fn private_list(
 #[tauri::command]
 pub(crate) async fn private_view(
     state: State<'_, Desktop>,
+    window: WebviewWindow,
     id: Uuid,
     after: u64,
 ) -> Result<PrivateView> {
+    if window.label() != "main" {
+        return Err(anyhow!("Open private messages in the main window").into());
+    }
     Ok(state.lobby().await?.view(id, after)?)
+}
+
+#[tauri::command]
+pub(crate) async fn private_mark_read(
+    state: State<'_, Desktop>,
+    window: WebviewWindow,
+    id: Uuid,
+    connection: Uuid,
+    through: u64,
+) -> Result<bool> {
+    if window.label() == "main" && window.is_focused().unwrap_or(false) {
+        return Ok(state.lobby().await?.mark_read(id, connection, through));
+    }
+    Ok(false)
 }
 
 #[tauri::command]
@@ -910,14 +928,18 @@ pub(crate) async fn private_respond(
     id: Uuid,
     accept: bool,
 ) -> Result<()> {
-    let conversation = state.lobby().await?.respond(id, accept)?;
-    if accept {
+    let lobby = state.lobby().await?;
+    let response = lobby.respond(id, accept)?;
+    if accept && response.applied && let Some(main) = app.get_webview_window("main") {
+        let active = state.private.lock().await;
+        if !active.as_ref().is_some_and(|active| Arc::ptr_eq(active, &lobby)) {
+            return Ok(());
+        }
         state.ai.lock().expect("AI state").clear();
-    }
-    if accept && let Some(main) = app.get_webview_window("main") {
-        let _ = main.emit(
+        let _ = app.emit_to(
+            "main",
             "private-invitation-accepted",
-            serde_json::json!({ "id": id, "conversation": conversation }),
+            serde_json::json!({ "id": id, "conversation": response.conversation }),
         );
         #[cfg(desktop)]
         if _window.label() == crate::private_runtime::INVITATION {

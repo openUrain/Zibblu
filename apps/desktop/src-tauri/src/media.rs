@@ -13,9 +13,11 @@ use tauri::{
 };
 use tokio::sync::Semaphore;
 use uuid::Uuid;
-use zibblu_core::{CHUNK_SIZE, MAX_PASTED_IMAGE_BYTES, ProfileImage, Transfer};
+use zibblu_core::{Attachment, CHUNK_SIZE, Client, MAX_PASTED_IMAGE_BYTES, ProfileImage, Transfer};
 
 static IMAGE_JOBS: Semaphore = Semaphore::const_new(2);
+const ORIGINAL: i64 = -1;
+const THUMBNAIL: i64 = -2;
 
 fn image_body(body: &InvokeBody) -> Result<&[u8]> {
     let InvokeBody::Raw(bytes) = body else {
@@ -229,11 +231,8 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Re
             })?);
     }
     let id = Uuid::parse_str(path)?;
-    let file = client
-        .attachment(id)
-        .await?
-        .attachment
-        .context("Missing attachment")?;
+    let message = client.attachment(id).await?;
+    let file = message.attachment.context("Missing attachment")?;
     let mime_hint = file.preview_mime().context("Unsupported media type")?;
     if mime_hint.starts_with("video/") {
         let response = preview_headers(mime_hint).header(header::ACCEPT_RANGES, "bytes");
@@ -263,9 +262,19 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Re
         // Serve at most one existing transfer chunk per range.
         let end = end.min((start / CHUNK_SIZE + 1) * CHUNK_SIZE - 1);
         let offset = start - start % CHUNK_SIZE;
-        let chunk = client
-            .read_attachment_chunk(id, offset, (file.size - offset).min(CHUNK_SIZE) as usize)
-            .await?;
+        let expected = (file.size - offset).min(CHUNK_SIZE) as usize;
+        let chunk = if let Some((_, bytes)) = client.cached_preview(message.seq, &file.sha256, offset as i64).await.ok().flatten()
+            .filter(|(_, bytes)| bytes.len() == expected)
+        {
+            bytes
+        } else {
+            let bytes = client.read_attachment_chunk(id, offset, expected).await?;
+            if !message.local_file {
+                let _ = client.remember_preview(message.seq, &file.sha256, offset as i64, mime_hint, &bytes).await;
+            }
+            bytes
+        };
+        ensure_current(app, &client, &file).await?;
         let body = chunk[(start - offset) as usize..=(end - offset) as usize].to_vec();
         return Ok(response
             .status(StatusCode::PARTIAL_CONTENT)
@@ -277,30 +286,15 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Re
             .body(body)?);
     }
 
-    ensure!(
-        file.size <= MAX_PASTED_IMAGE_BYTES as u64,
-        "Image too large for inline preview"
-    );
-    let permit = IMAGE_JOBS.acquire().await?;
-    let mut bytes = Vec::with_capacity(file.size as usize);
-    for offset in (0..file.size).step_by(CHUNK_SIZE as usize) {
-        bytes.extend(
-            client
-                .read_attachment_chunk(id, offset, (file.size - offset).min(CHUNK_SIZE) as usize)
-                .await?,
-        );
-    }
-    let (mime, bytes) = tauri::async_runtime::spawn_blocking(move || -> Result<_> {
-        let _permit = permit;
-        ensure!(
-            format!("{:x}", Sha256::digest(&bytes)) == file.sha256,
-            "Image verification failed"
-        );
-        let mime = images::verified_mime(&bytes)?;
-        Ok((mime, bytes))
-    })
-    .await??;
-    Ok(preview_headers(mime)
+    let query = request.uri().query();
+    let (mime, bytes) = if query == Some("cached-thumbnail") {
+        client.cached_preview(message.seq, &file.sha256, THUMBNAIL).await?
+            .context("No cached thumbnail")?
+    } else {
+        image_preview(&client, message.seq, file.clone(), query == Some("thumbnail")).await?
+    };
+    ensure_current(app, &client, &file).await?;
+    Ok(preview_headers(&mime)
         .header(header::ACCEPT_RANGES, "none")
         .header(header::CONTENT_LENGTH, bytes.len())
         .body(if *request.method() == Method::HEAD {
@@ -308,6 +302,48 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Re
         } else {
             bytes
         })?)
+}
+
+async fn ensure_current(app: &AppHandle, client: &std::sync::Arc<Client>, file: &Attachment) -> Result<()> {
+    ensure!(
+        client.attachment(file.id).await?.attachment.as_ref() == Some(file)
+            && app.state::<Desktop>().is_current(client).await,
+        "The attachment is no longer available"
+    );
+    Ok(())
+}
+
+async fn image_preview(client: &Client, seq: i64, file: Attachment, thumbnail: bool) -> Result<(String, Vec<u8>)> {
+    ensure!(file.size <= MAX_PASTED_IMAGE_BYTES as u64, "Image too large for inline preview");
+    let variant = if thumbnail { THUMBNAIL } else { ORIGINAL };
+    if let Some(cached) = client.cached_preview(seq, &file.sha256, variant).await.ok().flatten() {
+        return Ok(cached);
+    }
+    let permit = IMAGE_JOBS.acquire().await?;
+    let cached = client.cached_preview(seq, &file.sha256, ORIGINAL).await.ok().flatten();
+    let bytes = if let Some((_, bytes)) = cached {
+        bytes
+    } else {
+        let mut bytes = Vec::with_capacity(file.size as usize);
+        for offset in (0..file.size).step_by(CHUNK_SIZE as usize) {
+            bytes.extend(client.read_attachment_chunk(file.id, offset, (file.size - offset).min(CHUNK_SIZE) as usize).await?);
+        }
+        bytes
+    };
+    let sha256 = file.sha256.clone();
+    let (mime, bytes, small) = tauri::async_runtime::spawn_blocking(move || -> Result<_> {
+        ensure!(
+            format!("{:x}", Sha256::digest(&bytes)) == sha256,
+            "Image verification failed"
+        );
+        let (mime, small) = images::preview_image(&bytes)?;
+        Ok((mime, bytes, small))
+    })
+    .await??;
+    let _ = client.remember_preview(seq, &file.sha256, ORIGINAL, mime, &bytes).await;
+    let _ = client.remember_preview(seq, &file.sha256, THUMBNAIL, "image/png", &small).await;
+    drop(permit);
+    Ok(if thumbnail { ("image/png".into(), small) } else { (mime.into(), bytes) })
 }
 
 fn preview_headers(mime: &str) -> Builder {

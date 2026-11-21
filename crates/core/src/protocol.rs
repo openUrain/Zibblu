@@ -184,6 +184,8 @@ pub struct Conversation {
     pub id: Uuid,
     pub title: Option<String>,
     pub members: Vec<User>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joined_after: Option<i64>,
     pub activity_at: i64,
     pub preview: Option<String>,
     #[serde(default)]

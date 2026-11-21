@@ -67,6 +67,22 @@ impl Client {
                 id TEXT PRIMARY KEY, message_seq INTEGER NOT NULL UNIQUE,
                 sha256 TEXT NOT NULL, size INTEGER NOT NULL, ack_pending INTEGER NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS media_previews (
+                message_seq INTEGER NOT NULL, sha256 TEXT NOT NULL, variant INTEGER NOT NULL,
+                mime TEXT NOT NULL, bytes BLOB NOT NULL, touched INTEGER NOT NULL,
+                PRIMARY KEY (message_seq, sha256, variant)
+             );
+             CREATE VIEW IF NOT EXISTS preview_eligible AS
+                SELECT i.seq, json_extract(i.payload, '$.attachment.sha256') AS sha256,
+                       json_extract(i.payload, '$.expires_at') AS expires_at
+                FROM inbox i JOIN directory d ON d.id = 1
+                JOIN json_each(d.payload, '$.conversations') c
+                  ON json_extract(c.value, '$.id') = i.conversation_id
+                 AND i.seq > json_extract(c.value, '$.joined_after')
+                WHERE i.attachment_id IS NOT NULL
+                  AND json_extract(i.payload, '$.recalled') IS NOT 1
+                  AND json_extract(i.payload, '$.expired') IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h.seq = i.seq);
              CREATE VIEW IF NOT EXISTS timeline AS
                 SELECT seq, conversation_id, attachment_id,
                   CASE WHEN attachment_id IN (SELECT id FROM local_files)
@@ -214,6 +230,7 @@ impl Client {
         if directory_changed {
             self.prune_profile_cache(&mut tx).await?;
         }
+        self.prune_media_previews(&mut tx).await?;
         sqlx::query("UPDATE sync_checkpoint SET pending_ack = ? WHERE id = 1")
             .bind(serde_json::to_string(&ack)?)
             .execute(&mut *tx)
@@ -410,6 +427,10 @@ async fn apply_recall(
     recall: MessageRecall,
     files: &mut Vec<String>,
 ) -> Result<()> {
+    sqlx::query("DELETE FROM media_previews WHERE message_seq = ?")
+        .bind(recall.message_seq)
+        .execute(&mut *db)
+        .await?;
     sqlx::query("INSERT OR IGNORE INTO recall_tombstones (message_seq, event_seq) VALUES (?,?)")
         .bind(recall.message_seq)
         .bind(recall.seq)

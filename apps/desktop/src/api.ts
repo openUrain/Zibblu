@@ -9,7 +9,7 @@ export type CloseAction = "exit" | "tray";
 export type Preferences = { server: string; official_server: string; private_quiet: boolean; close_action?: CloseAction; saved_account?: SavedAccount };
 export type Conversation = {
   id: string; title: string | null; members: User[]; activity_at: number; preview: string | null;
-  preview_seq: number | null; latest_seq: number; unread: number; read_through: number;
+  preview_seq: number | null; latest_seq: number; unread: number; read_through: number; joined_after?: number;
 };
 export type MessageReceipt = { seq: number; status: "delivered" | "read" };
 export type PendingContact = { user: User; incoming: boolean; request_id: string | null; greeting: string };
@@ -54,7 +54,7 @@ export type GroupPreview = { id: string; title: string; member_count: number };
 export type PrivateSummary = {
   id: string; conversation: string | null; host: User; invited: User[]; participants: User[];
   phase: "discovering" | "waiting" | "invited" | "authenticating" | "connected" | "missed" | "failed" | "ended";
-  open: boolean; hosted: boolean;
+  open: boolean; hosted: boolean; unread: boolean;
 };
 export type PrivateList = { rooms: PrivateSummary[]; prompt: string | null };
 export type NearbyDevice = { id: string; matched_account: User | null };
@@ -119,6 +119,8 @@ export const api = {
   inviteNearby: (device: string, account?: string) => invoke<string>("private_invite_nearby", { device, account }),
   privateRooms: () => invoke<PrivateList>("private_list"),
   viewPrivate: (id: string, after: number) => invoke<PrivateView>("private_view", { id, after }),
+  markPrivateRead: (id: string, connection: string, through: number) =>
+    invoke<boolean>("private_mark_read", { id, connection, through }),
   respondPrivate: (id: string, accept: boolean) => invoke<void>("private_respond", { id, accept }),
   sendPrivate: (id: string, text: string) => invoke<void>("private_send", { id, text }),
   endPrivate: (id: string) => invoke<void>("private_end", { id }),
@@ -133,7 +135,8 @@ export const api = {
     .then(bytes => Array.isArray(bytes) ? new Uint8Array(bytes).buffer : bytes),
   pasteImage: (conversation: string, bytes: ArrayBuffer) =>
     invoke<Transfer>("paste_image", bytes, { headers: { "zibblu-conversation": conversation } }),
-  mediaUrl: (id: string) => convertFileSrc(id, "zibblu-media"),
+  mediaUrl: (id: string, variant?: "thumbnail" | "cached-thumbnail") =>
+    convertFileSrc(id, "zibblu-media") + (variant ? "?" + variant : ""),
   save: (id: string) => invoke<Transfer | null>("save_attachment", { id }),
   transfers: () => invoke<Transfer[]>("transfers"),
   transferAction: (action: "pause" | "resume" | "discard", transfer: Transfer) =>

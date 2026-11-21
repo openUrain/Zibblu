@@ -2,6 +2,7 @@ mod ai_context;
 mod device;
 mod local_sync;
 mod outbox;
+mod preview_cache;
 mod profile_cache;
 mod staging;
 mod transfer;
@@ -571,19 +572,25 @@ impl Client {
     }
 
     pub async fn hide_message(&self, conversation: Uuid, seq: i64) -> Result<()> {
+        let mut tx = self.db.begin().await?;
         let found = sqlx::query(
             "INSERT OR IGNORE INTO hidden_messages (seq, attachment_id)
              SELECT seq, attachment_id FROM inbox WHERE seq = ? AND conversation_id = ?",
         )
         .bind(seq)
         .bind(conversation.to_string())
-        .execute(&self.db)
+        .execute(&mut *tx)
         .await?;
         if found.rows_affected() == 0 {
             let hidden: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM hidden_messages h JOIN inbox i USING(seq) WHERE h.seq = ? AND i.conversation_id = ?)")
-                .bind(seq).bind(conversation.to_string()).fetch_one(&self.db).await?;
+                .bind(seq).bind(conversation.to_string()).fetch_one(&mut *tx).await?;
             ensure!(hidden, "This message is unavailable");
         }
+        sqlx::query("DELETE FROM media_previews WHERE message_seq = ?")
+            .bind(seq)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         self.history_changed();
         Ok(())
     }

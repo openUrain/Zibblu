@@ -18,7 +18,7 @@ We **cannot** promise protection from: screenshots or cameras, recipients manual
 - No cloud relay, no NAT traversal via Zibblu servers, and no fallback to ordinary online chat.
 - Content must not be sent to telemetry, logs, crash reports, normal-message storage, search indices, notifications or cloud AI.
 - Private text is kept in bounded memory during the session. End, disconnect, timeout and sign-out discard local private state. Switching conversations leaves the active background session running. A restart opens no private transcript.
-- Dismissing a disconnected room keeps only its ID in memory for the current sign-in, including after network changes. The client refuses automatic re-entry to that room. An explicit scan of a valid private QR code expresses fresh consent.
+- Ending a room keeps only its ID in a per-sign-in set when needed to reject automatic re-entry, including after network changes. An explicit scan of a valid private QR code expresses fresh consent. Private read state lives in the LAN feed and is discarded with it.
 - Connection UI must distinguish `connecting`, `verified private`, and `disconnected`. Never badge a session “private” based only on an SSID or IP range.
 - Block accidental exports, copy-to-normal-history and private-content previews in the first release.
 
@@ -49,6 +49,8 @@ M1 使用 Argon2id 保存密码摘要。服务端保存七天会话令牌和安�
 远程客户端要求 HTTPS 和正常证书验证。环回开发可用 HTTP。在线服务在有效期内可读 M1 载荷，普通聊天尚无端到端加密。SQLite、暂存和已核验本地附件使用操作系统账号的文件权限。
 
 每次附件分块、预览和内容 ACK 检查当前会话、账号、成员、历史截止点和撤回状态。上传修改由所有者发起并复核发送权限。文件或目录归档上限 256 MiB。服务按账号预留最多 2 GiB 和 256 个传输，全服务上限 16 GiB 和 4,096 个传输。超过配置的期限后停止服务对应载荷；可选自动清理释放数据库空间与上传配额。默认关闭自动清理，生产期限和开关须单独审批。
+
+Windows 和 iOS 的普通聊天预览只访问当前认证资料。接收的会话目录附带本账号的历史截止点，缺少该字段时仍走原有在线预览。临时预览读写复核最近同步的成员状态、截止点、附件有效期、撤回和本机隐藏状态。离线期间其他设备的权限变化在下次成功同步时生效。
 
 SQLite 落盘后才发送元数据 ACK。完整保存并校验长度和 SHA-256 后，设备才提交独立的文件内容 ACK。未授权请求统一按不可见处理，授权用户可收到过期回应。内容响应使用 `Cache-Control: private, no-store`。服务端清理只结束数据的在线可用性，WAL、数据库备份、快照和代理需执行各自的留存与访问控制。
 

@@ -128,12 +128,12 @@ export function Dialog({ title, close, children, className, onKeyDown, closeDisa
 
 export function usePage(read: (before?: number) => Promise<Page>, revision: number,
   recalled: ReadonlySet<number>, showRecalled = false, latestAiSeq?: number,
-  hidden?: ReadonlySet<number>, oldestFirst = false) {
-  const [page, setPage] = useState<Page>();
+  hidden?: ReadonlySet<number>, oldestFirst = false, seed?: Page, save?: (page: Page) => void) {
+  const [page, setPage] = useState(seed);
   const [failure, setFailure] = useState("");
   const [loading, setLoading] = useState(false);
   const expanding = useRef(false);
-  const newest = useRef<number | undefined>(undefined);
+  const newest = useRef(seed ? Math.max(0, ...seed.items.map(item => item.seq)) : undefined);
   const [oldestExpanded, setOldestExpanded] = useState<Message>();
   const reviewedAiSeq = useRef(latestAiSeq);
   const [loadedRevision, setLoadedRevision] = useState<number>();
@@ -159,6 +159,7 @@ export function usePage(read: (before?: number) => Promise<Page>, revision: numb
     }
     refresh().then(next => {
       if (!current) return;
+      save?.(next);
       setFailure("");
       setLoadedRevision(revision);
       reviewedAiSeq.current = latestAiSeq;
@@ -178,7 +179,7 @@ export function usePage(read: (before?: number) => Promise<Page>, revision: numb
       });
     }).catch(error => { if (current) setFailure(errorMessage(error)); });
     return () => { current = false; };
-  }, [read, revision, recalled, showRecalled, latestAiSeq, oldestExpanded, hidden, oldestFirst]);
+  }, [read, revision, recalled, showRecalled, latestAiSeq, oldestExpanded, hidden, oldestFirst, save]);
 
   async function older() {
     const last = page?.items.at(-1);
