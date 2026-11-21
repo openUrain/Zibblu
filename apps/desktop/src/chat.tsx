@@ -1,7 +1,7 @@
 import { FloatingField } from "./floating-field";
 import {
   ArrowDown, ArrowLeft, ArrowRight, Clock, Check, CheckCheck, ChevronRight, Copy, Download, FolderOpen, Ghost, LockKeyhole,
-  Image, LogOut, MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, UserRoundPlus, UsersRound, X,
+  Image, LoaderCircle, LogOut, MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, UserRoundPlus, UsersRound, X,
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
@@ -22,6 +22,7 @@ import { ShareQr } from "./qr";
 import type { SharedCode } from "./qr";
 import { windows } from "./window-chrome";
 import { WorkspaceSearchField } from "./workspace-search";
+import type { ChatHistoryCache } from "./chat-history-cache";
 
 type ChatPage = "details" | "search";
 
@@ -113,12 +114,13 @@ function DrawerAction({ icon, children, onClick, className = "", next = true, bu
 }
 
 export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, back, share, pasteFiles, openPrivate, aiChat,
-  hidden, hide, readReceipts, draft, setDraft, profileOpen, visibleOnNarrow, requested }: {
+  hidden, hide, readReceipts, draft, setDraft, profileOpen, visibleOnNarrow, requested, historyCache }: {
   chat: Conversation; own: User; server: string; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
   refresh: () => Promise<void>; back: () => void; share: (source: ShareSource) => Promise<void>; pasteFiles: () => Promise<boolean>; openPrivate: () => void;
   aiChat: ChatAssistants; hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean;
   profileOpen: boolean; visibleOnNarrow: boolean;
   requested?: { page: ChatPage };
+  historyCache: ChatHistoryCache;
 } & ChatDraft) {
   const [showFiles, setShowFiles] = useState(false);
   const [drawer, setDrawer] = useState(false);
@@ -245,7 +247,7 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
       <div className="chat-messages" hidden={showFiles}>
         <ChatMessages chat={chat} own={own} revision={revision} latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset} transfers={transfers}
           visible={!showFiles && !profileOpen} changed={changed} refresh={refresh} share={share} pasteFiles={pasteFiles} aiChat={aiChat} openMedia={setMedia}
-          {...{ hidden, hide, readReceipts, draft, setDraft }} />
+          {...{ hidden, hide, readReceipts, draft, setDraft, historyCache }} />
       </div>
       {showFiles && <FilesView conversation={chat.id} people={chat.members} transfers={transfers} revision={revision} recalled={recalled} hidden={hidden} onChanged={changed} />}
       {(windows || detailsVisible) && <Dialog mobilePage title={details} className="conversation-drawer"
@@ -350,14 +352,17 @@ function SearchResults({ conversation, search, revision, latestAiSeq, recalled, 
 }
 
 function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset, transfers, visible, changed, refresh, share, pasteFiles, aiChat,
-  hidden, hide, readReceipts, draft, setDraft, openMedia }: {
+  hidden, hide, readReceipts, draft, setDraft, openMedia, historyCache }: {
   chat: Conversation; own: User; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
   refresh: () => Promise<void>; share: (source: ShareSource) => Promise<void>; pasteFiles: () => Promise<boolean>; aiChat: ChatAssistants;
   hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean; visible: boolean;
+  historyCache: ChatHistoryCache;
   openMedia: (message: Message) => void;
 } & ChatDraft) {
   const read = useCallback((before?: number) => api.messages(chat.id, before), [chat.id]);
-  const { page, failure, loading, older, newestAtOpen, loadedRevision } = usePage(read, revision, recalled, true, latestAiSeq, hidden);
+  const savePage = useCallback((page: Page) => historyCache.save(chat.id, page), [chat.id, historyCache]);
+  const { page, failure, loading, older, newestAtOpen, loadedRevision } =
+    usePage(read, revision, recalled, true, latestAiSeq, hidden, false, historyCache.get(chat.id), savePage);
   const { remarks, open } = useContext(People);
   const viewport = useRef<HTMLDivElement>(null);
   const nearBottom = useRef(true);
@@ -481,7 +486,9 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
       {failure && <p className="inline-error" role="alert">{failure}</p>}
       {recallError && <p className="inline-error" role="alert">{recallError}</p>}
       {saveFailure && <p className="inline-error" role="alert">{saveFailure}</p>}
-      {!page && !failure && <p className="muted loading" role="status">Loading messages…</p>}
+      {!page && !failure && <div className="history-placeholder" role="status" aria-label="Loading messages">
+        <LoaderCircle className="preview-spinner" size={16} aria-hidden="true" />
+      </div>}
       {page?.has_more && <button className="button subtle more" disabled={loading} onClick={() => void older()}>Load older messages</button>}
       {page && history.length === 0 && pending.length === 0 && <Blank icon={<MessageCircle size={27} />} title="Start the conversation">
         <p>Say hello or share a file.</p>

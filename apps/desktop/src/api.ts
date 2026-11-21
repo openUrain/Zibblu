@@ -9,7 +9,7 @@ export type CloseAction = "exit" | "tray";
 export type Preferences = { server: string; official_server: string; private_quiet: boolean; close_action?: CloseAction; saved_account?: SavedAccount };
 export type Conversation = {
   id: string; title: string | null; members: User[]; activity_at: number; preview: string | null;
-  preview_seq: number | null; latest_seq: number; unread: number; read_through: number;
+  preview_seq: number | null; latest_seq: number; unread: number; read_through: number; joined_after?: number;
 };
 export type MessageReceipt = { seq: number; status: "delivered" | "read" };
 export type PendingContact = { user: User; incoming: boolean; request_id: string | null; greeting: string };
@@ -133,7 +133,7 @@ export const api = {
     .then(bytes => Array.isArray(bytes) ? new Uint8Array(bytes).buffer : bytes),
   pasteImage: (conversation: string, bytes: ArrayBuffer) =>
     invoke<Transfer>("paste_image", bytes, { headers: { "zibblu-conversation": conversation } }),
-  mediaUrl: (id: string) => convertFileSrc(id, "zibblu-media"),
+  mediaUrl: (id: string, thumbnail = false) => convertFileSrc(id, "zibblu-media") + (thumbnail ? "?thumbnail" : ""),
   save: (id: string) => invoke<Transfer | null>("save_attachment", { id }),
   transfers: () => invoke<Transfer[]>("transfers"),
   transferAction: (action: "pause" | "resume" | "discard", transfer: Transfer) =>

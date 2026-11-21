@@ -233,6 +233,12 @@ pub(crate) fn verified_mime(bytes: &[u8]) -> Result<&'static str> {
     Ok(format.to_mime_type())
 }
 
+pub(crate) fn preview_image(bytes: &[u8]) -> Result<(&'static str, Vec<u8>)> {
+    let (format, image) = read(bytes)?;
+    let thumbnail = encode_png(&image.thumbnail(320, 320).into_rgba8())?;
+    Ok((format.to_mime_type(), thumbnail))
+}
+
 #[cfg(windows)]
 pub(crate) fn clipboard_png(bytes: &[u8]) -> Result<Vec<u8>> {
     let mut decoder = image::codecs::bmp::BmpDecoder::new_without_file_header(Cursor::new(bytes))

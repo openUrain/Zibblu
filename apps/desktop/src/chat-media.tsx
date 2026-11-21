@@ -12,14 +12,14 @@ type ChatMediaScope = {
 };
 type PreviewState = "loading" | "ready" | "failed";
 
-function MediaTile({ file, open, failed }: { file: Attachment; open: () => void; failed?: () => void }) {
+function MediaTile({ file, open }: { file: Attachment; open: () => void }) {
   const kind = mediaKind(file);
   const [state, setState] = useState<PreviewState>(canPreview(file) ? "loading" : "failed");
   const [visible, setVisible] = useState(false);
   const element = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const target = element.current;
-    if (!target || kind !== "video" || !canPreview(file)) return;
+    if (!target || !canPreview(file)) return;
     const observer = new IntersectionObserver(entries => {
       if (entries.some(entry => entry.isIntersecting)) {
         setVisible(true);
@@ -28,25 +28,21 @@ function MediaTile({ file, open, failed }: { file: Attachment; open: () => void;
     });
     observer.observe(target);
     return () => observer.disconnect();
-  }, [file, kind]);
+  }, [file]);
 
-  function unavailable() {
-    setState("failed");
-    failed?.();
-  }
-
-  return <button ref={element} type="button" className="media-tile" title={state === "loading" ? "Loading preview" : undefined} onClick={open}
+  return <button ref={element} type="button" className="media-tile" data-ready={state === "ready" ? "" : undefined}
+    onClick={open}
     aria-label={`Open ${kind === "video" ? "video" : "image"} ${file.name}`}>
-    {state !== "failed" && (kind === "image"
-      ? <img src={api.mediaUrl(file.id)} loading="lazy" alt="" onLoad={() => setState("ready")} onError={unavailable} />
-      : visible && <video src={api.mediaUrl(file.id)} muted playsInline preload="metadata"
-        onLoadedMetadata={() => setState("ready")} onError={unavailable} aria-hidden="true" />)}
+    {visible && state !== "failed" && (kind === "image"
+      ? <img src={api.mediaUrl(file.id, true)} alt="" onLoad={() => setState("ready")} onError={() => setState("failed")} />
+      : <video src={api.mediaUrl(file.id)} muted playsInline preload="metadata"
+        onLoadedMetadata={() => setState("ready")} onError={() => setState("failed")} aria-hidden="true" />)}
     {state === "failed" ? <span className="media-tile-fallback">
       {kind === "video" ? <Video size={22} /> : <Image size={22} />}
       <span>{file.name}</span><small>{canPreview(file) ? "Preview unavailable" : "Download to open"}</small>
     </span> : <>
-      {state === "loading" && <span className="media-tile-status" role="status" title="Loading preview" aria-label="Loading preview"><LoaderCircle size={16} aria-hidden /></span>}
-      {kind === "video" && <span className="media-play" aria-hidden="true"><Play size={20} fill="currentColor" /></span>}
+      {state === "loading" && <span className="media-tile-status" role="status" aria-label="Loading preview"><LoaderCircle className="preview-spinner" size={16} aria-hidden /></span>}
+      {kind === "video" && state === "ready" && <span className="media-play" aria-hidden="true"><Play size={20} fill="currentColor" /></span>}
     </>}
   </button>;
 }
@@ -55,13 +51,12 @@ export function ChatAttachment({ message, transfer, onChanged, open, expired }: 
   message: Message; transfer?: Transfer; onChanged: () => void; open: () => void; expired: boolean;
 }) {
   const file = message.attachment!;
-  const [failed, setFailed] = useState(false);
-  if (expired || !mediaKind(file) || !canPreview(file) || failed) {
-    const previewStatus = failed ? "Preview unavailable" : mediaKind(file) ? "Download to open" : undefined;
+  if (expired || !mediaKind(file) || !canPreview(file)) {
+    const previewStatus = mediaKind(file) ? "Download to open" : undefined;
     return <SharedFile inChat {...{ message, transfer, onChanged, previewStatus, expired }} />;
   }
   return <div className="chat-media">
-    <MediaTile file={file} open={open} failed={() => setFailed(true)} />
+    <MediaTile key={file.id} file={file} open={open} />
     {transfer && <AttachmentDownload file={file} transfer={transfer} onChanged={onChanged} hideSave />}
   </div>;
 }
@@ -166,21 +161,19 @@ function ViewerMedia({ file }: { file: Attachment }) {
   const [state, setState] = useState<PreviewState>(supported ? "loading" : "failed");
   const [attempt, setAttempt] = useState(0);
   const [zoom, setZoom] = useState(100);
-  const [ratio, setRatio] = useState<number>();
 
   return <>
-    <div className="media-viewer-stage" style={state === "ready" && ratio ? {
-      aspectRatio: ratio, width: "min(100%, " + (54 * ratio) + "dvh)", height: "auto",
-    } : undefined} tabIndex={zoom > 100 ? 0 : undefined} aria-label={zoom > 100 ? "Pan zoomed image" : undefined}>
+    <div className="media-viewer-stage" data-ready={state === "ready" ? "" : undefined}
+      tabIndex={zoom > 100 ? 0 : undefined} aria-label={zoom > 100 ? "Pan zoomed image" : undefined}>
       {state !== "failed" && (video
         ? <video key={attempt} src={api.mediaUrl(file.id)} controls controlsList="nodownload noremoteplayback"
           playsInline preload="auto" disablePictureInPicture aria-label={file.name}
-          onLoadedData={({ currentTarget }) => { setRatio(currentTarget.videoWidth / currentTarget.videoHeight); setState("ready"); }} onError={() => setState("failed")} />
+          onLoadedData={() => setState("ready")} onError={() => setState("failed")} />
         : <div className="media-viewer-image" style={{ width: zoom + "%", height: zoom + "%" }}>
           <img key={attempt} src={api.mediaUrl(file.id)} alt={file.name}
-            onLoad={({ currentTarget }) => { setRatio(currentTarget.naturalWidth / currentTarget.naturalHeight); setState("ready"); }} onError={() => { setZoom(100); setState("failed"); }} />
+            onLoad={() => setState("ready")} onError={() => { setZoom(100); setState("failed"); }} />
         </div>)}
-      {state === "loading" && <p className="media-viewer-placeholder status-icon" tabIndex={0} role="status" title="Loading preview" aria-label="Loading preview"><LoaderCircle size={16} aria-hidden /></p>}
+      {state === "loading" && <p className="media-viewer-placeholder" role="status" aria-label="Loading preview"><LoaderCircle className="preview-spinner" size={16} aria-hidden /></p>}
       {state === "failed" && <div className="media-viewer-placeholder">
         <p role="status">{supported ? "Preview unavailable. You can try again or save the attachment." : "Download this attachment to open it."}</p>
         {supported && <button className="button subtle small" type="button" onClick={() => {

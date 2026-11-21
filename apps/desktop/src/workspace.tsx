@@ -27,6 +27,7 @@ import { useMenu, useMenuAnchor, useRowMenu } from "./context-menu";
 import { CloseActionChoices, WindowControls, WindowDrag, windows } from "./window-chrome";
 import { ios, phone, useIpadSplit, useIosBack } from "./ios";
 import { WorkspaceSearchField } from "./workspace-search";
+import { ChatHistoryCache } from "./chat-history-cache";
 
 const pages = [
   { name: "Chats", Icon: MessageSquare }, { name: "Contacts", Icon: UsersRound },
@@ -51,6 +52,10 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [assistantFailure, setAssistantFailure] = useState("");
   const [aiReplies, setAiReplies] = useState<AiReply[]>([]);
   const [directory, setDirectory] = useState<Directory>({ contacts: [], conversations: [], pending_contacts: [], remarks: {}, names: {}, avatars: {}, read_receipts: false });
+  const [historyCache] = useState(() => new ChatHistoryCache());
+  useLayoutEffect(() => {
+    historyCache.retain(new Set(directory.conversations.map(chat => chat.id)));
+  }, [directory.conversations, historyCache]);
   const [recalled, setRecalled] = useState<ReadonlySet<number>>(new Set());
   const [hidden, setHidden] = useState<ReadonlySet<number>>(new Set());
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
@@ -566,7 +571,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             draft={drafts["private/" + privateId]?.text ?? ""}
             setDraft={change => setDraft("private/" + privateId, previous => ({ text: change(previous.text) }))}
             back={backFromChat} showCode={showPrivateCode} />
-          : active ? <ChatView key={active.id} chat={active} own={session.user} server={session.server} revision={revision} profileOpen={!!profile}
+          : active ? <ChatView key={active.id + ":" + (active.joined_after ?? "")} chat={active}
+            own={session.user} server={session.server} revision={revision} profileOpen={!!profile} historyCache={historyCache}
             visibleOnNarrow={mobileChat}
             requested={chatPage?.id === active.id ? chatPage : undefined}
             latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset}
