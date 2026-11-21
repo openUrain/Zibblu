@@ -19,6 +19,7 @@ const window = getCurrentWindow();
 export function ImageViewer() {
   const [selection, setSelection] = useState<Selection>();
   const [failure, setFailure] = useState("");
+  const [fullscreen, setFullscreen] = useState(false);
   const generation = useRef(0);
   const refresh = useCallback(async () => {
     const request = ++generation.current;
@@ -45,17 +46,32 @@ export function ImageViewer() {
     };
   }, [refresh]);
 
-  return <main className="image-viewer" aria-label="Image viewer" tabIndex={-1} onKeyDown={event => {
-    if (!selection && event.key === "Escape") void window.close().catch(error => setFailure(errorMessage(error)));
-  }}>
-    {selection ? <ImageCanvas key={selection.file.id} {...selection} refresh={refresh} />
+  const changeFullscreen = useCallback(async (value: boolean) => {
+    await window.setFullscreen(value);
+    setFullscreen(value);
+  }, []);
+  useEffect(() => {
+    function escape(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      void window.isFullscreen().then(active => active ? changeFullscreen(false) : window.close())
+        .catch(error => { setSelection(undefined); setFailure(errorMessage(error)); });
+    }
+    document.addEventListener("keydown", escape);
+    return () => document.removeEventListener("keydown", escape);
+  }, [changeFullscreen]);
+
+  return <main className="image-viewer" aria-label="Image viewer">
+    {selection ? <ImageCanvas key={selection.file.id} {...selection} {...{ refresh, fullscreen, changeFullscreen }} />
       : <div className="image-viewer-note" role={failure ? "alert" : "status"}>
         {failure || <LoaderCircle className="preview-spinner" aria-label="Loading image" />}
       </div>}
   </main>;
 }
 
-function ImageCanvas({ file, previous, next, download, refresh }: Selection & { refresh: () => Promise<void> }) {
+function ImageCanvas({ file, previous, next, download, refresh, fullscreen, changeFullscreen }: Selection & {
+  refresh: () => Promise<void>; fullscreen: boolean; changeFullscreen: (value: boolean) => Promise<void>;
+}) {
   const stage = useRef<HTMLDivElement>(null);
   const drag = useRef<(Point & { id: number }) | undefined>(undefined);
   const [viewport, setViewport] = useState<Size>(empty);
@@ -64,7 +80,6 @@ function ImageCanvas({ file, previous, next, download, refresh }: Selection & { 
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
-  const [fullscreen, setFullscreen] = useState(false);
   const [notice, setNotice] = useState("");
   const [actionError, setActionError] = useState("");
   const [requestedSave, setRequestedSave] = useState(false);
@@ -79,7 +94,6 @@ function ImageCanvas({ file, previous, next, download, refresh }: Selection & { 
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-  useEffect(() => { void window.isFullscreen().then(setFullscreen).catch(() => {}); }, []);
 
   const dimensions = useCallback((turn: number) => turn % 2
     ? { width: image.height, height: image.width } : image, [image]);
@@ -162,14 +176,9 @@ function ImageCanvas({ file, previous, next, download, refresh }: Selection & { 
     });
     setBusy(false);
   }
-  const full = () => operate(async () => {
-    await window.setFullscreen(!fullscreen);
-    setFullscreen(!fullscreen);
-  });
+  const full = () => operate(() => changeFullscreen(!fullscreen));
   function keys(event: KeyboardEvent) {
-    if (event.key === "Escape") {
-      void (fullscreen ? full() : operate(() => window.close()));
-    } else if (event.ctrlKey && event.key.toLowerCase() === "c") {
+    if (event.ctrlKey && event.key.toLowerCase() === "c") {
       event.preventDefault();
       void copy();
     } else if (event.target === stage.current && event.shiftKey && pannable && event.key.startsWith("Arrow")) {
