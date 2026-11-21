@@ -11,6 +11,7 @@ import { DesktopMenus } from "./context-menu";
 import { setupIosLayout } from "./ios";
 import { Workspace } from "./workspace";
 import { PrivateInvitationWindow } from "./private-chat";
+import { ImageViewer } from "./image-viewer";
 import { WindowControls, WindowClosePrompt, WindowDrag, windows } from "./window-chrome";
 import "./style.css";
 import "./ios.css";
@@ -235,7 +236,7 @@ function SignIn({ initialServer, officialServer, initialAccount, notice, signedI
 
 document.body.classList.toggle("windows", windows);
 setupIosLayout();
-const invitation = getCurrentWindow().label === "private-invitation";
-createRoot(document.getElementById("root")!).render(<DesktopMenus>
-  {invitation ? <PrivateInvitationWindow /> : <App />}
+const label = getCurrentWindow().label;
+createRoot(document.getElementById("root")!).render(label === "image-viewer" ? <ImageViewer /> : <DesktopMenus>
+  {label === "private-invitation" ? <PrivateInvitationWindow /> : <App />}
 </DesktopMenus>);

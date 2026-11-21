@@ -137,6 +137,7 @@ export const api = {
     invoke<Transfer>("paste_image", bytes, { headers: { "zibblu-conversation": conversation } }),
   mediaUrl: (id: string, variant?: "thumbnail" | "cached-thumbnail") =>
     convertFileSrc(id, "zibblu-media") + (variant ? "?" + variant : ""),
+  openImage: (id: string) => invoke<void>("open_image_viewer", { id }),
   save: (id: string) => invoke<Transfer | null>("save_attachment", { id }),
   transfers: () => invoke<Transfer[]>("transfers"),
   transferAction: (action: "pause" | "resume" | "discard", transfer: Transfer) =>

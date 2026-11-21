@@ -10,7 +10,7 @@ import type { AiReply, Assistant } from "./ai-api";
 import { AiRequest, AssistantMenu, ProviderLogo, ShareAiReply } from "./ai";
 import { api, errorMessage, fileExpired } from "./api";
 import type { Conversation, Draft, Message, MessageReceipt, Page, PrivateSummary, ShareSource, Transfer, User } from "./api";
-import { MAX_IMAGE_BYTES } from "./attachment-media";
+import { canPreview, mediaKind, MAX_IMAGE_BYTES } from "./attachment-media";
 import { Avatar, Blank, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName, messageTimeLabel, startsTimeGroup, usePage } from "./common";
 import { copyText, useEditMenu, useMenu, useMenuAnchor, useRowMenu } from "./context-menu";
 import { FilesView, TransferList, useAttachmentSave } from "./files";
@@ -130,6 +130,7 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
   const [drawer, setDrawer] = useState(false);
   const [search, setSearch] = useState<"text" | "media">();
   const [media, setMedia] = useState<Message>();
+  const [mediaError, setMediaError] = useState("");
   const [leave, setLeave] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [leaveError, setLeaveError] = useState("");
@@ -152,6 +153,17 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
   const filesBack = useRef<HTMLButtonElement>(null);
   const drawerReturn = useRef<HTMLButtonElement>(null);
   const detailsVisible = drawer && !profileOpen && !search && !showFiles && !leave;
+  function openMedia(message: Message) {
+    setMediaError("");
+    const file = message.attachment;
+    if (windows && file && mediaKind(file) === "image" && canPreview(file)) {
+      setMedia(undefined);
+      setSearch(undefined);
+      void api.openImage(file.id).catch(error => setMediaError(errorMessage(error)));
+    } else {
+      setMedia(message);
+    }
+  }
   useIosBack(showFiles && !profileOpen ? () => setShowFiles(false) : undefined, 5);
 
   useEffect(() => {
@@ -252,10 +264,11 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
           else { event.currentTarget.focus(); setShowFiles(false); setDrawer(true); }
         }}><MoreHorizontal size={25} /></button>
     </header>
+    {mediaError && <p className="inline-error" role="alert">{mediaError}</p>}
     <div className="chat-content">
       <div className="chat-messages" hidden={showFiles}>
         <ChatMessages chat={chat} own={own} revision={revision} latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset} transfers={transfers}
-          visible={!showFiles && !profileOpen} changed={changed} refresh={refresh} share={share} pasteFiles={pasteFiles} aiChat={aiChat} openMedia={setMedia}
+          visible={!showFiles && !profileOpen} changed={changed} refresh={refresh} share={share} pasteFiles={pasteFiles} aiChat={aiChat} openMedia={openMedia}
           {...{ hidden, hide, readReceipts, draft, setDraft, historyCache }} />
       </div>
       {showFiles && <FilesView conversation={chat.id} people={chat.members} transfers={transfers} revision={revision} recalled={recalled} hidden={hidden} onChanged={changed} />}
@@ -311,9 +324,9 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
       </div>
     </Dialog>}
     {search && <ChatSearch conversation={chat.id} initialTab={search} {...{ revision, latestAiSeq, recalled, hidden, transfers, changed }}
-      openMedia={setMedia} close={() => setSearch(undefined)} />}
+      openMedia={openMedia} close={() => setSearch(undefined)} />}
     {media && <MediaViewer message={media} conversation={chat.id} {...{ revision, recalled, hidden, transfers }}
-      open={setMedia} close={() => setMedia(undefined)} onChanged={changed} />}
+      open={openMedia} close={() => setMedia(undefined)} onChanged={changed} />}
   </section>;
 }
 

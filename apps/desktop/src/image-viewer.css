@@ -1,0 +1,34 @@
+.image-viewer, .image-canvas {
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--bg);
+}
+.image-canvas { display: flex; flex-direction: column; }
+.image-tools {
+  flex: none; min-height: 44px; display: flex; justify-content: center; align-items: center;
+  gap: 8px; padding-inline: 8px; background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.image-tools > div { display: flex; }
+.image-tools .icon-button { width: 36px; height: 36px; border: 0; background: transparent; }
+.image-tools .icon-button:hover:not(:disabled) { background: var(--hover); }
+.image-tools .icon-button[aria-pressed="true"] { background: var(--tint); color: var(--accent); }
+.image-tools .icon-button:focus-visible, .image-stage:focus-visible { outline-offset: -2px; }
+.image-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.image-stage[data-pannable] { cursor: grab; touch-action: none; }
+.image-stage[data-pannable]:active { cursor: grabbing; }
+.image-stage-original {
+  position: absolute; inset: 50% auto auto 50%; max-width: none; pointer-events: none; transform-origin: center;
+}
+.image-stage-thumbnail { width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.image-viewer-note {
+  position: absolute; inset: 0; display: grid; align-content: center; justify-items: center;
+  padding: 16px; gap: 8px; color: var(--muted); text-align: center; pointer-events: none;
+}
+.image-viewer-note p { margin: 0; }
+.image-viewer-note button { pointer-events: auto; }
+.image-action-status {
+  position: absolute; inset: auto 12px 12px; justify-self: center; width: fit-content; max-width: calc(100% - 24px);
+  color: var(--ink); background: var(--panel); padding: 8px 12px; border-radius: 8px; box-shadow: var(--shadow);
+}
+.image-action-status[role="alert"] { color: var(--danger); }

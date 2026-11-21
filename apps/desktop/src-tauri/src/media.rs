@@ -170,7 +170,8 @@ pub(crate) fn preview(
     request: Request<Vec<u8>>,
     responder: UriSchemeResponder,
 ) {
-    if context.webview_label() != "main" {
+    let viewer = context.webview_label() == crate::image_viewer::LABEL;
+    if context.webview_label() != "main" && !viewer {
         responder.respond(
             Response::builder()
                 .status(StatusCode::NOT_FOUND)
@@ -181,7 +182,7 @@ pub(crate) fn preview(
     }
     let app = context.app_handle().clone();
     tauri::async_runtime::spawn(async move {
-        let response = match media_response(&app, request).await {
+        let response = match media_response(&app, request, viewer).await {
             Ok(response) => response,
             Err(_) => Response::builder()
                 .status(StatusCode::NOT_FOUND)
@@ -192,7 +193,7 @@ pub(crate) fn preview(
     });
 }
 
-async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Response<Vec<u8>>> {
+async fn media_response(app: &AppHandle, request: Request<Vec<u8>>, viewer: bool) -> Result<Response<Vec<u8>>> {
     ensure!(
         *request.method() == Method::GET || *request.method() == Method::HEAD,
         "Invalid media request"
@@ -214,6 +215,7 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Re
         .strip_prefix("profile_")
         .and_then(|path| path.split_once('_'))
     {
+        ensure!(!viewer, "Profile images belong to the main window");
         let id = Uuid::parse_str(id)?;
         let version = Uuid::parse_str(version)?;
         let bytes = match client.cached_profile_image(id, version).await {
@@ -231,6 +233,10 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Re
             })?);
     }
     let id = Uuid::parse_str(path)?;
+    if viewer {
+        let scoped = crate::image_viewer::authorize(&app.state::<Desktop>(), id).await?;
+        ensure!(std::sync::Arc::ptr_eq(&client, &scoped), "The session has ended");
+    }
     let message = client.attachment(id).await?;
     let file = message.attachment.context("Missing attachment")?;
     let mime_hint = file.preview_mime().context("Unsupported media type")?;
@@ -286,7 +292,7 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Re
             .body(body)?);
     }
 
-    let query = request.uri().query();
+    let query = request.uri().query().and_then(|query| query.split('&').next());
     let (mime, bytes) = if query == Some("cached-thumbnail") {
         client.cached_preview(message.seq, &file.sha256, THUMBNAIL).await?
             .context("No cached thumbnail")?
@@ -294,6 +300,10 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>) -> Result<Re
         image_preview(&client, message.seq, file.clone(), query == Some("thumbnail")).await?
     };
     ensure_current(app, &client, &file).await?;
+    if viewer {
+        let scoped = crate::image_viewer::authorize(&app.state::<Desktop>(), id).await?;
+        ensure!(std::sync::Arc::ptr_eq(&client, &scoped), "The session has ended");
+    }
     Ok(preview_headers(&mime)
         .header(header::ACCEPT_RANGES, "none")
         .header(header::CONTENT_LENGTH, bytes.len())
@@ -313,7 +323,7 @@ async fn ensure_current(app: &AppHandle, client: &std::sync::Arc<Client>, file: 
     Ok(())
 }
 
-async fn image_preview(client: &Client, seq: i64, file: Attachment, thumbnail: bool) -> Result<(String, Vec<u8>)> {
+pub(crate) async fn image_preview(client: &Client, seq: i64, file: Attachment, thumbnail: bool) -> Result<(String, Vec<u8>)> {
     ensure!(file.size <= MAX_PASTED_IMAGE_BYTES as u64, "Image too large for inline preview");
     let variant = if thumbnail { THUMBNAIL } else { ORIGINAL };
     if let Some(cached) = client.cached_preview(seq, &file.sha256, variant).await.ok().flatten() {
