@@ -1,10 +1,21 @@
-.image-viewer, .image-canvas {
+.image-viewer {
   width: 100%;
   height: 100dvh;
   overflow: hidden;
   background: var(--bg);
+  display: flex;
+  flex-direction: column;
 }
-.image-canvas { display: flex; flex-direction: column; }
+.image-viewer > .topbar.windows-topbar {
+  flex: none;
+  background: var(--panel);
+}
+.image-canvas {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .image-tools {
   flex: none; min-height: 44px; display: flex; justify-content: center; align-items: center;
   gap: 8px; padding-inline: 8px; background: var(--panel); border-bottom: 1px solid var(--line);

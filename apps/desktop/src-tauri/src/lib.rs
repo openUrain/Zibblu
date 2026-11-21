@@ -122,14 +122,15 @@ pub fn run() {
             };
             let state = window.state::<Desktop>();
             if paths.len() != 1 {
-                let _ = window.emit(
+                let _ = window.emit_to(
+                    "main",
                     "attachment-drop-error",
                     "Drop one file or folder at a time.",
                 );
                 return;
             }
             let offer = state.offer_attachments(paths.clone());
-            let _ = window.emit("attachment-drop", offer);
+            let _ = window.emit_to("main", "attachment-drop", offer);
         })
         .invoke_handler(restrict_viewer(tauri::generate_handler![
             clipboard::copy_text,

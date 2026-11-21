@@ -188,6 +188,7 @@ pub(crate) async fn open_image_viewer(
         .on_navigation(crate::local_navigation)
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
         .data_directory(state.webview_directory())
+        .decorations(false)
         .inner_size(width, height)
         .min_inner_size(336.0_f64.min(width), 176.0_f64.min(height))
         .visible(false)
@@ -240,15 +241,15 @@ pub(crate) async fn open_image_viewer(
 
 #[cfg(any(windows, test))]
 fn initial_size(dimensions: Option<(u32, u32)>, width: f64, height: f64) -> (f64, f64) {
-    const TOOLBAR: f64 = 44.0;
+    const CHROME_HEIGHT: f64 = 36.0 + 44.0;
     let (w, h) = dimensions.unwrap_or((416, 280));
     let (w, h) = (f64::from(w), f64::from(h));
     let factor = ((width * 0.9) / w)
-        .min((height * 0.9 - TOOLBAR).max(1.0) / h)
+        .min((height * 0.9 - CHROME_HEIGHT).max(1.0) / h)
         .min(1.0);
     (
         (w * factor).max(336.0).min(width),
-        (h * factor + TOOLBAR).max(176.0).min(height),
+        (h * factor + CHROME_HEIGHT).max(176.0).min(height),
     )
 }
 
@@ -366,10 +367,10 @@ mod tests {
     fn size_respects_image_ratio_and_logical_work_area() {
         assert_eq!(
             initial_size(Some((640, 640)), 1920.0, 1080.0),
-            (640.0, 684.0)
+            (640.0, 720.0)
         );
         let (w, h) = initial_size(Some((2400, 3600)), 1280.0, 720.0);
-        assert!((w / (h - 44.0) - 2.0 / 3.0).abs() < 0.001);
+        assert!((w / (h - 80.0) - 2.0 / 3.0).abs() < 0.001);
         assert!(w <= 1280.0 && h <= 720.0);
     }
 }

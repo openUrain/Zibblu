@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent } from "react";
 import { api, errorMessage } from "./api";
 import type { Attachment, Transfer } from "./api";
+import { t } from "./locale";
+import { WindowControls, WindowDrag } from "./window-chrome";
 import "./image-viewer.css";
 
 type Selection = { file: Attachment; previous: boolean; next: boolean; download?: Transfer };
@@ -62,6 +64,10 @@ export function ImageViewer() {
   }, [changeFullscreen]);
 
   return <main className="image-viewer" aria-label="Image viewer">
+    {!fullscreen && <header className="topbar windows-topbar">
+      <WindowDrag className="app-name">{t("Zibblu · Image viewer", "Zibblu · 图片查看器")}</WindowDrag>
+      <WindowControls />
+    </header>}
     {selection ? <ImageCanvas key={selection.file.id} {...selection} {...{ refresh, fullscreen, changeFullscreen }} />
       : <div className="image-viewer-note" role={failure ? "alert" : "status"}>
         {failure || <LoaderCircle className="preview-spinner" aria-label="Loading image" />}
