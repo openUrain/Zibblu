@@ -72,11 +72,13 @@ Ordinary private transport filters both IPv4 source and destination to a directl
 Existing chat ──[ghost]──> Named invitation
 Private QR ──[valid scan]──> Joining
 Named invitation ──[verified account accepts]──> Joined on eligible devices
-Joined ──[switch views]──> Session continues in background
-Host ends or exits ──> Clear room state
+Joined ──[ghost]────────> Switch modes in the source conversation
+Named participant ends ──> Clear local room and return to normal chat
 ```
 
 Private data does **not** travel on the normal channel during discovery, failure, reconnection or cleanup. Explicit confirmation is required for a new private session.
+
+For a named room, the ghost button returns to the same normal conversation while the LAN lobby holds its private feed in memory. The unread dot reflects messages from other participants after the last visible, focused view. The Windows invitation window and the main view share one invitation decision. A repeated acceptance cannot send the decision or reopen the main view a second time. A closed direct room drops its transcript, unread state, drafts and connection state.
 
 ## M3 assistant requests
 

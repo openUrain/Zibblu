@@ -60,6 +60,7 @@ pub struct PrivateSummary {
     pub invited: Vec<User>,
     participants: Vec<User>,
     pub phase: Phase,
+    unread: bool,
     open: bool,
     hosted: bool,
 }
@@ -161,6 +162,7 @@ enum Wire {
 
 struct Feed {
     seq: u64,
+    seen: u64,
     messages: VecDeque<PrivateMessage>,
     last_text: Instant,
 }
@@ -169,6 +171,7 @@ impl Feed {
     fn new() -> Self {
         Self {
             seq: 0,
+            seen: 0,
             messages: VecDeque::new(),
             last_text: Instant::now(),
         }
@@ -195,6 +198,15 @@ impl Feed {
             .cloned()
             .collect()
     }
+
+    fn unread(&self, own: Uuid) -> bool {
+        self.messages.iter().rev().take_while(|message| message.seq > self.seen)
+            .any(|message| message.sender.id != own)
+    }
+
+    fn mark_read(&mut self, through: u64) {
+        self.seen = self.seen.max(through.min(self.seq));
+    }
 }
 
 struct Link {
@@ -202,6 +214,7 @@ struct Link {
     user: User,
     active: bool,
     connection: usize,
+    transport: Connection,
 }
 
 struct Hosted {
@@ -248,6 +261,7 @@ impl Hosted {
             } else {
                 Phase::Waiting
             },
+            unread: self.feed.unread(own.id),
             open: self.room.open,
             hosted: true,
         }
@@ -296,7 +310,9 @@ impl Hosted {
 
     fn close(self) {
         for link in self.links.into_values() {
-            let _ = link.sender.try_send(Wire::Closed { declined: false });
+            if link.sender.try_send(Wire::Closed { declined: false }).is_err() {
+                link.transport.close(APP_EXIT.into(), b"");
+            }
         }
     }
 
@@ -322,8 +338,14 @@ struct Guest {
     summary: PrivateSummary,
     link: Uuid,
     sender: Option<mpsc::Sender<Wire>>,
+    transport: Option<Connection>,
     voted: bool,
     feed: Feed,
+}
+
+pub struct PrivateResponse {
+    pub conversation: Option<Uuid>,
+    pub applied: bool,
 }
 
 #[derive(Clone, Default)]
@@ -364,9 +386,10 @@ impl State {
     fn end_guest(&mut self, id: Uuid) {
         self.dismissed.record(id);
         if let Some(guest) = self.guests.remove(&id)
-            && let Some(sender) = guest.sender
+            && !guest.sender.is_some_and(|sender| sender.try_send(Wire::Leave).is_ok())
+            && let Some(transport) = guest.transport
         {
-            let _ = sender.try_send(Wire::Leave);
+            transport.close(APP_EXIT.into(), b"");
         }
     }
 }
@@ -435,7 +458,22 @@ impl PrivateLobby {
     }
 
     pub fn set_memberships(&self, memberships: HashMap<Uuid, Vec<User>>) {
-        self.engine.state().memberships = memberships;
+        let mut state = self.engine.state();
+        let revoked = |room: &Room| {
+            room.conversation.is_some()
+                && validate_room(&memberships, &self.engine.own, room, None).is_err()
+        };
+        let hosted: Vec<_> = state.hosted.values().filter(|host| revoked(&host.room)).map(|host| host.room.id).collect();
+        let guests: Vec<_> = state.guests.values().filter(|guest| revoked(&guest.room)).map(|guest| guest.room.id).collect();
+        for id in hosted {
+            if let Some(host) = state.hosted.remove(&id) {
+                host.close();
+            }
+        }
+        for id in guests {
+            state.end_guest(id);
+        }
+        state.memberships = memberships;
     }
 
     pub fn discovery_status() -> DiscoveryStatus {
@@ -579,7 +617,7 @@ impl PrivateLobby {
             .hosted
             .values()
             .map(|room| room.summary(&self.engine.own))
-            .chain(state.guests.values().map(|guest| guest.summary.clone()))
+            .chain(state.guests.values().map(|guest| guest.summary(&self.engine.own)))
             .collect();
         for room in &mut rooms {
             restore_room_names(room, &state.memberships, &self.engine.own);
@@ -602,7 +640,7 @@ impl PrivateLobby {
                 .get(&id)
                 .context("The private session has ended.")?;
             PrivateView {
-                summary: guest.summary.clone(),
+                summary: guest.summary(&self.engine.own),
                 connection: guest.link,
                 messages: guest.feed.since(after),
             }
@@ -617,6 +655,22 @@ impl PrivateLobby {
             restore_name(&mut message.sender, members, &self.engine.own);
         }
         Ok(view)
+    }
+
+    pub fn mark_read(&self, id: Uuid, connection: Uuid, through: u64) -> bool {
+        let mut state = self.engine.state();
+        if let Some(host) = state.hosted.get_mut(&id) {
+            if connection == id && host.has_peer(self.engine.own.id) {
+                host.feed.mark_read(through);
+                return true;
+            }
+        } else if let Some(guest) = state.guests.get_mut(&id)
+            && guest.link == connection && guest.summary.phase == Phase::Connected
+        {
+            guest.feed.mark_read(through);
+            return true;
+        }
+        false
     }
 
     pub fn create(
@@ -644,6 +698,14 @@ impl PrivateLobby {
         let own = &self.engine.own;
         let identity = self.engine.identity();
         let mut state = self.engine.state();
+        if nearby.is_none() && let Some(conversation) = conversation {
+            if let Some(room) = state.guests.values().find(|guest| guest.room.conversation == Some(conversation)) {
+                return Ok(room.room.id);
+            }
+            if let Some(room) = state.hosted.values().find(|host| host.room.conversation == Some(conversation)) {
+                return Ok(room.room.id);
+            }
+        }
         ensure!(
             state.hosted.len() < MAX_ROOM_COUNT,
             "End a private chat before starting another."
@@ -743,13 +805,21 @@ impl PrivateLobby {
         bail!("The private QR session is unavailable on this LAN.")
     }
 
-    pub fn respond(&self, id: Uuid, accept: bool) -> Result<Option<Uuid>> {
+    pub fn respond(&self, id: Uuid, accept: bool) -> Result<PrivateResponse> {
         let identity = self.engine.identity();
         let mut state = self.engine.state();
         let guest = state
             .guests
             .get_mut(&id)
             .context("This invitation is unavailable.")?;
+        let conversation = guest.room.conversation;
+        if guest.voted && guest.sender.is_some() && if accept {
+            matches!(guest.summary.phase, Phase::Authenticating | Phase::Connected)
+        } else {
+            guest.summary.phase == Phase::Waiting
+        } {
+            return Ok(PrivateResponse { conversation, applied: false });
+        }
         ensure!(
             guest.summary.phase == Phase::Invited && !guest.voted,
             "This invitation already has a response."
@@ -768,7 +838,7 @@ impl PrivateLobby {
         } else {
             Phase::Waiting
         };
-        Ok(guest.room.conversation)
+        Ok(PrivateResponse { conversation, applied: true })
     }
 
     pub fn send(&self, id: Uuid, text: String) -> Result<()> {
@@ -830,6 +900,14 @@ impl PrivateLobby {
         }
         state.hosted.clear();
         state.guests.clear();
+    }
+}
+
+impl Guest {
+    fn summary(&self, own: &User) -> PrivateSummary {
+        let mut summary = self.summary.clone();
+        summary.unread = summary.phase == Phase::Connected && self.feed.unread(own.id);
+        summary
     }
 }
 
@@ -1130,6 +1208,7 @@ async fn host_link(
                 user: peer.user,
                 active: approval.is_some(),
                 connection: connection_id,
+                transport: connection.clone(),
             },
         );
         if let Some(approval) = approval {
@@ -1182,7 +1261,12 @@ async fn host_link(
             Wire::Say { text } if link.active && valid_text(&text) => {
                 host.deliver(link.user.clone(), text);
             }
-            Wire::Leave => reject_account(host, &engine.own, account),
+            Wire::Leave => {
+                reject_account(host, &engine.own, account);
+                if host.all_declined() && let Some(host) = state.hosted.remove(&id) {
+                    host.close();
+                }
+            }
             _ => bail!("Invalid private message."),
         }
         Ok(())
@@ -1308,6 +1392,7 @@ fn attach_guest_task(
             invited: named,
             participants: Vec::new(),
             phase,
+            unread: false,
             open: room.open,
             hosted: false,
         };
@@ -1318,6 +1403,7 @@ fn attach_guest_task(
                 summary,
                 link,
                 sender: Some(sender),
+                transport: Some(connection.clone()),
                 voted: scanned,
                 feed: Feed::new(),
             },
@@ -1383,23 +1469,14 @@ fn attach_guest_task(
             Ok(())
         })
         .await;
-        if let Some(guest) = engine
-            .state()
-            .guests
-            .get_mut(&id)
-            .filter(|guest| guest.link == link)
-        {
+        let mut state = engine.state();
+        if let Some(guest) = state.guests.get(&id).filter(|guest| guest.link == link) {
             let quit = matches!(connection.close_reason(), Some(ConnectionError::ApplicationClosed(close))
                 if close.error_code.into_inner() == u64::from(APP_EXIT));
-            guest.summary.phase = match guest.summary.phase {
-                Phase::Invited | Phase::Missed => Phase::Missed,
-                Phase::Ended => Phase::Ended,
-                _ if quit => Phase::Ended,
-                _ => Phase::Failed,
-            };
-            guest.summary.participants.clear();
-            guest.feed = Feed::new();
-            guest.sender.take();
+            if quit || matches!(guest.summary.phase, Phase::Ended | Phase::Missed) {
+                state.dismissed.record(id);
+            }
+            state.guests.remove(&id);
         }
     }))
 }
@@ -1491,11 +1568,13 @@ mod tests {
                     invited: Vec::new(),
                     participants: Vec::new(),
                     phase: Phase::Failed,
+                    unread: false,
                     open: true,
                     hosted: false,
                 },
                 link: Uuid::new_v4(),
                 sender: None,
+                transport: None,
                 voted: true,
                 feed: Feed::new(),
             },
@@ -1625,7 +1704,8 @@ mod tests {
         wait_phase(&bob, Phase::Invited).await?;
         assert!(alice.send(id, "Before consent".into()).is_err());
         assert!(bob.send(id, "Before consent".into()).is_err());
-        bob.respond(id, true)?;
+        assert!(bob.respond(id, true)?.applied);
+        assert!(!bob.respond(id, true)?.applied);
         wait_phase(&bob, Phase::Connected).await?;
         alice.send(id, "LAN message".into())?;
         timeout(Duration::from_secs(5), async {
@@ -1641,9 +1721,20 @@ mod tests {
             }
         })
         .await?;
+        let view = bob.view(id, 0)?;
+        assert!(view.summary.unread);
+        assert!(!bob.mark_read(id, Uuid::new_v4(), view.messages[0].seq));
+        assert!(bob.mark_read(id, view.connection, view.messages[0].seq));
+        assert!(!bob.view(id, 0)?.summary.unread);
+        assert!(!bob.respond(id, true)?.applied);
         alice.end(id);
-        wait_phase(&bob, Phase::Ended).await?;
-        assert!(bob.view(id, 0)?.messages.is_empty());
+        timeout(Duration::from_secs(5), async {
+            while bob.view(id, 0).is_ok() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await?;
+        assert!(!bob.list().iter().any(|room| room.id == id));
+        assert!(bob.respond(id, true).is_err());
         let declined = alice.invite_nearby(device, None).await?;
         timeout(Duration::from_secs(5), async {
             while !bob

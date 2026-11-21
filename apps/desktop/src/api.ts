@@ -54,7 +54,7 @@ export type GroupPreview = { id: string; title: string; member_count: number };
 export type PrivateSummary = {
   id: string; conversation: string | null; host: User; invited: User[]; participants: User[];
   phase: "discovering" | "waiting" | "invited" | "authenticating" | "connected" | "missed" | "failed" | "ended";
-  open: boolean; hosted: boolean;
+  open: boolean; hosted: boolean; unread: boolean;
 };
 export type PrivateList = { rooms: PrivateSummary[]; prompt: string | null };
 export type NearbyDevice = { id: string; matched_account: User | null };
@@ -119,6 +119,8 @@ export const api = {
   inviteNearby: (device: string, account?: string) => invoke<string>("private_invite_nearby", { device, account }),
   privateRooms: () => invoke<PrivateList>("private_list"),
   viewPrivate: (id: string, after: number) => invoke<PrivateView>("private_view", { id, after }),
+  markPrivateRead: (id: string, connection: string, through: number) =>
+    invoke<boolean>("private_mark_read", { id, connection, through }),
   respondPrivate: (id: string, accept: boolean) => invoke<void>("private_respond", { id, accept }),
   sendPrivate: (id: string, text: string) => invoke<void>("private_send", { id, text }),
   endPrivate: (id: string) => invoke<void>("private_end", { id }),

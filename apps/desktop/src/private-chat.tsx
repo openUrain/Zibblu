@@ -18,19 +18,32 @@ export function usePrivateRooms() {
       generation += 1;
       setList({ rooms: [], prompt: null });
     }) : undefined;
+    const accepted = listen<{ id: string }>("private-invitation-accepted", ({ payload }) => {
+      generation += 1;
+      setList(current => ({
+        rooms: current.rooms.map(room => room.id === payload.id && room.phase === "invited"
+          ? { ...room, phase: "authenticating" } : room),
+        prompt: current.prompt === payload.id ? null : current.prompt,
+      }));
+    });
     async function refresh() {
       const current = generation;
       try {
         const next = await api.privateRooms();
         if (!disposed && current === generation) setList(next);
       } catch {
-        if (!disposed && current === generation) setList({ rooms: [], prompt: null });
+        // A failed IPC read does not report a room ending.
       } finally {
         if (!disposed) timer = window.setTimeout(refresh, 500);
       }
     }
     void refresh();
-    return () => { disposed = true; window.clearTimeout(timer); void reset?.then(unlisten => unlisten()); };
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+      void reset?.then(unlisten => unlisten());
+      void accepted.then(unlisten => unlisten());
+    };
   }, []);
   return list;
 }
@@ -198,9 +211,10 @@ export function NearbyDevices({ own, close, invited }: {
   </Dialog>;
 }
 
-export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isContact }: {
+export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isContact, onClosed, switchMode }: {
   id: string; own: User; back: () => void; showCode: (id: string) => Promise<void>;
   draft: string; setDraft: (change: (draft: string) => string) => void; isContact: (id: string) => boolean;
+  onClosed: () => void; switchMode?: () => void;
 }) {
   const { remarks, open } = useContext(People);
   const inputId = useId();
@@ -208,19 +222,28 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
   const [messages, setMessages] = useState<PrivateMessage[]>([]);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
-  const [closed, setClosed] = useState(false);
+  const [connectionId, setConnectionId] = useState<string>();
+  const marked = useRef<{ connection: string; through: number }>(undefined);
   const timeline = useRef<HTMLDivElement>(null);
   const latestAtOpen = useRef<number | undefined>(undefined);
   const [away, setAway] = useState(false);
   const nearBottom = useRef(true);
   const clearDraft = useRef(setDraft);
   clearDraft.current = setDraft;
+  const closeRoom = useRef(onClosed);
+  closeRoom.current = onClosed;
+  const connected = room?.phase === "connected";
 
   useEffect(() => {
     let disposed = false;
     let timer: number | undefined;
     let after = 0;
     let connection: string | undefined;
+    function finish() {
+      disposed = true;
+      setMessages([]);
+      closeRoom.current();
+    }
     async function poll() {
       try {
         let result = await api.viewPrivate(id, after);
@@ -231,14 +254,18 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
             if (disposed) return;
           }
           connection = result.connection;
+          setConnectionId(connection);
           after = 0;
           setMessages([]);
-          if (after || latestAtOpen.current !== undefined) clearDraft.current(() => "");
+          if (latestAtOpen.current !== undefined) clearDraft.current(() => "");
           latestAtOpen.current = undefined;
         }
         const { messages: incoming, ...summary } = result;
+        if (summary.phase === "ended" || summary.phase === "failed" || summary.phase === "missed") {
+          finish();
+          return;
+        }
         setRoom(summary);
-        setClosed(false);
         if (summary.phase !== "connected") {
           setMessages([]);
           clearDraft.current(() => "");
@@ -249,9 +276,7 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
         if (summary.phase === "connected") latestAtOpen.current ??= incoming.at(-1)?.seq ?? 0;
       } catch {
         if (disposed) return;
-        setClosed(true);
-        setMessages([]);
-        clearDraft.current(() => "");
+        finish();
       } finally {
         if (!disposed) timer = window.setTimeout(poll, 300);
       }
@@ -264,6 +289,29 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
     if (nearBottom.current && timeline.current) timeline.current.scrollTop = timeline.current.scrollHeight;
   }, [messages]);
 
+  useEffect(() => {
+    const last = messages.at(-1)?.seq;
+    if (!connected || !connectionId || last === undefined) return;
+    const connection = connectionId;
+    const through = last;
+    function readVisible() {
+      if (away || document.hidden || !document.hasFocus() || !timeline.current?.getClientRects().length
+          || document.querySelector("dialog[open]")) return;
+      if (marked.current?.connection === connection && marked.current.through >= through) return;
+      marked.current = { connection, through };
+      void api.markPrivateRead(id, connection, through).catch(() => false).then(recorded => {
+        if (!recorded && marked.current?.connection === connection && marked.current.through === through) marked.current = undefined;
+      });
+    }
+    readVisible();
+    window.addEventListener("focus", readVisible);
+    document.addEventListener("visibilitychange", readVisible);
+    return () => {
+      window.removeEventListener("focus", readVisible);
+      document.removeEventListener("visibilitychange", readVisible);
+    };
+  }, [away, connected, connectionId, id, messages]);
+
   async function act(action: () => Promise<void>) {
     if (busy) return;
     setBusy(true);
@@ -273,9 +321,6 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
     finally { setBusy(false); }
   }
 
-  const connected = !closed && room?.phase === "connected";
-  const failed = room?.phase === "failed" || (closed && room?.phase !== "connected");
-  const terminal = closed || room?.phase === "ended" || room?.phase === "missed" || failed;
   const people = room?.participants ?? [];
   const oversized = new TextEncoder().encode(draft.trim()).length > 2048;
   let previousTime: number | undefined;
@@ -294,19 +339,21 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
     onDragStart={event => event.preventDefault()} onDrop={event => event.preventDefault()}>
     <header className="chat-header">
       <button className="icon-button" onClick={back} aria-label="Return to chats"><ArrowLeft size={19} /></button>
-      <Ghost className="private-ghost" size={22} aria-hidden="true" />
+      {switchMode
+        ? <button className="icon-button private-ghost" type="button" aria-label="Switch to normal chat"
+          title="Switch to normal chat" onClick={switchMode}><Ghost size={22} /></button>
+        : <Ghost className="private-ghost" size={22} aria-hidden="true" />}
       <div className="chat-heading">
         <h2>{room ? privateTitle(room, own.id, remarks) : "Private chat"}</h2>
-        <span role="status">{connected ? "Verified private connection" : failed ? "Connection failed" : terminal ? "Session ended" : "LAN only"}
-          {connected && ios ? " · LAN only" : ""}{room?.open && !terminal ? " · QR access" : ""}</span>
+        <span role="status">{connected ? "Verified private connection" : "LAN only"}
+          {connected ? " · LAN only" : ""}{room?.open ? " · QR access" : ""}</span>
       </div>
-      {!terminal && room?.open && room.hosted && <button className="icon-button" title="Share private QR code"
+      {room?.open && room.hosted && <button className="icon-button" title="Share private QR code"
         aria-label="Share private QR code" onClick={() => void act(() => showCode(id))}><QrCode size={20} /></button>}
-      {room && room.phase !== "invited" && <button className="button subtle" onClick={() => void act(async () => {
+      {room && room.phase !== "invited" && <button className="button subtle" disabled={busy} onClick={() => void act(async () => {
         await api.endPrivate(id);
-        setDraft(() => "");
-        back();
-      })}>{terminal ? "Dismiss" : "End session"}</button>}
+        closeRoom.current();
+      })}>End session</button>}
     </header>
     {connected ? <>
       <div className="private-people" aria-label="Current participants">
@@ -358,12 +405,9 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
         </div>
       </form>
     </> : <div className="private-status" aria-live="polite">
-      {room?.phase === "invited" && !closed ? <InvitePrompt key={room.id} room={room} /> : <Blank
-        icon={<Ghost size={26} />} title={room?.phase === "missed" ? "Missed private invitation"
-          : failed ? "Private connection failed" : terminal ? "Private session ended"
-          : room?.open && room.hosted ? "Waiting for a QR scan"
+      {room?.phase === "invited" ? <InvitePrompt key={room.id} room={room} /> : <Blank
+        icon={<Ghost size={26} />} title={room?.open && room.hosted ? "Waiting for a QR scan"
           : room ? privatePhaseLabel[room.phase] : "Opening private chat"}>
-        {room?.phase === "missed" && <p>{displayName(room.host, remarks)} invited you. The invitation ended before you responded.</p>}
         {failure && <p className="inline-error" role="alert">{failure}</p>}
       </Blank>}
     </div>}

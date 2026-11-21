@@ -40,6 +40,8 @@ export function ChatList({ chats, own, selected, open, newChat, addContact, room
   const [search, setSearch] = useState("");
   const query = search.trim().toLocaleLowerCase();
   const filtered = chats.filter(chat => chatName(chat, own.id, remarks).toLocaleLowerCase().includes(query));
+  const paired = rooms.find(room => room.id === activePrivate)?.conversation;
+  const standalone = rooms.filter(room => !chats.some(chat => chat.id === room.conversation));
   const add = <button className="icon-button new-conversation" type="button" ref={plus}
     aria-label={t("Add", "添加")} title={t("Add", "添加")} aria-haspopup="menu" aria-expanded={!!anchor && anchor === plus.current}
     onClick={event => openMenu(event.currentTarget, [
@@ -68,7 +70,8 @@ export function ChatList({ chats, own, selected, open, newChat, addContact, room
         ])}
           aria-current={chat.id === selected ? "true" : undefined} onClick={() => open(chat.id)}>
           {chat.title || !peer ? <Avatar name={name} group={!!chat.title} /> : <PersonAvatar user={peer} />}
-          <span className="chat-row-text"><strong title={name}>{name}</strong><small>{chat.preview || t("New conversation", "新会话")}</small></span>
+          <span className="chat-row-text"><strong title={name}>{name}</strong><small>{paired === chat.id
+            ? t("Private chat", "私密聊天") : chat.preview || t("New conversation", "新会话")}</small></span>
           <span className="chat-row-status"><time dateTime={new Date(chat.activity_at).toISOString()} title={dateTimeLabel(chat.activity_at)}>{messageTimeLabel(chat.activity_at)}</time>
             {chat.unread > 0 && <span className="unread-count">
               <span aria-hidden="true">{chat.unread > 99 ? "99+" : chat.unread}</span>
@@ -82,9 +85,9 @@ export function ChatList({ chats, own, selected, open, newChat, addContact, room
         </div>;
       })}
       {filtered.length === 0 && <p className="list-empty muted">{search ? "No matching chats." : "Start a chat with a contact."}</p>}
-      {rooms.length > 0 && <div className="private-rows" aria-label="Private chats">
+      {standalone.length > 0 && <div className="private-rows" aria-label="Private chats">
         <h2>Private chats</h2>
-        {rooms.map(room => <button key={room.id} className={"chat-row" + (room.id === activePrivate ? " selected" : "")}
+        {standalone.map(room => <button key={room.id} className={"chat-row" + (room.id === activePrivate ? " selected" : "")}
           aria-current={room.id === activePrivate ? "true" : undefined} onClick={() => openPrivate(room.id)}>
           <Ghost size={20} className="private-ghost" />
           <span className="chat-row-text"><strong>{privateTitle(room, own.id, remarks)}</strong><small>
@@ -114,13 +117,14 @@ function DrawerAction({ icon, children, onClick, className = "", next = true, bu
 }
 
 export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, back, share, pasteFiles, openPrivate, aiChat,
-  hidden, hide, readReceipts, draft, setDraft, profileOpen, visibleOnNarrow, requested, historyCache }: {
+  hidden, hide, readReceipts, draft, setDraft, profileOpen, visibleOnNarrow, requested, historyCache, privateRoom }: {
   chat: Conversation; own: User; server: string; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
   refresh: () => Promise<void>; back: () => void; share: (source: ShareSource) => Promise<void>; pasteFiles: () => Promise<boolean>; openPrivate: () => void;
   aiChat: ChatAssistants; hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean;
   profileOpen: boolean; visibleOnNarrow: boolean;
   requested?: { page: ChatPage };
   historyCache: ChatHistoryCache;
+  privateRoom?: PrivateSummary;
 } & ChatDraft) {
   const [showFiles, setShowFiles] = useState(false);
   const [drawer, setDrawer] = useState(false);
@@ -139,6 +143,8 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
   const memberCount = t(` (${count})`, `（${count}）`);
   const heading = chat.title ? name + memberCount : name;
   const details = chat.title ? t("Group details", "群聊信息") : t("Conversation details", "聊天信息");
+  const privateAction = privateRoom?.phase === "invited" ? "Review private invitation"
+    : privateRoom?.unread ? "Open private chat, unread messages" : "Open private chat";
   const peer = chat.title ? undefined : chat.members.find(user => user.id !== own.id);
   const groupMember = !!chat.title && chat.members.some(member => member.id === own.id);
   const chatView = useRef<HTMLElement>(null);
@@ -234,8 +240,11 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
       {showFiles && <button className="button subtle small" ref={filesBack} onClick={() => setShowFiles(false)}>
         <ArrowLeft size={16} /> {t("Messages", "消息")}
       </button>}
-      <button className="icon-button" aria-label="Open private chat" title="Open private chat"
-        onClick={openPrivate}><Ghost size={23} /></button>
+      <button className="icon-button" aria-label={privateAction} title={privateAction} onClick={openPrivate}>
+        <span className="rail-icon"><Ghost size={23} />
+          {(privateRoom?.unread || privateRoom?.phase === "invited") && <span className="rail-dot" aria-hidden="true" />}
+        </span>
+      </button>
       <button className="icon-button" ref={detailsButton} aria-label={details}
         title={details} aria-haspopup="dialog" aria-expanded={detailsVisible}
         onClick={event => {
