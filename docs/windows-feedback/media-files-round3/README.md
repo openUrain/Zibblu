@@ -28,10 +28,12 @@
 | 并行、上传暂停与重启 | 两个真实上传并行。暂停后重启恢复同一任务，从第 2,097,152 字节继续上传。完成前后顺序和附件 ID 一致。 |
 | 下载失败、重试与完整性 | 隔离代理在成功接收 1,048,576 字节后注入一次确定失败。点击重试从该偏移续传。保存件 SHA-256 为 `60fbcd053441fa38f18163f021ca5ca912fb509908bad2d0e9d372b15b45c664`，与原件一致。 |
 | 下载并行与排队 | 两个保存任务并行，第三个进入队列，三个保存件的 SHA-256 均与原件一致。 |
-| 已保存文件 | 通过实际 Windows 默认关联应用记事本打开保存的文本。移走保存件后显示具体错误，按钮回到可重新保存状态。 |
+| 已保存文件 | 通过实际 Windows 默认关联应用记事本打开保存的文本。改名导致原路径失效、等长修改导致 SHA-256 不匹配，两种情况均在 Windows 实测只切换为「保存」。重新保存的文件与原件摘要一致。 |
 | 文件到期 | 已同步附件在有效期内显示保存。到期后同一文件行显示过期，保存操作消失。授权账号请求文件分块返回 HTTP 410。 |
 
 [旧版文件中心](../global-ui-interactions/round2/narrow-files.png) · [文件中心](round2/file-library.png) · [窄窗](round2/file-library-narrow.png) · [类型 Selector](round2/file-selector-open.png) · [反向排序](round2/file-sort-reversed.png) · [搜索无结果](round2/file-no-results.png) · [正在下载](round2/file-download-running.png) · [下载失败](round2/file-download-failed.png) · [下载排队](round2/file-download-queue.png) · [上传暂停](round2/file-upload-paused.png) · [文件到期](round2/file-expired.png)
+
+[原路径失效](round2/file-resave-missing.png) · [校验不一致](round2/file-resave-hash.png)
 
 ## 两轮独立 Always UI 检查
 
@@ -44,7 +46,9 @@
 | 1 | 高置信度设计问题 | 文件行 | Word 和普通文本使用相同的蓝色文件图标。 | Word 保留蓝色文档，普通文本回退至中性文件标识。第二轮在宽、窄窗重新检查。 |
 | 2 | 缺陷 | 查看器保存 | 保存对话框返回时，画布外获得焦点，Escape 关闭失效。 | 改用独立窗口级键盘监听，重新构建并启动后复测通过。 |
 
-Owner 补充顶栏要求后，查看器改用与主窗共享的 36 px 顶栏和原有窗口按钮。初始尺寸一并计入 44 px 媒体工具栏。最终构建用两个新资料目录启动，复测系统拖动、最小化、最大化、恢复、关闭、窄窗按钮、复制和保存。拖动实际使查看器独立移动 45 × 54 px。
+最终工具栏为 44 px 单行。图片按钮居中，窗口按钮贴右，标题区域用于拖动。实测 584 个逻辑像素的最窄窗口仍完整显示 11 个按钮，图片组中心与窗口中心重合。最终构建用两个新资料目录启动，复测拖动、最小化、最大化、恢复、关闭、复制和保存。拖动实际使查看器独立移动 45 × 54 px。
+
+[最窄窗口的单行工具栏](round2/viewer-minimum-width.png)
 
 [第一轮查看器工具栏](round1/image-toolbar.png) · [第一轮暂停任务](round1/file-upload-paused.png) · [第一轮 Selector](round1/file-selector-open.png)
 
