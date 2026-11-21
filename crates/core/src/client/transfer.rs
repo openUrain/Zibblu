@@ -139,16 +139,12 @@ impl Client {
             .filter(|job| job.transfer.status == TransferStatus::Complete && job.transfer.attachment == file)
             .context("Save this attachment before opening it")?;
         let path = job.destination.context("The save location is unavailable")?;
-        let existing = tokio::task::spawn_blocking(move || -> Result<Option<PathBuf>> {
-            if !path.try_exists()? {
-                return Ok(None);
-            }
-            verify_file(&path, &file).context("The saved file no longer matches this attachment")?;
-            Ok(Some(path))
-        }).await??;
+        let verified = tokio::task::spawn_blocking(move || verify_file(&path, &file).ok().map(|()| (path, file)))
+            .await?;
         self.ensure_open()?;
-        self.attachment(id).await?;
-        Ok(existing)
+        let Some((path, file)) = verified else { return Ok(None) };
+        ensure!(self.attachment(id).await?.attachment == Some(file), "This attachment is unavailable");
+        Ok(Some(path))
     }
 
     pub async fn transfers(&self) -> Result<Vec<Transfer>> {

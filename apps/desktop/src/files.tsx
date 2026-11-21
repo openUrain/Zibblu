@@ -264,23 +264,20 @@ function LibraryFile({ message, transfer, onChanged }: { message: Message; trans
   const { save, saving, failure: saveError } = useAttachmentSave(onChanged);
   const [openError, setOpenError] = useState("");
   const [opening, setOpening] = useState(false);
-  const [missing, setMissing] = useState(false);
-  const saved = windows && transfer?.status === "complete" && !missing;
+  const [needsSave, setNeedsSave] = useState(false);
+  const saved = windows && transfer?.status === "complete" && !needsSave;
   const expired = !saved && fileExpired(message);
   const label = saved ? t("Open", "打开") : actions.save;
   const error = saveError || openError;
   const action = async () => {
     setOpenError("");
     if (!saved) {
-      if (await save(file.id)) setMissing(false);
+      if (await save(file.id)) setNeedsSave(false);
       return;
     }
     setOpening(true);
     try {
-      if (!await api.openSaved(file.id)) {
-        setMissing(true);
-        setOpenError(t("The saved file was moved or deleted.", "已保存的文件被移动或删除。"));
-      }
+      if (!await api.openSaved(file.id)) setNeedsSave(true);
     } catch (error) { setOpenError(errorMessage(error)); }
     finally { setOpening(false); }
   };
