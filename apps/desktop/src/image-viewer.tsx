@@ -2,10 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ChevronLeft, ChevronRight, Copy, Download, LoaderCircle, Maximize, Minimize, RotateCw, Shrink } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { KeyboardEvent, PointerEvent } from "react";
+import type { KeyboardEvent, PointerEvent, ReactNode } from "react";
 import { api, errorMessage } from "./api";
 import type { Attachment, Transfer } from "./api";
-import { t } from "./locale";
 import { WindowControls, WindowDrag } from "./window-chrome";
 import "./image-viewer.css";
 
@@ -64,15 +63,21 @@ export function ImageViewer() {
   }, [changeFullscreen]);
 
   return <main className="image-viewer" aria-label="Image viewer">
-    {!fullscreen && <header className="topbar windows-topbar">
-      <WindowDrag className="app-name">{t("Zibblu · Image viewer", "Zibblu · 图片查看器")}</WindowDrag>
-      <WindowControls />
-    </header>}
     {selection ? <ImageCanvas key={selection.file.id} {...selection} {...{ refresh, fullscreen, changeFullscreen }} />
-      : <div className="image-viewer-note" role={failure ? "alert" : "status"}>
+      : <><ViewerToolbar fullscreen={fullscreen} /><div className="image-viewer-note" role={failure ? "alert" : "status"}>
         {failure || <LoaderCircle className="preview-spinner" aria-label="Loading image" />}
-      </div>}
+      </div></>}
   </main>;
+}
+
+function ViewerToolbar({ fullscreen, children }: { fullscreen: boolean; children?: ReactNode }) {
+  return <header className="image-toolbar">
+    {fullscreen ? <div /> : <WindowDrag />}
+    <div className="image-tools" role="group" aria-label="Image controls">{children}</div>
+    <div className="image-window-end">
+      {!fullscreen && <><WindowDrag /><WindowControls /></>}
+    </div>
+  </header>;
 }
 
 function ImageCanvas({ file, previous, next, download, refresh, fullscreen, changeFullscreen }: Selection & {
@@ -221,12 +226,12 @@ function ImageCanvas({ file, previous, next, download, refresh, fullscreen, chan
   const saveError = requestedSave && download && ["expired", "failed", "paused"].includes(download.status)
     ? download.error || "The image could not be saved. Try again." : "";
   const saveStatus = saving ? "Saving image…" : requestedSave && download?.status === "complete" ? "Image saved" : "";
-  const tool = (label: string, icon: React.ReactNode, action: () => void, disabled = false, pressed?: boolean) =>
+  const tool = (label: string, icon: ReactNode, action: () => void, disabled = false, pressed?: boolean) =>
     <button type="button" className="icon-button" title={label} aria-label={label} aria-pressed={pressed}
       onClick={action} disabled={disabled}>{icon}</button>;
 
   return <div className="image-canvas" onKeyDown={keys}>
-    <div className="image-tools" role="group" aria-label="Image controls">
+    <ViewerToolbar fullscreen={fullscreen}>
       <div>
         {tool("Previous image", <ChevronLeft size={18} />, () => void step(false), busy || !previous)}
         {tool("Next image", <ChevronRight size={18} />, () => void step(true), busy || !next)}
@@ -243,7 +248,7 @@ function ImageCanvas({ file, previous, next, download, refresh, fullscreen, chan
         {tool("Save image", <Download size={18} />, () => void save(), busy || saving)}
         {tool(fullscreen ? "Exit full screen" : "Full screen", fullscreen ? <Minimize size={18} /> : <Maximize size={18} />, () => void full())}
       </div>
-    </div>
+    </ViewerToolbar>
     <div ref={stage} className="image-stage" tabIndex={0} aria-label={file.name}
       data-ready={loaded || undefined} data-pannable={pannable || undefined}
       onPointerDown={pointerDown} onPointerMove={pointerMove} onLostPointerCapture={() => { drag.current = undefined; }}
