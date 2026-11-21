@@ -474,8 +474,7 @@ svg { vertical-align: middle; }
   background: transparent; text-align: left; font-size: 13px; font-weight: 500; color: var(--ink);
   transition: background .1s ease, color .1s ease;
 }
-.app-menu button:is(:hover, :focus-visible):not(:disabled) { background: var(--primary); color: #fff; }
-.app-menu button:is(:hover, :focus-visible):not(:disabled) svg { color: #fff; }
+.app-menu button:is(:hover, :focus-visible):not(:disabled) { background: var(--tint); color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   .message-arrival { animation: none; }
 }
