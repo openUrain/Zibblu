@@ -1157,7 +1157,9 @@ html:has(body.windows .shell) { background: transparent; }
 .windows .chat-view .composer-input {
   --composer-inset: 4px;
   --composer-text-inset: 8px;
-  align-items: center; padding: var(--composer-inset);
+  grid-template-areas: ". editor ." "attach editor send";
+  grid-template-rows: 1fr auto;
+  align-items: center; row-gap: 0; padding: var(--composer-inset);
   border: 1px solid var(--line); border-radius: 24px;
   background: var(--panel); box-shadow: var(--shadow);
   transition: border-color .15s ease, box-shadow .15s ease;
@@ -1167,15 +1169,17 @@ html:has(body.windows .shell) { background: transparent; }
   box-shadow: var(--shadow), 0 0 4px 1px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 .windows .chat-view .composer-input.ai-composer {
+  grid-template-areas: "editor ." "editor send";
   grid-template-columns: minmax(0, 1fr) auto; padding-inline-start: 12px;
 }
 .windows .chat-view .composer-input > :is(.composer-plus, .send-button) {
-  grid-area: auto; margin: 0; border-radius: 9999px;
+  margin: 0; border-radius: 9999px;
 }
-.windows .chat-view .composer-plus { width: 36px; min-width: 36px; height: 36px; }
+.windows .chat-view .composer-plus { grid-area: attach; width: 36px; min-width: 36px; height: 36px; }
+.windows .chat-view .composer-input > .send-button { grid-area: send; }
 .windows .chat-view .composer-input > .floating-field {
   --label-start: calc(var(--composer-text-inset) - 3px);
-  grid-area: auto; align-self: stretch; margin: 0; padding: 0;
+  grid-area: editor; align-self: stretch; margin: 0; padding: 0;
   border: 0; border-radius: 0; outline: none; box-shadow: none; background: none;
 }
 .windows .chat-view .composer-input .composer-text {
