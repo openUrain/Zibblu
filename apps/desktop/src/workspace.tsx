@@ -192,7 +192,6 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const refreshLocal = useCallback(() => api.localUpdate().then(apply).catch(() => {}), [apply]);
 
   const refresh = useCallback(() => {
-    if (windows && refreshInFlight.current) return refreshInFlight.current;
     const local = refreshLocal();
     if (refreshInFlight.current) return refreshInFlight.current;
     const sync = async () => {
