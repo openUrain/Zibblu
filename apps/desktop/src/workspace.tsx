@@ -24,7 +24,7 @@ import { QrContent, ScanQr, ShareQr } from "./qr";
 import type { SharedCode } from "./qr";
 import { ProfileView } from "./profile";
 import { useMenu, useMenuAnchor, useRowMenu } from "./context-menu";
-import { CloseActionChoices, WindowControls, windows } from "./window-chrome";
+import { CloseActionChoices, WindowControls, WindowDrag, windows } from "./window-chrome";
 import { ios, phone, useIpadSplit, useIosBack } from "./ios";
 import { WorkspaceSearchField } from "./workspace-search";
 
@@ -504,7 +504,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
         <button key={name} aria-label={tabLabels[name]} title={tabLabels[name]}
           aria-describedby={attention[name] ? `rail-status-${name}` : undefined}
           aria-current={nav === name ? "page" : undefined} onClick={() => navigate(name)}>
-          <span className="rail-icon">{nav === name ? <ActiveRailIcon name={name} /> : <Icon size={22} strokeWidth={1.9} />}
+          <span className="rail-icon">{nav !== name ? <Icon size={22} strokeWidth={1.9} />
+            : windows ? <WindowsActiveRailIcon name={name} /> : <ActiveRailIcon name={name} />}
             {attention[name] && <span className="rail-dot" aria-hidden="true" />}
           </span><span>{tabLabels[name]}</span>
         </button>)}</div>
@@ -534,7 +535,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     </div>
     <div className="shell-main">
       <header className={"topbar" + (windows ? " windows-topbar" : "")}>
-        <div className="app-name window-drag" data-tauri-drag-region={windows ? "" : undefined}>Zibblu</div>
+        <WindowDrag className="app-name">Zibblu</WindowDrag>
         <div className="chat-actions">
         <button className="icon-button" aria-label="Nearby devices" title="Nearby devices"
           onClick={() => setNearby(true)}><Radar size={20} /></button>
@@ -666,6 +667,16 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     </Dialog>}
     {invitation && <PrivateInvitationOverlay key={invitation.id} room={invitation} />}
   </main></People.Provider>;
+}
+
+function WindowsActiveRailIcon({ name }: { name: typeof pages[number]["name"] }) {
+  if (name === "Chats") return <MessageSquare size={22} strokeWidth={1.9} fill="currentColor" />;
+  if (name === "Contacts") return <UsersRound size={22} strokeWidth={1.9} className="rail-active-contacts" />;
+  return <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor"
+    strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M20 10a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2Z" />
+    <path className="rail-icon-detail" fill="none" d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H19" />
+  </svg>;
 }
 
 function ActiveRailIcon({ name }: { name: typeof pages[number]["name"] }) {

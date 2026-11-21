@@ -163,8 +163,8 @@ svg { vertical-align: middle; }
   position: relative; display: flex; align-items: center; min-width: 0;
   border: 2px solid var(--line); border-radius: 8px; corner-shape: squircle;
   background: var(--field-surface); color: var(--ink);
-  transition: border-color .15s ease, box-shadow .15s ease;
 }
+.floating-field:not(.windows *) { transition: border-color .15s ease, box-shadow .15s ease; }
 .floating-field:has(> :is(input, textarea):focus) {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--tint), 0 0 0 4px color-mix(in srgb, var(--accent) 13%, transparent);
@@ -192,7 +192,7 @@ svg { vertical-align: middle; }
 .floating-field:has(:disabled) { opacity: .65; }
 .floating-field:has([aria-invalid="true"]) { border-color: var(--danger); }
 @media (prefers-reduced-motion: reduce) {
-  .floating-field, .floating-field .field-label { transition: none; }
+  .floating-field:not(.windows *), .floating-field .field-label { transition: none; }
 }
 @media (forced-colors: active) {
   .floating-field:focus-within { outline: 2px solid Highlight; }
@@ -234,6 +234,10 @@ svg { vertical-align: middle; }
 .rail-links button:hover { background: rgba(0, 0, 0, 0.05); color: #1d1d1f; }
 .rail-links button > span:last-child { display: none; }
 .rail-links button[aria-current="page"] { background: var(--tint); color: var(--primary); }
+.windows .rail-links button { transition: none; }
+.windows .rail-links button[aria-current="page"] { background: transparent; }
+.rail-active-contacts circle { fill: currentColor; }
+.rail-icon-detail { stroke: var(--tint); }
 .rail button:focus-visible { outline-color: var(--accent); outline-offset: 1px; }
 .rail-icon { position: relative; }
 .rail-dot {
@@ -470,11 +474,24 @@ svg { vertical-align: middle; }
   box-shadow: 0 10px 30px -4px rgba(0, 0, 0, 0.45);
 }
 .app-menu button {
-  display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px; border: 0; border-radius: 7px;
+  position: relative; isolation: isolate;
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px; border: 0;
   background: transparent; text-align: left; font-size: 13px; font-weight: 500; color: var(--ink);
-  transition: background .1s ease, color .1s ease;
 }
-.app-menu button:is(:hover, :focus-visible):not(:disabled) { background: var(--tint); color: var(--accent); }
+.app-menu button::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; border-radius: 7px; pointer-events: none;
+  background: var(--menu-row-highlight, transparent);
+}
+.app-menu button:focus-visible { outline: none; }
+.app-menu button:focus-visible::before { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (forced-colors: active) {
+  .app-menu button:focus-visible::before { outline-color: Highlight; }
+}
+.app-menu:not([data-navigation="keyboard"]) button:enabled:hover,
+.app-menu:not([data-navigation="pointer"]) button:enabled:focus-visible {
+  --menu-row-highlight: var(--tint);
+  color: var(--accent);
+}
 @media (prefers-reduced-motion: reduce) {
   .message-arrival { animation: none; }
 }
@@ -1161,7 +1178,6 @@ html:has(body.windows .shell) { background: transparent; }
   align-items: center; row-gap: 0; padding: var(--composer-inset);
   border: 1px solid var(--line); border-radius: 24px;
   background: var(--panel); box-shadow: var(--shadow);
-  transition: border-color .15s ease, box-shadow .15s ease;
 }
 .windows .chat-view .composer-input:has(.composer-text:focus) {
   border-color: var(--accent);
@@ -1199,9 +1215,6 @@ html:has(body.windows .shell) { background: transparent; }
 }
 .windows .chat-view .composer-input > .floating-field::after {
   inset-block-end: 0; background: linear-gradient(transparent, var(--field-surface));
-}
-@media (prefers-reduced-motion: reduce) {
-  .windows .chat-view .composer-input { transition: none; }
 }
 @media (forced-colors: active) {
   .windows .chat-view .composer-input:has(.composer-text:focus) { outline: 2px solid Highlight; }

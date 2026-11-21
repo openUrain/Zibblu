@@ -11,7 +11,7 @@ import { DesktopMenus } from "./context-menu";
 import { setupIosLayout } from "./ios";
 import { Workspace } from "./workspace";
 import { PrivateInvitationWindow } from "./private-chat";
-import { WindowControls, WindowClosePrompt, windows } from "./window-chrome";
+import { WindowControls, WindowClosePrompt, WindowDrag, windows } from "./window-chrome";
 import "./style.css";
 import "./ios.css";
 
@@ -35,7 +35,7 @@ function App() {
 
   return <>
     {windows && !session && <header className="auth-titlebar">
-      <div className="window-drag" data-tauri-drag-region /><WindowControls />
+      <WindowDrag /><WindowControls />
     </header>}
     {settingsError ? <main className="boot"><Brand /><p className="inline-error" role="alert">{settingsError}</p></main>
     : !preferences ? <main className="boot"><Brand /><span role="status">Opening Zibblu…</span></main>

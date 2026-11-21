@@ -67,6 +67,7 @@ export function useRowMenu() {
 
 export function DesktopMenus({ children }: { children: ReactNode }) {
   const [menu, setMenu] = useState<Menu>();
+  const [navigation, setNavigation] = useState<"pointer" | "keyboard">();
   const [failure, setFailure] = useState("");
   const panel = useRef<HTMLDivElement>(null);
 
@@ -74,6 +75,7 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     setFailure("");
     if (menu?.anchor === anchor && !point) { close(true); return; }
     if (!items.some(item => !item.disabled)) { setMenu(undefined); return; }
+    setNavigation(undefined);
     const rect = anchor.getBoundingClientRect();
     setMenu({
       x: point?.x ?? rect.left, y: point?.y ?? rect.bottom + 4, anchor, items,
@@ -100,7 +102,6 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     if (!menu) return;
     const outside = (event: PointerEvent) => {
       if (!(event.target instanceof Node) || (!panel.current?.contains(event.target) && !menu.anchor.contains(event.target))) {
-        if (panel.current?.contains(document.activeElement)) menu.restoreFocus?.focus({ preventScroll: true });
         setMenu(undefined);
       }
     };
@@ -166,7 +167,8 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     {failure && createPortal(<div className="clipboard-error inline-error" role="alert">
       {failure}<button type="button" className="text-button" onClick={() => setFailure("")}>{t("Dismiss", "关闭")}</button>
     </div>, document.querySelector("dialog[open], .private-chat") ?? document.body)}
-    {menu && createPortal(<div className="app-menu" ref={panel} role="menu" aria-label="Actions" tabIndex={-1}
+    {menu && createPortal(<div className="app-menu" ref={panel} role="menu" aria-label="Actions" tabIndex={-1} data-navigation={navigation}
+      onPointerEnter={() => setNavigation("pointer")} onPointerMove={() => setNavigation("pointer")}
       onContextMenu={event => { event.preventDefault(); event.stopPropagation(); }}
       onKeyDown={event => {
         if (event.key === "Escape" || event.key === "Tab") {
@@ -175,6 +177,7 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
         }
         if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
           event.preventDefault();
+          setNavigation("keyboard");
           const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
           if (!items.length) return;
           const index = items.indexOf(document.activeElement as HTMLButtonElement);
