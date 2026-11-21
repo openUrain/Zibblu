@@ -26,6 +26,7 @@ import { ProfileView } from "./profile";
 import { useMenu, useMenuAnchor, useRowMenu } from "./context-menu";
 import { CloseActionChoices, WindowControls, windows } from "./window-chrome";
 import { ios, phone, useIpadSplit, useIosBack } from "./ios";
+import { WorkspaceSearchField } from "./workspace-search";
 
 const pages = [
   { name: "Chats", Icon: MessageSquare }, { name: "Contacts", Icon: UsersRound },
@@ -768,8 +769,8 @@ function Contacts({ active, directory, selected, refresh, create, addContact, de
       event.preventDefault();
       if (query && filtered.length === 1) details(filtered[0].user);
     }}>
-      <FloatingField fieldClass="search" label={t("Search contacts", "搜索联系人")} prefixIcon={<Search size={17} />}
-        type="search" value={search} onChange={event => {
+      <WorkspaceSearchField label={t("Search contacts", "搜索联系人")} otherIconSize={17}
+        value={search} onChange={event => {
           if (windows) {
             scrollTop.current = 0;
             if (list.current) list.current.scrollTop = 0;
