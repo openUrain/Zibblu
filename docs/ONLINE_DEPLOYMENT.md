@@ -81,6 +81,8 @@ docker --context desktop-linux stop zibblu-issue46-zibblu-online-1 zibblu-issue4
 
 `GET /healthz` 在应用与数据库可用时返回 `200`，查询异常或超时返回 `503`。应用收到 `SIGTERM` 停止接受新连接，Compose 提供 60 秒等待进行中的请求。
 
+排查公网断连时，在同一时间比对环回和公网 `/healthz`，再核对容器健康和 Tunnel 就绪。环回 `200` 且公网 `530 / 1033` 时，检查 Cloudflare Tunnel 的连接器状态、就绪指标和同时间段日志。[Cloudflare Tunnel 故障排查](https://developers.cloudflare.com/tunnel/troubleshooting/)
+
 ## 旧版同库搬迁记录
 
 下文记录 PR #32 将旧在线服务迁入 Docker 的运维步骤，仅适用于当时的旧版。Local-First 新库使用上面的流程。
