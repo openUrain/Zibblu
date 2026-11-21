@@ -1,9 +1,10 @@
 **
 !Cargo.toml
 !Cargo.lock
-# Cargo needs the desktop workspace member's manifest and entry point for resolution.
+# Cargo needs the desktop workspace member's manifest and target entry points for resolution.
 !apps/desktop/src-tauri/Cargo.toml
 !apps/desktop/src-tauri/build.rs
+!apps/desktop/src-tauri/src/lib.rs
 !apps/desktop/src-tauri/src/main.rs
 !crates/core/Cargo.toml
 !crates/core/src/**

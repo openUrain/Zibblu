@@ -59,6 +59,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const profilePoint = useRef({ x: 0, y: 0 });
   const profileTrigger = useRef<HTMLElement>(null);
   const refreshInFlight = useRef<Promise<void> | null>(null);
+  const syncRetryDelay = useRef(0);
   const appliedRevision = useRef(0);
   const [clockOffset, setClockOffset] = useState(0);
   const [selected, setSelected] = useState<string>();
@@ -197,6 +198,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       await local;
       try {
         apply(await api.sync());
+        syncRetryDelay.current = 0;
         setConnection("Connected");
         setSyncProblem("");
       } catch (error) {
@@ -206,6 +208,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             signedOut(errorMessage(error));
           }
         } else {
+          if (windows) syncRetryDelay.current = Math.min(syncRetryDelay.current * 2 || 1700, 6800);
           setConnection("Reconnecting");
           if (typeof error === "object" && error !== null && "status" in error && error.status === 409) {
             setSyncProblem("This device's sync position is no longer valid. Keep this profile and sign in from a new data directory.");
@@ -222,13 +225,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
 
   useEffect(() => {
     const updated = listen("message-outbox-changed", () => void refreshLocal());
-    const online = () => void refresh();
-    window.addEventListener("online", online);
-    return () => {
-      void updated.then(unlisten => unlisten());
-      window.removeEventListener("online", online);
-    };
-  }, [refreshLocal, refresh]);
+    return () => { void updated.then(unlisten => unlisten()); };
+  }, [refreshLocal]);
 
   const changed = useCallback(() => {
     void api.transfers().then(setTransfers).catch(error => setFailure(errorMessage(error)));
@@ -236,14 +234,31 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
 
   useEffect(() => {
     let closed = false;
+    let polling = false;
     let poll: number | undefined;
     async function syncLoop() {
-      if (closed) return;
+      if (closed || polling) return;
+      polling = true;
       await refresh();
-      if (!closed) poll = window.setTimeout(syncLoop, 1700);
+      polling = false;
+      const retry = syncRetryDelay.current;
+      if (!closed) poll = window.setTimeout(syncLoop, retry ? retry + Math.random() * 500 : 1700);
     }
+    function online() {
+      if (!windows) {
+        void refresh();
+        return;
+      }
+      window.clearTimeout(poll);
+      void syncLoop();
+    }
+    window.addEventListener("online", online);
     void syncLoop();
-    return () => { closed = true; window.clearTimeout(poll); };
+    return () => {
+      closed = true;
+      window.clearTimeout(poll);
+      window.removeEventListener("online", online);
+    };
   }, [refresh]);
 
   useEffect(() => {

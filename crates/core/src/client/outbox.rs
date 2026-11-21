@@ -202,11 +202,20 @@ impl Client {
             .fetch_all(&self.db)
             .await?
         } else {
+            // A delayed text keeps its place ahead of later text in that conversation.
             sqlx::query_as(
-                "SELECT nonce, conversation_id, work, draft, attempts FROM outbox
-                 WHERE blocked = 0 AND submitted = 0 AND next_attempt <= ? ORDER BY id LIMIT 16",
+                "SELECT nonce, conversation_id, work, draft, attempts FROM outbox AS pending
+                 WHERE blocked = 0 AND submitted = 0 AND next_attempt <= ?1
+                   AND (NOT ?2 OR json_extract(work, '$.kind') <> 'text' OR NOT EXISTS (
+                     SELECT 1 FROM outbox AS earlier
+                     WHERE earlier.id < pending.id AND earlier.conversation_id = pending.conversation_id
+                       AND earlier.blocked = 0 AND earlier.submitted = 0 AND earlier.next_attempt > ?1
+                       AND json_extract(earlier.work, '$.kind') = 'text'
+                   ))
+                 ORDER BY id LIMIT 16",
             )
             .bind(unix_millis())
+            .bind(cfg!(windows))
             .fetch_all(&self.db)
             .await?
         };
@@ -278,12 +287,26 @@ impl Client {
                 Err(error) => {
                     let blocked = matches!(&error, OnlineError::Rejected { status, .. }
                         if status.is_client_error() && !matches!(*status, StatusCode::TOO_MANY_REQUESTS | StatusCode::REQUEST_TIMEOUT));
-                    // Probe connectivity promptly without shortening backoff for HTTP errors or timeouts.
-                    let max_exponent = if matches!(&error, OnlineError::Network(cause) if !cause.is_timeout()) {
-                        1
-                    } else {
-                        6
+                    let windows_text = cfg!(windows) && matches!(&work, Work::Text(_));
+                    let max_exponent = match &error {
+                        OnlineError::Network(cause) if !cause.is_timeout() => 1,
+                        OnlineError::Network(_) if windows_text => 2,
+                        OnlineError::Rejected { status, .. }
+                            if windows_text
+                                && (status.is_server_error()
+                                    || *status == StatusCode::REQUEST_TIMEOUT) =>
+                        {
+                            2
+                        }
+                        _ => 6,
                     };
+                    let jitter = if windows_text && !blocked {
+                        i64::from(Uuid::new_v4().as_bytes()[0]) * 2
+                    } else {
+                        0
+                    };
+                    let next_attempt =
+                        unix_millis() + 1000 * (1 << item.attempts.min(max_exponent)) + jitter;
                     let mut draft: Option<Message> = item
                         .draft
                         .as_deref()
@@ -299,7 +322,7 @@ impl Client {
                     sqlx::query(
                         "UPDATE outbox SET draft = ?, blocked = ?, next_attempt = ?, attempts = attempts + 1 WHERE nonce = ?",
                     ).bind(&draft).bind(blocked)
-                        .bind(unix_millis() + 1000 * (1 << item.attempts.min(max_exponent)))
+                        .bind(next_attempt)
                         .bind(&item.nonce).execute(&self.db).await?;
                     if item.draft != draft {
                         self.history_changed();

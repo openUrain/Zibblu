@@ -139,6 +139,83 @@ async fn outbox_and_inbox_progress_independently_and_confirm_the_same_nonce() ->
     Ok(())
 }
 
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn recovery_retries_earlier_text_before_later_text_in_the_same_chat() -> Result<()> {
+    let db = test_db().await?;
+    let app = zibblu_online::router(db.clone()).await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let server = format!("http://{}", listener.local_addr()?);
+    let task = tokio::spawn(async move { axum::serve(listener, app).await });
+    let a = tempfile::tempdir()?;
+    let b = tempfile::tempdir()?;
+    let suffix = &Uuid::new_v4().simple().to_string()[..10];
+    let alice = sign_in(
+        a.path(),
+        &server,
+        &format!("first_{suffix}"),
+        "fixture-password",
+        true,
+    )
+    .await?;
+    let bob = sign_in(
+        b.path(),
+        &server,
+        &format!("second_{suffix}"),
+        "fixture-password",
+        true,
+    )
+    .await?;
+    let chat = direct(&alice, &bob).await?;
+    let earlier = Uuid::new_v4();
+    let later = Uuid::new_v4();
+    for (nonce, text) in [
+        (earlier, "Queued during the outage"),
+        (later, "Queued after recovery"),
+    ] {
+        alice
+            .queue_message(
+                chat,
+                SendMessage {
+                    nonce,
+                    text: text.into(),
+                    reply_to: None,
+                },
+            )
+            .await?;
+    }
+
+    let local = sqlite(a.path(), &server, alice.user.id).await?;
+    sqlx::query("UPDATE outbox SET attempts = 4, next_attempt = ? WHERE nonce = ?")
+        .bind(i64::MAX)
+        .bind(earlier.to_string())
+        .execute(&local)
+        .await?;
+    assert!(!alice.flush_pending_messages().await?);
+    let queued = alice.messages(chat, None).await?.items;
+    assert_eq!(queued.len(), 2);
+    assert!(queued.iter().all(|row| row.pending.is_some()));
+
+    sqlx::query("UPDATE outbox SET next_attempt = 0 WHERE nonce = ?")
+        .bind(earlier.to_string())
+        .execute(&local)
+        .await?;
+    assert!(alice.flush_pending_messages().await?);
+    assert!(!alice.flush_pending_messages().await?);
+    let order: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT nonce FROM messages WHERE conversation_id = $1 AND sender_id = $2 ORDER BY seq",
+    )
+    .bind(chat)
+    .bind(alice.user.id)
+    .fetch_all(&db)
+    .await?;
+    assert_eq!(order, vec![earlier, later]);
+    bob.sync().await?;
+    assert_eq!(bob.messages(chat, None).await?.items.len(), 2);
+    task.abort();
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn maximum_utf8_text_survives_sync_pagination_and_over_limit_is_rejected() -> Result<()> {
     let app = zibblu_online::router(test_db().await?).await?;
