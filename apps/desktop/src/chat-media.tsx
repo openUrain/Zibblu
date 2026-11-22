@@ -5,7 +5,7 @@ import { api, errorMessage, fileExpired } from "./api";
 import type { Attachment, Message, Transfer } from "./api";
 import { canPreview, mediaKind, readAttachmentPage } from "./attachment-media";
 import { Blank, Dialog, usePage } from "./common";
-import { AttachmentDownload, SharedFile, TransferList } from "./files";
+import { AttachmentDownload, ChatUploadProgress, SharedFile, TransferList } from "./files";
 import { thumbnailKey, useWorkspaceImage, WorkspaceImages } from "./workspace-image";
 
 type ChatMediaScope = {
@@ -65,18 +65,18 @@ function MediaTile({ message, open }: { message: Message; open: () => void }) {
   </button>;
 }
 
-export function ChatAttachment({ message, transfer, onChanged, open, expired, uploading }: {
-  message: Message; transfer?: Transfer; onChanged: () => void; open: () => void; expired: boolean; uploading?: boolean;
+export function ChatAttachment({ message, transfer, onChanged, open, expired, upload }: {
+  message: Message; transfer?: Transfer; onChanged: () => void; open: () => void; expired: boolean; upload?: Transfer;
 }) {
   const file = message.attachment!;
   if (expired || !mediaKind(file) || !canPreview(file)) {
     const previewStatus = mediaKind(file) ? "Download to open" : undefined;
-    return <SharedFile {...{ message, transfer, onChanged, previewStatus, expired, uploading }} />;
+    return <SharedFile {...{ message, transfer, onChanged, previewStatus, expired, upload }} />;
   }
   return <div className="chat-media">
-    {uploading ? <div className="media-tile"><span className="media-tile-fallback">
+    {upload ? <div className="media-tile"><span className="media-tile-fallback">
       {mediaKind(file) === "video" ? <Video size={22} /> : <Image size={22} />}
-      <span>{file.name}</span></span></div> : <MediaTile key={file.id} message={message} open={open} />}
+      <span>{file.name}</span></span><ChatUploadProgress upload={upload} /></div> : <MediaTile key={file.id} message={message} open={open} />}
     {transfer && <AttachmentDownload file={file} transfer={transfer} onChanged={onChanged} hideSave />}
   </div>;
 }

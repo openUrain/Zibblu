@@ -432,6 +432,11 @@ svg { vertical-align: middle; }
 .pasted-image img { display: block; max-width: min(180px, 70%); max-height: 105px; border-radius: 7px; object-fit: contain; }
 .attachment-body { width: min(360px, 83%); }
 .chat-media { width: 100%; min-width: 0; }
+.chat-file-card { position: relative; }
+.chat-upload-progress {
+  position: absolute; inset-inline: 8px; bottom: 4px; width: calc(100% - 16px);
+  height: 4px; accent-color: var(--accent);
+}
 .media-tile {
   position: relative; display: grid; place-items: center; width: min(100%, 320px); aspect-ratio: 16 / 9;
   padding: 0; overflow: hidden; border: 0; border-radius: 9px; background: var(--soft); color: var(--ink);

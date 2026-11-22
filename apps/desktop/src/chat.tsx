@@ -653,7 +653,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                         ? () => void changeTransfer("resume") : undefined}
                     receipt={receiptStatus} ended={deliveryEnded} />}
                   {message?.recalled ? <div className="bubble recalled-message">Message recalled</div>
-                  : message && file ? <ChatAttachment key={file.id} message={message} transfer={download} uploading={!!transfer}
+                  : message && file ? <ChatAttachment key={file.id} message={message} transfer={download} upload={transfer}
                     expired={expiredFile} onChanged={changed} open={() => openMedia(message)} />
                     : message?.expired ? <div className="bubble recalled-message">
                       {message.expired === "file" ? "This file expired. Ask the sender to share it again." : "This message expired before delivery."}
