@@ -5,6 +5,27 @@ const MAX_PREVIEW_BYTES: i64 = 64 * 1024 * 1024;
 const MAX_PREVIEW_ENTRIES: i64 = 256;
 
 impl Client {
+    pub async fn preview_attachment(&self, id: Uuid) -> Result<Message> {
+        self.ensure_open()?;
+        let payload: String = sqlx::query_scalar(
+            "SELECT t.payload FROM timeline t JOIN directory d ON d.id = 1
+             JOIN json_each(d.payload, '$.conversations') c
+               ON json_extract(c.value, '$.id') = t.conversation_id
+              AND t.seq > json_extract(c.value, '$.joined_after')
+             WHERE t.attachment_id = ?1 AND t.seq NOT IN (SELECT seq FROM hidden_messages)
+               AND json_extract(t.payload, '$.recalled') IS NOT 1
+               AND (json_extract(t.payload, '$.local_file') = 1 OR
+                    (json_extract(t.payload, '$.expired') IS NULL
+                     AND coalesce(json_extract(t.payload, '$.expires_at'), ?2 + 1) > ?2))",
+        )
+        .bind(id.to_string())
+        .bind(self.server_now())
+        .fetch_optional(&self.db)
+        .await?
+        .context("This attachment is unavailable")?;
+        Ok(serde_json::from_str(&payload)?)
+    }
+
     pub async fn cached_preview(
         &self,
         seq: i64,

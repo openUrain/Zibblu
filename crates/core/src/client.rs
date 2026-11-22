@@ -78,6 +78,7 @@ pub struct Client {
     history_revision: AtomicI64,
     device_re_registered: bool,
     sync_gate: Mutex<()>,
+    profile_gate: Mutex<()>,
     outbox_gate: Mutex<()>,
     prepare_gate: Mutex<()>,
     workers: Mutex<HashMap<JobKey, Active>>,
@@ -203,6 +204,7 @@ impl Client {
             device_re_registered,
             _profile_lock: lock,
             sync_gate: Mutex::new(()),
+            profile_gate: Mutex::new(()),
             outbox_gate: Mutex::new(()),
             prepare_gate: Mutex::new(()),
             workers: Mutex::new(HashMap::new()),
@@ -381,6 +383,7 @@ impl Client {
     }
 
     pub async fn remove_contact(&self, user_id: Uuid) -> Result<()> {
+        let _profile = self.profile_gate.lock().await;
         self.api
             .send(
                 self.api
@@ -413,6 +416,7 @@ impl Client {
 
     pub async fn profile(&self, id: Uuid) -> Result<Profile> {
         self.ensure_open()?;
+        let _profile = self.profile_gate.lock().await;
         match self.api.profile(id).await {
             Ok(profile) => {
                 ensure!(
@@ -435,6 +439,7 @@ impl Client {
     }
 
     pub async fn set_display_name(&self, name: String) -> Result<()> {
+        let _profile = self.profile_gate.lock().await;
         let name = name.trim();
         self.api
             .send(self.api.request(Method::PUT, "/v1/profiles/me/name").json(&name))
@@ -446,6 +451,7 @@ impl Client {
     }
 
     pub async fn set_bio(&self, bio: String) -> Result<()> {
+        let _profile = self.profile_gate.lock().await;
         self.api
             .send(
                 self.api
@@ -458,6 +464,7 @@ impl Client {
     }
 
     pub async fn set_contact_notes(&self, id: Uuid, notes: ContactNotes) -> Result<()> {
+        let _profile = self.profile_gate.lock().await;
         let notes = ContactNotes {
             remark: notes.remark.trim().to_owned(),
             contact_info: notes.contact_info.trim().to_owned(),
@@ -474,6 +481,7 @@ impl Client {
     }
 
     pub async fn set_profile_image(&self, kind: ProfileImage, bytes: Vec<u8>) -> Result<Uuid> {
+        let _profile = self.profile_gate.lock().await;
         ensure!(
             bytes.len() <= MAX_PROFILE_IMAGE_BYTES,
             "Profile images can be up to 2 MiB"

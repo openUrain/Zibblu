@@ -435,6 +435,7 @@ svg { vertical-align: middle; }
   opacity: 0; transition: opacity .2s ease-out;
 }
 :is(.media-tile, .media-viewer-stage)[data-ready] > :is(img, video, .media-viewer-image) { opacity: 1; }
+.media-tile[data-cached-image] > img { transition: none; }
 @media (prefers-reduced-motion: reduce) {
   .preview-spinner { animation: none; }
   :is(.media-tile, .media-viewer-stage) > :is(img, video, .media-viewer-image) { transition: none; }
@@ -919,12 +920,13 @@ button.profile-row:hover { background: var(--hover); }
 .profile-value { flex: 1; min-width: 0; text-align: end; color: var(--muted); overflow-wrap: anywhere; }
 .profile-value .avatar { vertical-align: middle; }
 .profile-cover-thumb { width: 88px; aspect-ratio: 3; object-fit: cover; border-radius: 4px; vertical-align: middle; }
-.profile-cover { width: 100%; aspect-ratio: 3; object-fit: cover; display: block; margin-bottom: 16px; border-radius: 4px; }
+.profile-cover { width: 100%; aspect-ratio: 3; margin-bottom: 16px; overflow: hidden; border-radius: 4px; background: var(--soft); }
+.profile-cover > img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .profile-person { display: flex; align-items: center; gap: 14px; padding-block: 16px; overflow-wrap: anywhere; }
 .profile-person h2 { font-size: 1.25rem; }
 .profile-bio { margin: 0 0 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .profile-direct { margin: 16px 8px 0 0; }
-.profile-status { display: flex; align-items: baseline; gap: 8px; margin-block: 12px; color: var(--muted); }
+.profile-status { display: flex; align-items: baseline; gap: 8px; min-height: 1.5em; margin-block: 12px; color: var(--muted); }
 .profile-fields { display: grid; gap: 12px; }
 .profile-fields label { display: grid; gap: 6px; }
 .profile-fields small { color: var(--muted); }
@@ -1202,7 +1204,7 @@ html:has(body.windows .shell) { background: transparent; }
   width: min(var(--profile-popup-width), 100%); max-height: 100%; overflow: auto;
 }
 .quick-profile-fields { display: grid; gap: 4px; margin: 8px 0; }
-.quick-profile-fields div { display: grid; grid-template-columns: 40% 1fr; gap: 8px; }
+.quick-profile-fields div { display: grid; grid-template-columns: 40% 1fr; gap: 8px; min-height: 1.5em; }
 .quick-profile-fields dt { color: var(--muted); }
 .quick-profile-fields dd { margin: 0; overflow-wrap: anywhere; }
 .quick-profile-fields div:is(:nth-child(3), :nth-child(5)) { margin-top: 8px; }

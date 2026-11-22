@@ -14,6 +14,15 @@ pub struct CachedProfile {
 
 const DIRECTORY_CONTACTS: &str = "SELECT json_extract(contact.value, '$.id')
     FROM directory, json_each(directory.payload, '$.contacts') contact";
+const DIRECTORY_AVATAR: &str = "EXISTS (SELECT 1 FROM directory
+    WHERE json_extract(payload, '$.avatars.\"' || ?1 || '\"') = ?2)";
+
+fn profile_image_scope() -> String {
+    format!("({DIRECTORY_AVATAR} OR ((?1 = ?4 OR ?1 IN ({DIRECTORY_CONTACTS})) AND EXISTS (
+        SELECT 1 FROM cached_profiles WHERE user_id = ?1 AND expires_at > ?3
+          AND ?2 IN (json_extract(payload, '$.avatar'), json_extract(payload, '$.cover'))
+    )))")
+}
 
 impl Client {
     pub async fn cached_profile(&self, id: Uuid) -> Option<CachedProfile> {
@@ -48,43 +57,56 @@ impl Client {
         let Ok(payload) = serde_json::to_string(profile) else {
             return;
         };
-        let _ = sqlx::query(&format!(
+        let Ok(mut tx) = self.db.begin().await else { return };
+        if sqlx::query(&format!(
             "INSERT INTO cached_profiles (user_id, payload, expires_at)
              SELECT ?1, ?2, ?3 WHERE ?1 = ?4 OR ?1 IN ({DIRECTORY_CONTACTS})
-             ON CONFLICT (user_id) DO UPDATE SET payload = excluded.payload, expires_at = excluded.expires_at",
+             ON CONFLICT (user_id) DO UPDATE SET payload = excluded.payload, expires_at = excluded.expires_at
+             WHERE cached_profiles.payload <> excluded.payload
+                OR cached_profiles.expires_at <= excluded.expires_at - 3600000",
         ))
         .bind(id.to_string())
         .bind(payload)
         .bind(unix_millis() + PROFILE_CACHE_AGE_MS)
         .bind(self.user.id.to_string())
-        .execute(&self.db)
-        .await;
+        .execute(&mut *tx)
+        .await.is_err() {
+            return;
+        }
+        if sqlx::query(
+            "DELETE FROM cached_profiles WHERE user_id <> ?1 AND user_id IN (
+                SELECT user_id FROM cached_profiles WHERE user_id <> ?1
+                ORDER BY expires_at DESC, user_id DESC LIMIT -1 OFFSET 255
+             )",
+        )
+        .bind(self.user.id.to_string())
+        .execute(&mut *tx)
+        .await.is_ok() && self.prune_profile_cache(&mut tx).await.is_ok() {
+            let _ = tx.commit().await;
+        }
     }
 
     pub(super) async fn forget_profile(&self, id: Uuid) {
-        let _ = sqlx::query("DELETE FROM cached_profiles WHERE user_id = ?")
+        let Ok(mut tx) = self.db.begin().await else { return };
+        if sqlx::query("DELETE FROM cached_profiles WHERE user_id = ?")
             .bind(id.to_string())
-            .execute(&self.db)
-            .await;
+            .execute(&mut *tx)
+            .await.is_ok() && self.prune_profile_cache(&mut tx).await.is_ok() {
+            let _ = tx.commit().await;
+        }
     }
 
     pub async fn cached_profile_image(&self, id: Uuid, version: Uuid) -> Option<Vec<u8>> {
         self.ensure_open().ok()?;
         sqlx::query_scalar(&format!(
             "SELECT data FROM cached_profile_images
-             WHERE user_id = ?1 AND version = ?2 AND expires_at > ?3 AND (
-                ?1 = ?4 OR EXISTS (SELECT 1 FROM directory WHERE json_extract(payload, ?5) = ?2)
-                OR (?1 IN ({DIRECTORY_CONTACTS}) AND EXISTS (
-                    SELECT 1 FROM cached_profiles WHERE user_id = ?1 AND expires_at > ?3
-                      AND ?2 IN (json_extract(payload, '$.avatar'), json_extract(payload, '$.cover'))
-                ))
-             )",
+             WHERE user_id = ?1 AND version = ?2 AND expires_at > ?3 AND {}",
+            profile_image_scope(),
         ))
         .bind(id.to_string())
         .bind(version.to_string())
         .bind(unix_millis())
         .bind(self.user.id.to_string())
-        .bind(format!("$.avatars.\"{id}\""))
         .fetch_optional(&self.db)
         .await
         .ok()?
@@ -101,12 +123,17 @@ impl Client {
     pub(super) async fn remember_profile_image(&self, id: Uuid, version: Uuid, bytes: &[u8]) {
         let now = unix_millis();
         let Ok(mut tx) = self.db.begin().await else { return };
-        if sqlx::query(
-            "INSERT INTO cached_profile_images VALUES (?,?,?,?)
-             ON CONFLICT (user_id, version) DO UPDATE SET data = excluded.data, expires_at = excluded.expires_at",
-        )
+        if sqlx::query(&format!(
+            "INSERT INTO cached_profile_images
+             SELECT ?1, ?2, ?5, ?6 WHERE {}
+             ON CONFLICT (user_id, version) DO UPDATE SET expires_at = excluded.expires_at
+             WHERE cached_profile_images.expires_at <= excluded.expires_at - 3600000",
+            profile_image_scope(),
+        ))
         .bind(id.to_string())
         .bind(version.to_string())
+        .bind(now)
+        .bind(self.user.id.to_string())
         .bind(bytes)
         .bind(now + PROFILE_CACHE_AGE_MS)
         .execute(&mut *tx)
@@ -114,7 +141,10 @@ impl Client {
         .is_ok()
             && sqlx::query(
                 "DELETE FROM cached_profile_images WHERE rowid IN (
-                    SELECT rowid FROM cached_profile_images ORDER BY expires_at DESC, rowid DESC LIMIT -1 OFFSET 96
+                    SELECT entry FROM (
+                      SELECT rowid AS entry, row_number() OVER recent AS count, sum(length(data)) OVER recent AS budget
+                      FROM cached_profile_images WINDOW recent AS (ORDER BY expires_at DESC, rowid DESC)
+                    ) WHERE count > 96 OR budget > 33554432
                  )",
             )
             .execute(&mut *tx)
@@ -173,14 +203,13 @@ async fn prune(db: &mut SqliteConnection, own: Uuid, now: i64) -> anyhow::Result
     .execute(&mut *db)
     .await?;
     sqlx::query(
-        "DELETE FROM cached_profile_images WHERE expires_at <= ?1 OR (user_id <> ?2
+        "DELETE FROM cached_profile_images WHERE expires_at <= ?1 OR (
            AND NOT EXISTS (SELECT 1 FROM directory
                WHERE json_extract(payload, '$.avatars.\"' || cached_profile_images.user_id || '\"') = version)
            AND NOT EXISTS (SELECT 1 FROM cached_profiles p WHERE p.user_id = cached_profile_images.user_id
                AND version IN (json_extract(p.payload, '$.avatar'), json_extract(p.payload, '$.cover'))))",
     )
     .bind(now)
-    .bind(own.to_string())
     .execute(db)
     .await?;
     Ok(())

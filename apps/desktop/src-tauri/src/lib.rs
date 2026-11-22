@@ -160,6 +160,7 @@ pub fn run() {
             commands::set_contact_notes,
             media::pick_image,
             media::set_profile_image,
+            media::preview_image_bytes,
             commands::set_read_receipts,
             commands::read_update,
             commands::hide_message,

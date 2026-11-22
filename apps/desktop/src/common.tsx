@@ -5,6 +5,7 @@ import { api, errorMessage } from "./api";
 import type { Conversation, Directory, Message, Page, User } from "./api";
 import { ios, useIosBack } from "./ios";
 import { actions, t } from "./locale";
+import { useWorkspaceImage, WorkspaceImages } from "./workspace-image";
 
 export const People = createContext<Pick<Directory, "remarks" | "avatars"> & { online?: boolean; open?: (user: User) => void }>({ remarks: {}, avatars: {} });
 
@@ -14,9 +15,12 @@ export function displayName(user: User, remarks: Directory["remarks"]) {
 
 export function PersonAvatar({ user, large, version }: { user: User; large?: boolean; version?: string | null }) {
   const { remarks, avatars, online } = useContext(People);
+  const resources = useContext(WorkspaceImages);
   const name = displayName(user, remarks);
   const image = version === undefined ? avatars[user.id] : version;
-  return <Avatar name={name} large={large} online={online} src={image ? api.profileImageUrl(user.id, image) : undefined} />;
+  const cached = resources && image && image === avatars[user.id] ? { id: user.id, version: image } : undefined;
+  return <Avatar name={name} large={large} online={online}
+    cached={cached} src={!cached && image ? api.profileImageUrl(user.id, image) : undefined} />;
 }
 
 export function Brand() {
@@ -24,12 +28,25 @@ export function Brand() {
     width={42} height={42} alt="Zibblu" />;
 }
 
-export function Avatar({ name, group = false, large = false, src, online }: { name: string; group?: boolean; large?: boolean; src?: string; online?: boolean }) {
+export function Avatar({ name, group = false, large = false, src, online, cached }: {
+  name: string; group?: boolean; large?: boolean; src?: string; online?: boolean; cached?: { id: string; version: string };
+}) {
+  const node = useRef<HTMLSpanElement>(null);
+  const [visible, setVisible] = useState(false);
+  const key = cached && `avatar/${cached.id}/${cached.version}`;
+  useEffect(() => {
+    if (!key || !node.current) return;
+    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting));
+    observer.observe(node.current);
+    return () => observer.disconnect();
+  }, [key]);
+  const { url } = useWorkspaceImage(key, cached?.id ?? "", cached?.version, Infinity, Number(online), visible);
+  src = url ?? src;
   const tones = ["violet", "mint", "peach", "blue", "rose"];
   const tone = Array.from(name).reduce((sum, character) => sum + (character.codePointAt(0) ?? 0), 0) % tones.length;
   const initial = Array.from(name)[0]?.toUpperCase() ?? "?";
   const [failed, setFailed] = useState<{ src: string; online?: boolean }>();
-  return <span aria-hidden="true" className={"avatar " + tones[tone] + (large ? " avatar-large" : "")}>
+  return <span ref={node} aria-hidden="true" className={"avatar " + tones[tone] + (large ? " avatar-large" : "")}>
     {group ? <UsersRound size={large ? 23 : 18} /> : src && (failed?.src !== src || failed.online !== online)
       ? <img src={src} alt="" loading="lazy" onError={() => setFailed({ src, online })} /> : initial}
   </span>;

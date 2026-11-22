@@ -99,6 +99,7 @@ export const api = {
   pasteText: () => invoke<string | null>("paste_text"),
   scanIosQr: () => invoke<string | null>("ios_scan_qr"),
   profileImageUrl: (id: string, version: string) => convertFileSrc(`profile_${id}_${version}`, "zibblu-media"),
+  previewImageBytes: (id: string, profileVersion?: string) => invoke<ArrayBuffer>("preview_image_bytes", { id, profileVersion }),
   readUpdate: (conversation: string, through?: number, sent?: number, viewed?: number) =>
     invoke<MessageReceipt | null>("read_update", { conversation, update: { through, sent: sent === undefined ? [] : [sent], viewed } }),
   setReadReceipts: (enabled: boolean) => invoke<void>("set_read_receipts", { enabled }),

@@ -215,9 +215,16 @@ impl Desktop {
             let app = app.clone();
             let client = client.clone();
             tauri::async_runtime::spawn(async move {
-                if let Ok(profile) = client.profile(client.user.id).await
+                let profile = match client.cached_profile(client.user.id).await {
+                    Some(cached) => Some(cached.profile),
+                    None => client.profile(client.user.id).await.ok(),
+                };
+                if let Some(profile) = profile
                     && let Some(version) = profile.avatar
-                    && let Ok(bytes) = client.profile_image(client.user.id, version).await
+                    && let Some(bytes) = match client.cached_profile_image(client.user.id, version).await {
+                        Some(bytes) => Some(bytes),
+                        None => client.profile_image(client.user.id, version).await.ok(),
+                    }
                     && let Ok(avatar) = crate::images::saved_avatar(&bytes)
                 {
                     app.state::<Desktop>().remember_avatar(&client, avatar).await;

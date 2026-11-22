@@ -11,13 +11,49 @@ use tauri::{
     http::{Method, Request, Response, StatusCode, header, response::Builder},
     ipc::InvokeBody,
 };
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 use uuid::Uuid;
 use zibblu_core::{Attachment, CHUNK_SIZE, Client, MAX_PASTED_IMAGE_BYTES, ProfileImage, Transfer};
 
 pub(crate) static IMAGE_JOBS: Semaphore = Semaphore::const_new(2);
 const ORIGINAL: i64 = -1;
 const THUMBNAIL: i64 = -2;
+static PREVIEW_LOCKS: [Mutex<()>; 16] = [const { Mutex::const_new(()) }; 16];
+
+#[tauri::command]
+pub(crate) async fn preview_image_bytes(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    id: Uuid,
+    profile_version: Option<Uuid>,
+) -> CommandResult<tauri::ipc::Response> {
+    let bytes = async {
+        ensure!(window.label() == "main", "Open the preview in the main window");
+        let client = state.client().await.map_err(|_| anyhow::anyhow!("Sign in to preview media"))?;
+        let bytes = if let Some(version) = profile_version {
+            profile_image(&client, id, version).await?
+        } else {
+            let message = client.preview_attachment(id).await?;
+            let file = message.attachment.context("Missing attachment")?;
+            let (_, bytes) = image_preview(&client, message.seq, file, true).await?;
+            client.preview_attachment(id).await?;
+            bytes
+        };
+        ensure!(state.is_current(&client).await, "The session has ended");
+        Ok::<_, anyhow::Error>(bytes)
+    }.await?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+async fn profile_image(client: &Client, id: Uuid, version: Uuid) -> Result<Vec<u8>> {
+    let _request = PREVIEW_LOCKS[id.as_bytes()[0] as usize % PREVIEW_LOCKS.len()].lock().await;
+    let bytes = match client.cached_profile_image(id, version).await {
+        Some(bytes) => bytes,
+        None => client.profile_image(id, version).await?,
+    };
+    images::check_stored_profile(&bytes)?;
+    Ok(bytes)
+}
 
 fn image_body(body: &InvokeBody) -> Result<&[u8]> {
     let InvokeBody::Raw(bytes) = body else {
@@ -218,11 +254,7 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>, viewer: bool
         ensure!(!viewer, "Profile images belong to the main window");
         let id = Uuid::parse_str(id)?;
         let version = Uuid::parse_str(version)?;
-        let bytes = match client.cached_profile_image(id, version).await {
-            Some(bytes) => bytes,
-            None => client.profile_image(id, version).await?,
-        };
-        images::check_stored_profile(&bytes)?;
+        let bytes = profile_image(&client, id, version).await?;
         ensure!(app.state::<Desktop>().is_current(&client).await, "The session has ended");
         return Ok(preview_headers("image/png")
             .header(header::CONTENT_LENGTH, bytes.len())
@@ -237,7 +269,7 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>, viewer: bool
         let scoped = crate::image_viewer::authorize(&app.state::<Desktop>(), id).await?;
         ensure!(std::sync::Arc::ptr_eq(&client, &scoped), "The session has ended");
     }
-    let message = client.attachment(id).await?;
+    let message = client.preview_attachment(id).await?;
     let file = message.attachment.context("Missing attachment")?;
     let mime_hint = file.preview_mime().context("Unsupported media type")?;
     if mime_hint.starts_with("video/") {
@@ -316,7 +348,7 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>, viewer: bool
 
 async fn ensure_current(app: &AppHandle, client: &std::sync::Arc<Client>, file: &Attachment) -> Result<()> {
     ensure!(
-        client.attachment(file.id).await?.attachment.as_ref() == Some(file)
+        client.preview_attachment(file.id).await?.attachment.as_ref() == Some(file)
             && app.state::<Desktop>().is_current(client).await,
         "The attachment is no longer available"
     );
@@ -325,7 +357,9 @@ async fn ensure_current(app: &AppHandle, client: &std::sync::Arc<Client>, file: 
 
 pub(crate) async fn image_preview(client: &Client, seq: i64, file: Attachment, thumbnail: bool) -> Result<(String, Vec<u8>)> {
     ensure!(file.size <= MAX_PASTED_IMAGE_BYTES as u64, "Image too large for inline preview");
+    ensure!(file.preview_mime().is_some_and(|mime| mime.starts_with("image/")), "Unsupported image type");
     let variant = if thumbnail { THUMBNAIL } else { ORIGINAL };
+    let _request = PREVIEW_LOCKS[file.id.as_bytes()[0] as usize % PREVIEW_LOCKS.len()].lock().await;
     if let Some(cached) = client.cached_preview(seq, &file.sha256, variant).await.ok().flatten() {
         return Ok(cached);
     }
