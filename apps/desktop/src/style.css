@@ -236,7 +236,7 @@ svg { vertical-align: middle; }
 .rail-links button[aria-current="page"] { background: var(--tint); color: var(--primary); }
 .windows .rail-links button { transition: none; }
 .windows .rail-links button[aria-current="page"] { background: transparent; }
-.rail-active-contacts circle { fill: currentColor; }
+.rail-active-contacts :is(circle, path:first-child) { fill: currentColor; }
 .rail-icon-detail { stroke: var(--tint); }
 .rail button:focus-visible { outline-color: var(--accent); outline-offset: 1px; }
 .rail-icon { position: relative; }
