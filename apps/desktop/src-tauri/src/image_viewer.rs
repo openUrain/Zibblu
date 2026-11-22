@@ -16,8 +16,8 @@ use zibblu_core::{Attachment, Client, Direction, FileFilter, Message, Transfer};
 
 pub(crate) const LABEL: &str = "image-viewer";
 #[cfg(any(windows, test))]
-// Eight 36px image controls, two 8px group gaps, two 8px column gaps and two balanced caption areas.
-const MIN_VIEWER_WIDTH: f64 = 8.0 * 36.0 + 4.0 * 8.0 + 2.0 * 3.0 * 44.0;
+// Full-size controls, group and column gaps, and 12px of clearance beside each caption area.
+const MIN_VIEWER_WIDTH: f64 = 8.0 * 36.0 + 4.0 * 8.0 + 2.0 * (3.0 * 44.0 + 12.0);
 
 #[derive(Clone)]
 pub(crate) struct ImageScope {

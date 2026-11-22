@@ -13,7 +13,7 @@
   flex-direction: column;
 }
 .image-toolbar {
-  flex: none; height: 44px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  flex: none; height: 44px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
   column-gap: 8px; background: var(--panel); border-bottom: 1px solid var(--line); position: relative;
 }
 .image-window-end { display: flex; justify-content: flex-end; }
@@ -23,10 +23,6 @@
 .image-tools .icon-button { width: 36px; min-width: 36px; height: 36px; border: 0; background: transparent; }
 .image-tools .icon-button:hover:not(:disabled) { background: var(--hover); }
 .image-tools .icon-button[aria-pressed="true"] { background: var(--tint); color: var(--accent); }
-@media (max-width: 583px) {
-  .image-toolbar .window-controls button { width: 36px; }
-  .image-tools .icon-button { width: 28px; min-width: 28px; }
-}
 .image-tools .icon-button:focus-visible, .image-stage:focus-visible { outline-offset: -2px; }
 .image-stage:focus-visible { outline: 2px solid var(--accent); }
 @media (forced-colors: active) {
