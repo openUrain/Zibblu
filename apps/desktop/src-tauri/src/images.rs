@@ -172,6 +172,30 @@ fn still(mut decoder: impl ImageDecoder) -> Result<DynamicImage> {
     Ok(image)
 }
 
+pub(crate) fn remote_thumbnail(format: ImageFormat, bytes: &[u8]) -> Result<Vec<u8>> {
+    fn thumbnail(mut decoder: impl ImageDecoder) -> Result<Vec<u8>> {
+        check_decoder_limit(&mut decoder, 4_000_000)?;
+        let image = still(decoder)?;
+        encode_png(&image.thumbnail(640, 480).into_rgba8())
+    }
+
+    let source = Cursor::new(bytes);
+    match format {
+        ImageFormat::Png => {
+            let decoder = PngDecoder::with_limits(source, limits())?;
+            ensure!(!decoder.is_apng()?, "Animated previews are unavailable");
+            thumbnail(decoder)
+        }
+        ImageFormat::Jpeg => thumbnail(image::codecs::jpeg::JpegDecoder::new(source)?),
+        ImageFormat::WebP => {
+            let decoder = WebPDecoder::new(source)?;
+            ensure!(!decoder.has_animation(), "Animated previews are unavailable");
+            thumbnail(decoder)
+        }
+        _ => Err(anyhow!("Unsupported preview format")),
+    }
+}
+
 fn decode(format: ImageFormat, bytes: &[u8], preview: bool) -> Result<DynamicImage> {
     let source = Cursor::new(bytes);
     match format {

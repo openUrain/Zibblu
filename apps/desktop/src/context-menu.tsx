@@ -21,18 +21,19 @@ export const useMenu = () => useContext(OpenMenu);
 export const useEditMenu = () => useContext(OpenEditMenu);
 export const useMenuAnchor = () => useContext(MenuAnchor);
 
-export function useRowMenu() {
+export function useRowMenu<T extends HTMLElement = HTMLButtonElement>() {
   const open = useMenu();
   const press = useRef<{ target: HTMLElement; x: number; y: number; timer: number; opened: boolean }>(undefined);
   const release = () => { window.clearTimeout(press.current?.timer); };
   useEffect(() => release, []);
 
-  return (items: MenuItem[]): React.HTMLAttributes<HTMLButtonElement> => ({
+  return (items: MenuItem[] | ((anchor: T) => MenuItem[])): React.HTMLAttributes<T> => ({
     onContextMenu(event) {
       event.preventDefault();
       event.stopPropagation();
       if (press.current?.opened && press.current.target === event.currentTarget) return;
-      open(event.currentTarget, items, event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : undefined);
+      open(event.currentTarget, typeof items === "function" ? items(event.currentTarget) : items,
+        event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : undefined);
     },
     onPointerDown(event) {
       release();
@@ -44,7 +45,7 @@ export function useRowMenu() {
       const timer = window.setTimeout(() => {
         if (!press.current || !target.isConnected) return;
         press.current.opened = true;
-        open(target, items, { x, y });
+        open(target, typeof items === "function" ? items(target) : items, { x, y });
       }, 480);
       press.current = { target, x, y, timer, opened: false };
     },
@@ -110,10 +111,16 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
       if (!menu.anchor.isConnected || anchor.bottom < 0 || anchor.top > window.innerHeight) setMenu(undefined);
     };
     const dismiss = () => setMenu(undefined);
+    const privateAnchor = menu.anchor.closest(".private-chat");
+    const watch = privateAnchor ? new MutationObserver(() => {
+      if (!menu.anchor.isConnected) dismiss();
+    }) : undefined;
+    watch?.observe(document.body, { childList: true, subtree: true });
     window.addEventListener("pointerdown", outside);
     window.addEventListener("resize", dismiss);
     window.addEventListener("scroll", reposition, true);
     return () => {
+      watch?.disconnect();
       window.removeEventListener("pointerdown", outside);
       window.removeEventListener("resize", dismiss);
       window.removeEventListener("scroll", reposition, true);
@@ -187,7 +194,7 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
         }
       }}>
       {menu.items.map(item => <button type="button" role="menuitem" key={item.label} disabled={item.disabled}
-        onClick={() => { close(true); item.action(); }}>{item.icon}{item.label}</button>)}
+        onClick={() => { close(true); if (menu.anchor.isConnected) item.action(); }}>{item.icon}{item.label}</button>)}
     </div>, menu.anchor.closest("dialog, .private-chat") ?? document.body)}
   </div></MenuAnchor.Provider></OpenEditMenu.Provider></OpenMenu.Provider>;
 }

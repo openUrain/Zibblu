@@ -1,0 +1,84 @@
+.rich-message {
+  --rich-link: var(--blue);
+  --rich-code-highlight: color-mix(in srgb, var(--ink) 8%, var(--soft));
+}
+.private-chat .rich-message {
+  --rich-link: #c8d8ff;
+}
+.bubble.rich-markdown { white-space: normal; }
+.rich-markdown > :first-child { margin-block-start: 0; }
+.rich-markdown > :last-child { margin-block-end: 0; }
+.rich-markdown :where(p, ul, ol, blockquote, hr, h1, h2, h3, h4, h5, h6, .rich-formula-block, .rich-code, .rich-scroll) {
+  margin-block: 0 8px;
+}
+.rich-markdown :where(li, blockquote) > :last-child { margin-block-end: 0; }
+.rich-markdown :where(h1, h2, h3, h4, h5, h6) { font-size: inherit; font-weight: 650; }
+.rich-markdown :where(ol, ul) { padding-inline-start: 24px; }
+.rich-markdown blockquote {
+  margin-inline: 0;
+  border-inline-start: 2px solid var(--line);
+  padding-inline-start: 8px;
+}
+.rich-markdown hr { border: 0; border-block-start: 1px solid var(--line); }
+.rich-markdown .task-list-item { list-style: none; }
+.rich-markdown input[type=checkbox] {
+  appearance: none; display: inline-grid; place-content: center; width: 12px; height: 12px;
+  margin-inline: -16px 4px; vertical-align: middle; border: 1px solid var(--muted); border-radius: 2px;
+  color: var(--muted); font: inherit; font-size: 11px; line-height: 1;
+}
+.rich-markdown input[type=checkbox]:checked::after { content: "✓"; }
+.rich-link { color: var(--rich-link); text-decoration: underline; -webkit-touch-callout: none; }
+.rich-link-error { color: var(--danger); margin-inline-start: 4px; }
+:where(.rich-link, .rich-scroll, .rich-formula-block):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (forced-colors: active) {
+  :where(.rich-link, .rich-scroll, .rich-formula-block):focus-visible { outline-color: Highlight; }
+  .rich-markdown input[type=checkbox] { appearance: auto; }
+  .rich-markdown input[type=checkbox]::after { content: none; }
+}
+.rich-markdown code { font-family: ui-monospace, Consolas, Menlo, monospace; font-size: .93em; }
+.rich-markdown :not(pre) > code { background: var(--soft); border-radius: 4px; padding-inline: 4px; }
+.rich-code { background: var(--soft); border-radius: 6px; min-width: 0; }
+.rich-code-actions {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding-inline: 8px 4px; color: var(--muted); font-size: 12px;
+}
+.rich-code-actions .icon-button { width: 28px; height: 28px; }
+.rich-scroll, .rich-formula-block { max-inline-size: 100%; overflow: auto hidden; }
+.rich-code pre { margin: 0; padding: 4px 8px 8px; white-space: pre; overflow-wrap: normal; }
+.rich-markdown table { border-collapse: collapse; width: max-content; white-space: nowrap; }
+.rich-markdown :where(th, td) { border: 1px solid var(--line); padding: 4px 8px; }
+.rich-markdown th { background: var(--soft); font-weight: 650; }
+.rich-markdown .hljs-comment { color: var(--muted); }
+.rich-markdown :is(.hljs-keyword, .hljs-selector-tag, .hljs-meta, .hljs-string, .hljs-regexp,
+  .hljs-title, .hljs-literal, .hljs-number, .hljs-type, .hljs-built_in) {
+  background: var(--rich-code-highlight);
+}
+.rich-formula { overflow-wrap: anywhere; }
+.rich-formula:not(.rich-formula-block):has(.katex) {
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr);
+  max-inline-size: 100%;
+  vertical-align: baseline;
+}
+.rich-formula:not(.rich-formula-block) > .katex { overflow: auto hidden; }
+.rich-formula-block { display: block; padding-block: 4px; text-align: center; white-space: pre; }
+.rich-formula-block > .katex-display { width: max-content; min-width: 100%; margin: 0; }
+.rich-markdown p:has(> .rich-formula-block:only-child) > .rich-formula-block { margin-block-end: 0; }
+.private-chat .rich-message { user-select: text; }
+.ios .private-chat .rich-message { -webkit-user-select: none; user-select: none; }
+.rich-preview {
+  position: fixed; z-index: 24; display: flex; flex-direction: column;
+  max-inline-size: var(--preview-width); max-block-size: var(--preview-height);
+  padding: 8px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel); color: var(--ink); box-shadow: var(--shadow); overflow: auto;
+}
+.rich-preview:focus-visible { outline: 2px solid var(--accent); }
+.rich-preview-result:not(:has(img)) { min-block-size: 32px; display: grid; place-items: center; }
+.rich-preview-result img {
+  display: block; width: auto; height: auto; object-fit: contain;
+  max-inline-size: calc(var(--preview-width) - 18px);
+  max-block-size: calc(var(--preview-height) - 18px);
+}

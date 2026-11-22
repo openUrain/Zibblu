@@ -1,10 +1,13 @@
 import { FloatingField } from "./floating-field";
-import { ArrowDown, ArrowLeft, Ghost, QrCode, Send, UserPlus } from "lucide-react";
+import { RichMessage } from "./rich-message";
+import { ArrowDown, ArrowLeft, Copy, Ghost, QrCode, Send, UserPlus } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { Fragment, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, errorMessage } from "./api";
+import { copyText, useRowMenu } from "./context-menu";
 import { ios } from "./ios";
+import { t } from "./locale";
 import type { Directory, Discovery, NearbyDevice, PrivateList, PrivateMessage, PrivateSummary, User } from "./api";
 import { Avatar, Blank, Choice, Dialog, People, PersonAvatar, displayName, messageTimeLabel, startsTimeGroup } from "./common";
 
@@ -217,6 +220,7 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
   onClosed: () => void; switchMode?: () => void;
 }) {
   const { remarks, open } = useContext(People);
+  const messageMenu = useRowMenu<HTMLDivElement>();
   const inputId = useId();
   const [room, setRoom] = useState<PrivateSummary>();
   const [messages, setMessages] = useState<PrivateMessage[]>([]);
@@ -335,7 +339,12 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
   }
 
   return <section className="chat-view private-chat" aria-label="Private chat"
-    onCopy={event => event.preventDefault()} onCut={event => event.preventDefault()}
+    onCopy={event => {
+      const selection = window.getSelection();
+      const start = selection?.anchorNode;
+      const bubble = (start instanceof Element ? start : start?.parentElement)?.closest(".rich-message");
+      if (!bubble || !event.currentTarget.contains(bubble) || !bubble.contains(selection?.focusNode ?? null)) event.preventDefault();
+    }} onCut={event => event.preventDefault()}
     onDragStart={event => event.preventDefault()} onDrop={event => event.preventDefault()}>
     <header className="chat-header">
       <button className="icon-button" onClick={back} aria-label="Return to chats"><ArrowLeft size={19} /></button>
@@ -374,11 +383,20 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
           const avatar = <Avatar name={displayName(message.sender, remarks)} />;
           return <Fragment key={message.seq}>
             {group && <div className="day-divider"><time dateTime={new Date(message.created_at).toISOString()}>{messageTimeLabel(message.created_at)}</time></div>}
-            <div className={"message-row" + (mine ? " mine" : "") + (message.seq > (latestAtOpen.current ?? 0) ? " message-arrival" : "")}>
+            <div className={"message-row" + (mine ? " mine" : "") + (message.seq > (latestAtOpen.current ?? 0) ? " message-arrival" : "")}
+              tabIndex={0} aria-haspopup="menu" {...messageMenu(anchor => {
+                const selection = window.getSelection();
+                const text = anchor.contains(selection?.anchorNode ?? null) && anchor.contains(selection?.focusNode ?? null)
+                  ? selection?.toString() || message.text : message.text;
+                return [{
+                  label: t("Copy", "复制"), icon: <Copy size={15} />,
+                  action: () => { void copyText(text).catch(error => setFailure(errorMessage(error))); },
+                }];
+              })}>
               {!mine && avatar}
               <div className="message-body">
                 {!mine && <span className="message-author">{displayName(message.sender, remarks)}</span>}
-                <div className="bubble">{message.text}</div>
+                <RichMessage text={message.text} privateRoom />
               </div>
               {mine && avatar}
             </div>
