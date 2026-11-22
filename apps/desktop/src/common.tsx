@@ -96,10 +96,10 @@ export function placeDialog(dialog: HTMLDialogElement, x: number, y: number, fli
   dialog.style.top = Math.max(bounds.top, Math.min(top, bounds.bottom - height)) + "px";
 }
 
-export function Dialog({ title, close, children, className, onKeyDown, closeDisabled, mobilePage, visible = true, modal = true }: {
+export function Dialog({ title, close, children, className, onKeyDown, closeDisabled, mobilePage, visible = true, inactive = false, modal = true }: {
   title: string; close: () => void; children: ReactNode; className?: string;
   onKeyDown?: KeyboardEventHandler<HTMLDialogElement>; closeDisabled?: boolean; mobilePage?: boolean;
-  visible?: boolean; modal?: boolean;
+  visible?: boolean; inactive?: boolean; modal?: boolean;
 }) {
   const element = useRef<HTMLDialogElement>(null);
   const drag = useRef<{ x: number; y: number }>(undefined);
@@ -124,7 +124,7 @@ export function Dialog({ title, close, children, className, onKeyDown, closeDisa
   }, [visible, modal]);
   useIosBack(visible ? () => { if (!closeDisabled) close(); } : undefined, 20);
   const page = ios && mobilePage;
-  return <dialog ref={element} inert={!visible} className={(className ?? "") + (movable ? " formal-dialog" : "") + (page ? " dialog-page" : "")}
+  return <dialog ref={element} inert={!visible || inactive} className={(className ?? "") + (movable ? " formal-dialog" : "") + (page ? " dialog-page" : "")}
     onCancel={event => { event.preventDefault(); if (!closeDisabled) close(); }}
     onKeyDown={onKeyDown} aria-label={title}>
     <div className="dialog-head" onPointerDown={event => {
