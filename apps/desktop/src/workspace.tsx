@@ -99,10 +99,14 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [sharing, setSharing] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const signingOut = useRef(false);
-  const canPreview = useMemo(() => {
-    const conversations = new Map(directory.conversations.map(chat => [chat.id, chat.joined_after ?? 0]));
-    return (id: string, seq: number) => seq > (conversations.get(id) ?? Infinity)
-      && !recalled.has(seq) && !hidden.has(seq);
+  const previewAccess = useMemo(() => {
+    const conversations = new Map(directory.conversations.map(chat => [chat.id, chat.joined_after ?? null]));
+    return (id: string, seq: number) => {
+      const cutoff = conversations.get(id);
+      if (cutoff === undefined || recalled.has(seq) || hidden.has(seq)) return;
+      if (cutoff === null) return "online";
+      if (seq > cutoff) return "cached";
+    };
   }, [directory.conversations, recalled, hidden]);
 
   useLayoutEffect(() => {
@@ -116,9 +120,9 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       if (type === "avatar") return directory.avatars[id] === version;
       if (type === "cover") return (id === session.user.id || people.has(id))
         && profiles.get(id + (id === session.user.id ? "/own" : "/contact"))?.profile.cover === version;
-      return canPreview(id, Number(version));
+      return previewAccess(id, Number(version)) === "cached";
     });
-  }, [directory.contacts, directory.avatars, canPreview, images, profiles, session.user.id]);
+  }, [directory.contacts, directory.avatars, previewAccess, images, profiles, session.user.id]);
   useLayoutEffect(() => () => {
     profiles.retain(() => false);
     images.retain(() => false);
@@ -547,8 +551,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     refresh={refresh} close={closeProfile} edited={profileEdited}
     message={() => create({ kind: "direct", contact_id: profile.id })} />;
   const viewSelection = privateSelection.current;
-  const imageScope = useMemo(() => windows ? { cache: images, clockOffset, canPreview,
-    avatarExpires: avatarValidated + 24 * hour } : undefined, [images, clockOffset, canPreview, avatarValidated]);
+  const imageScope = useMemo(() => windows ? { cache: images, clockOffset, previewAccess,
+    avatarExpires: avatarValidated + 24 * hour } : undefined, [images, clockOffset, previewAccess, avatarValidated]);
   return <WorkspaceImages.Provider value={imageScope}>
     <People.Provider value={{ remarks: names, avatars: directory.avatars, online: connected, open: openProfile }}>
   <main onClickCapture={event => {

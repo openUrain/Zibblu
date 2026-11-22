@@ -41,7 +41,8 @@ impl Client {
             "SELECT t.payload FROM timeline t JOIN directory d ON d.id = 1
              JOIN json_each(d.payload, '$.conversations') c
                ON json_extract(c.value, '$.id') = t.conversation_id
-              AND t.seq > json_extract(c.value, '$.joined_after')
+              AND (json_extract(c.value, '$.joined_after') IS NULL
+                   OR t.seq > json_extract(c.value, '$.joined_after'))
              WHERE t.attachment_id = ?1 AND t.seq NOT IN (SELECT seq FROM hidden_messages)
                AND json_extract(t.payload, '$.recalled') IS NOT 1
                AND (json_extract(t.payload, '$.local_file') = 1 OR
@@ -239,6 +240,8 @@ mod tests {
                 .execute(&client.db)
                 .await?;
             assert!(client.cached_preview(1, "fixture", 5).await?.is_none());
+            assert!(client.cached_thumbnail_sizes(std::slice::from_ref(&message)).await?.is_empty());
+            assert_eq!(client.preview_attachment(attachment_id).await.is_ok(), cutoff.is_none());
         }
         let mut tx = client.db.begin().await?;
         client.prune_media_previews(&mut tx).await?;

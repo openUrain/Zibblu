@@ -5,7 +5,7 @@ import type { ImageCache } from "./workspace-cache";
 
 export const WorkspaceImages = createContext<{
   cache: ImageCache; clockOffset: number; avatarExpires: number;
-  canPreview: (conversation: string, seq: number) => boolean;
+  previewAccess: (conversation: string, seq: number) => "cached" | "online" | undefined;
 } | undefined>(undefined);
 
 export function thumbnailKey(message: Message, file: Attachment) {

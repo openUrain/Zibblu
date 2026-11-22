@@ -28,8 +28,10 @@ function MediaTile({ message, open, fitImage, size: hint }: {
   const [state, setState] = useState<PreviewState>(canPreview(file) ? "loading" : "failed");
   const [visible, setVisible] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const allowed = !resources || resources.canPreview(message.conversation_id, message.seq);
-  const cachedImage = kind === "image" && !!resources && canPreview(file);
+  const [onlineSize, setOnlineSize] = useState<ImageSize>();
+  const access = resources?.previewAccess(message.conversation_id, message.seq);
+  const allowed = !resources || !!access;
+  const cachedImage = kind === "image" && access === "cached" && canPreview(file);
   const key = cachedImage && allowed ? thumbnailKey(message, file) : undefined;
   const expires = !message.local_file && message.expires_at != null
     ? message.expires_at - (resources?.clockOffset ?? 0) : Infinity;
@@ -51,7 +53,7 @@ function MediaTile({ message, open, fitImage, size: hint }: {
 
   return <button ref={element} type="button" className="media-tile" data-ready={status === "ready" ? "" : undefined}
     data-cached-image={cachedImage ? "" : undefined}
-    data-fit-image={fitImage ? "" : undefined} style={fitImage ? thumbnailStyle(hint ?? size) : undefined}
+    data-fit-image={fitImage ? "" : undefined} style={fitImage ? thumbnailStyle(hint ?? size ?? onlineSize) : undefined}
     onClick={() => {
       if (status === "failed" && canPreview(file)) {
         setState("loading");
@@ -60,8 +62,11 @@ function MediaTile({ message, open, fitImage, size: hint }: {
       open();
     }}
     aria-label={`Open ${kind === "video" ? "video" : "image"} ${file.name}`}>
-    {cachedImage ? url && <img src={url} alt="" /> : visible && status !== "failed" && (kind === "image"
-      ? <img src={api.mediaUrl(file.id, "thumbnail") + (attempt ? "&retry=" + attempt : "")} alt="" onLoad={() => setState("ready")} onError={() => setState("failed")} />
+    {cachedImage ? url && <img key="cached" src={url} alt="" /> : visible && status !== "failed" && (kind === "image"
+      ? <img key="online" src={api.mediaUrl(file.id, "thumbnail") + (attempt ? "&retry=" + attempt : "")} alt="" onLoad={event => {
+        if (fitImage) setOnlineSize([event.currentTarget.naturalWidth, event.currentTarget.naturalHeight]);
+        setState("ready");
+      }} onError={() => setState("failed")} />
       : <video src={api.mediaUrl(file.id)} muted playsInline preload="metadata"
         onLoadedMetadata={() => setState("ready")} onError={() => setState("failed")} aria-hidden="true" />)}
     {status === "failed" ? <span className="media-tile-fallback">

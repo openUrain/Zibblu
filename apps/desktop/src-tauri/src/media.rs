@@ -29,9 +29,13 @@ pub(crate) async fn upload_image_size(
         ensure!(window.label() == "main", "Open the preview in the main window");
         let client = state.client().await.map_err(|_| anyhow::anyhow!("Sign in to preview media"))?;
         let input = client.staged_image(id).await?;
+        let permit = IMAGE_JOBS.acquire().await?;
         let size = tauri::async_runtime::spawn_blocking(move || {
-            image::ImageReader::new(std::io::BufReader::new(input)).with_guessed_format()?.into_dimensions()
-                .map_err(anyhow::Error::from)
+            use std::io::Read;
+            let _permit = permit;
+            let mut bytes = Vec::new();
+            input.take((MAX_PASTED_IMAGE_BYTES + 1) as u64).read_to_end(&mut bytes)?;
+            images::preview_dimensions(&bytes)
         }).await??;
         ensure!(state.is_current(&client).await, "The session has ended");
         Ok::<_, anyhow::Error>(size)
