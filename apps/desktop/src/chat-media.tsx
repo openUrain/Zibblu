@@ -1,6 +1,6 @@
 import { FloatingField } from "./floating-field";
 import { ChevronLeft, ChevronRight, Image, LoaderCircle, Play, RotateCcw, Search, Video } from "lucide-react";
-import { useCallback, useContext, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { api, errorMessage, fileExpired } from "./api";
 import type { Attachment, ImageSize, Message, Transfer } from "./api";
 import { canPreview, mediaKind, readAttachmentPage } from "./attachment-media";
@@ -37,6 +37,8 @@ function MediaTile({ message, open, fitImage, size: hint }: {
     ? message.expires_at - (resources?.clockOffset ?? 0) : Infinity;
   const { url, size, failed } = useWorkspaceImage(key, file.id, undefined, expires, attempt, visible);
   const status = !allowed ? "failed" : cachedImage ? (url ? "ready" : failed ? "failed" : "loading") : state;
+  // WebView can reuse a decoded image at the same URL even when the response says no-store.
+  const onlineQuery = useMemo(() => access === "online" ? `view=${crypto.randomUUID()}` : "", [access]);
   const element = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const target = element.current;
@@ -63,11 +65,12 @@ function MediaTile({ message, open, fitImage, size: hint }: {
     }}
     aria-label={`Open ${kind === "video" ? "video" : "image"} ${file.name}`}>
     {cachedImage ? url && <img key="cached" src={url} alt="" /> : visible && status !== "failed" && (kind === "image"
-      ? <img key="online" src={api.mediaUrl(file.id, "thumbnail") + (attempt ? "&retry=" + attempt : "")} alt="" onLoad={event => {
+      ? <img key="online" src={api.mediaUrl(file.id, "thumbnail") + (onlineQuery ? "&" + onlineQuery : "")
+        + (attempt ? "&retry=" + attempt : "")} alt="" onLoad={event => {
         if (fitImage) setOnlineSize([event.currentTarget.naturalWidth, event.currentTarget.naturalHeight]);
         setState("ready");
       }} onError={() => setState("failed")} />
-      : <video src={api.mediaUrl(file.id)} muted playsInline preload="metadata"
+      : <video src={api.mediaUrl(file.id) + (onlineQuery ? "?" + onlineQuery : "")} muted playsInline preload="metadata"
         onLoadedMetadata={() => setState("ready")} onError={() => setState("failed")} aria-hidden="true" />)}
     {status === "failed" ? <span className="media-tile-fallback">
       {kind === "video" ? <Video size={22} /> : <Image size={22} />}
