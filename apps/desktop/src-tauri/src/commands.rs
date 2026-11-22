@@ -1180,7 +1180,11 @@ pub(crate) async fn save_attachment(
                     return Err(anyhow!("The image viewer has closed").into());
                 }
             }
-            Ok(Some(client.queue_download(id, path).await?))
+            #[cfg(windows)]
+            let transfer = client.queue_windows_save(id, path).await?;
+            #[cfg(not(windows))]
+            let transfer = client.queue_download(id, path).await?;
+            Ok(Some(transfer))
         }
         None => Ok(None),
     }

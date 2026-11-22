@@ -54,7 +54,9 @@ Windows 和 iOS 的普通聊天预览只访问当前认证资料。接收的会�
 
 SQLite 落盘后才发送元数据 ACK。完整保存并校验长度和 SHA-256 后，设备才提交独立的文件内容 ACK。未授权请求统一按不可见处理，授权用户可收到过期回应。内容响应使用 `Cache-Control: private, no-store`。服务端清理只结束数据的在线可用性，WAL、数据库备份、快照和代理需执行各自的留存与访问控制。
 
-Local attachment paths come from a native picker, an explicitly confirmed drop, or a confirmed Windows File Explorer paste. The native app holds the path list behind a single-use ticket and reads files under the current OS account when the user confirms. Pasted images supply bounded image bytes, without a path. Media previews use the same authenticated chunk access as downloads. Image previews check SHA-256 and serve a content type derived from the validated bytes with `nosniff`. Image decoding is limited by input size, dimensions and decoded pixels. Animations are limited to 240 frames and 64 million canvas pixels in total. The app does not extract received archives or overwrite existing destinations.
+Local attachment paths come from a native picker, an explicitly confirmed drop, or a confirmed Windows File Explorer paste. The native app holds the path list behind a single-use ticket and reads files under the current OS account when the user confirms. Pasted images supply bounded image bytes, without a path. Media previews use the same authenticated chunk access as downloads. Image previews check SHA-256 and serve a content type derived from the validated bytes with `nosniff`. Image decoding is limited by input size, dimensions and decoded pixels. Animations are limited to 240 frames and 64 million canvas pixels in total. The app does not extract received archives.
+
+Windows 附件仅对原生保存对话框确认的现有普通文件授权覆盖。发布前复核目标的文件标识、大小与最后写入时间，再以同目录已经校验 SHA-256 并同步的暂存文件执行一次替换。新路径维持禁止覆盖。权限不足、文件锁或空间不足等失败会保留原件，并提供重试入口。替换成功后才记录保存完成。
 
 Contact approval can only be performed by the recipient. Recall can only be performed by the original sender within five minutes according to server time. Recalled attachments are unavailable through the service, and the app keeps a notice in the timeline. Copies already saved by a recipient remain on that device.
 
