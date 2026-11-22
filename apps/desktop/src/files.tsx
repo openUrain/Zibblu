@@ -35,8 +35,8 @@ function FileName({ name }: { name: string }) {
   </span>;
 }
 
-export function SharedFile({ message, transfer, onChanged, previewStatus, expired = fileExpired(message) }: {
-  message: Message; transfer?: Transfer; onChanged: () => void; previewStatus?: string; expired?: boolean;
+export function SharedFile({ message, transfer, onChanged, previewStatus, uploading, expired = fileExpired(message) }: {
+  message: Message; transfer?: Transfer; onChanged: () => void; previewStatus?: string; expired?: boolean; uploading?: boolean;
 }) {
   const file = message.attachment!;
   return <article className="shared-file chat-file-card">
@@ -51,7 +51,9 @@ export function SharedFile({ message, transfer, onChanged, previewStatus, expire
       ? <small className="file-preview-status" role="status">This file expired. Ask the sender to share it again.</small>
       : <>
         {previewStatus && <small className="file-preview-status" role="status">{previewStatus}</small>}
-        <AttachmentDownload file={file} transfer={transfer} onChanged={onChanged} />
+        {uploading ? <div className="attachment-download" aria-hidden="true" style={{ visibility: "hidden" }}>
+          <div className="file-download-actions"><button className="button subtle small" disabled><Download size={16} /> {actions.save}</button></div>
+        </div> : <AttachmentDownload file={file} transfer={transfer} onChanged={onChanged} />}
       </>}
   </article>;
 }

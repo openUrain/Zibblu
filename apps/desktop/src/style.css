@@ -362,6 +362,21 @@ svg { vertical-align: middle; }
 .mine .message-body { align-items: flex-end; }
 .message-author { font-size: 11px; color: var(--muted); font-weight: 650; padding-inline: 2px; }
 .message-body { position: relative; }
+.message-content { position: relative; min-width: 0; max-width: 100%; }
+.attachment-body > .message-content { width: 100%; }
+.message-delivery {
+  position: absolute; inset-inline-end: calc(100% + 8px); inset-block-start: 50%; transform: translateY(-50%);
+  display: grid; place-items: center; width: 24px; height: 24px; color: var(--muted);
+}
+.message-delivery > span:not(.sr-only), .message-delivery-action { display: grid; place-items: center; }
+.message-delivery-action {
+  width: 100%; height: 100%; padding: 0; border: 0; border-radius: 4px; color: inherit; background: transparent;
+}
+.message-delivery-action:hover { background: var(--hover); }
+.message-delivery-ring {
+  width: 16px; height: 16px; border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-block-start-color: currentColor; border-radius: 50%;
+}
 .message-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .message-meta .icon-button { width: 36px; min-width: 36px; height: 32px; border-radius: 6px; }
 .message-meta:not(:has(> :not(.message-menu))) { display: contents; }

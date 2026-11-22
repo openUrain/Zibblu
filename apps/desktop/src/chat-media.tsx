@@ -65,16 +65,18 @@ function MediaTile({ message, open }: { message: Message; open: () => void }) {
   </button>;
 }
 
-export function ChatAttachment({ message, transfer, onChanged, open, expired }: {
-  message: Message; transfer?: Transfer; onChanged: () => void; open: () => void; expired: boolean;
+export function ChatAttachment({ message, transfer, onChanged, open, expired, uploading }: {
+  message: Message; transfer?: Transfer; onChanged: () => void; open: () => void; expired: boolean; uploading?: boolean;
 }) {
   const file = message.attachment!;
   if (expired || !mediaKind(file) || !canPreview(file)) {
     const previewStatus = mediaKind(file) ? "Download to open" : undefined;
-    return <SharedFile {...{ message, transfer, onChanged, previewStatus, expired }} />;
+    return <SharedFile {...{ message, transfer, onChanged, previewStatus, expired, uploading }} />;
   }
   return <div className="chat-media">
-    <MediaTile key={file.id} message={message} open={open} />
+    {uploading ? <div className="media-tile"><span className="media-tile-fallback">
+      {mediaKind(file) === "video" ? <Video size={22} /> : <Image size={22} />}
+      <span>{file.name}</span></span></div> : <MediaTile key={file.id} message={message} open={open} />}
     {transfer && <AttachmentDownload file={file} transfer={transfer} onChanged={onChanged} hideSave />}
   </div>;
 }
