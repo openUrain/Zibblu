@@ -13,12 +13,31 @@ use tauri::{
 };
 use tokio::sync::{Mutex, Semaphore};
 use uuid::Uuid;
-use zibblu_core::{Attachment, CHUNK_SIZE, Client, MAX_PASTED_IMAGE_BYTES, ProfileImage, Transfer};
+use zibblu_core::{Attachment, CHUNK_SIZE, Client, IMAGE_THUMBNAIL as THUMBNAIL, MAX_PASTED_IMAGE_BYTES, ProfileImage, Transfer};
 
 pub(crate) static IMAGE_JOBS: Semaphore = Semaphore::const_new(2);
 const ORIGINAL: i64 = -1;
-const THUMBNAIL: i64 = -2;
 static PREVIEW_LOCKS: [Mutex<()>; 16] = [const { Mutex::const_new(()) }; 16];
+
+#[tauri::command]
+pub(crate) async fn upload_image_size(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    id: Uuid,
+) -> CommandResult<(u32, u32)> {
+    let size = async {
+        ensure!(window.label() == "main", "Open the preview in the main window");
+        let client = state.client().await.map_err(|_| anyhow::anyhow!("Sign in to preview media"))?;
+        let input = client.staged_image(id).await?;
+        let size = tauri::async_runtime::spawn_blocking(move || {
+            image::ImageReader::new(std::io::BufReader::new(input)).with_guessed_format()?.into_dimensions()
+                .map_err(anyhow::Error::from)
+        }).await??;
+        ensure!(state.is_current(&client).await, "The session has ended");
+        Ok::<_, anyhow::Error>(size)
+    }.await?;
+    Ok(size)
+}
 
 #[tauri::command]
 pub(crate) async fn preview_image_bytes(

@@ -656,12 +656,34 @@ pub(crate) async fn messages(
     conversation: Uuid,
     before: Option<i64>,
     search: Option<String>,
-) -> Result<Page> {
-    Ok(state
-        .client()
-        .await?
-        .search_messages(conversation, before, search.as_deref())
-        .await?)
+) -> Result<TimelinePage> {
+    let client = state.client().await?;
+    let page = client.search_messages(conversation, before, search.as_deref()).await?;
+    let sizes = client.cached_thumbnail_sizes(&page.items).await.unwrap_or_default();
+    if !state.is_current(&client).await {
+        return Err(anyhow!("The session has ended").into());
+    }
+    Ok(TimelinePage {
+        items: page.items.into_iter().map(|message| TimelineMessage {
+            preview_size: sizes.get(&message.seq).copied(),
+            message,
+        }).collect(),
+        has_more: page.has_more,
+    })
+}
+
+#[derive(Serialize)]
+pub(crate) struct TimelinePage {
+    items: Vec<TimelineMessage>,
+    has_more: bool,
+}
+
+#[derive(Serialize)]
+struct TimelineMessage {
+    #[serde(flatten)]
+    message: Message,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preview_size: Option<(u32, u32)>,
 }
 
 #[tauri::command]

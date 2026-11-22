@@ -364,6 +364,7 @@ svg { vertical-align: middle; }
 .message-body { position: relative; }
 .message-content { position: relative; min-width: 0; max-width: 100%; }
 .attachment-body > .message-content { width: 100%; }
+.windows .attachment-body > .message-content:has(.chat-media) { width: fit-content; }
 .message-delivery {
   position: absolute; inset-inline-end: calc(100% + 8px); inset-block-start: 50%; transform: translateY(-50%);
   display: grid; place-items: center; width: 24px; height: 24px; color: var(--muted);
@@ -373,6 +374,7 @@ svg { vertical-align: middle; }
   width: 100%; height: 100%; padding: 0; border: 0; border-radius: 4px; color: inherit; background: transparent;
 }
 .message-delivery-action:hover { background: var(--hover); }
+.message-delivery-action.danger { color: var(--danger); }
 .message-delivery-ring {
   width: 16px; height: 16px; border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
   border-block-start-color: currentColor; border-radius: 50%;
@@ -441,6 +443,8 @@ svg { vertical-align: middle; }
   position: relative; display: grid; place-items: center; width: min(100%, 320px); aspect-ratio: 16 / 9;
   padding: 0; overflow: hidden; border: 0; border-radius: 9px; background: var(--soft); color: var(--ink);
 }
+.windows .chat-media .media-tile { width: 320px; max-width: 100%; }
+.chat-media .media-tile[data-fit-image][data-ready] { background: transparent; }
 .media-tile > :is(img, video) {
   width: 100%; height: 100%; min-width: 0; min-height: 0; object-fit: contain;
 }

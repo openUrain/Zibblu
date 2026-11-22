@@ -4,7 +4,8 @@ import type { Attachment, Message } from "./api";
 import type { ImageCache } from "./workspace-cache";
 
 export const WorkspaceImages = createContext<{
-  cache: ImageCache; clockOffset: number; canPreview: (conversation: string, seq: number) => boolean;
+  cache: ImageCache; clockOffset: number; avatarExpires: number;
+  canPreview: (conversation: string, seq: number) => boolean;
 } | undefined>(undefined);
 
 export function thumbnailKey(message: Message, file: Attachment) {
@@ -42,8 +43,9 @@ export function useWorkspaceImage(key: string | undefined, id: string, version?:
     return () => window.clearTimeout(timer);
   }, [cache, key, expires]);
   const expired = expires <= Date.now();
+  const image = !expired && key ? cache?.get(key) : undefined;
   return {
-    url: !expired && key ? cache?.get(key) : undefined,
+    ...image,
     failed: expired || (result?.key === key && result?.retry === retry && result.failed),
   };
 }

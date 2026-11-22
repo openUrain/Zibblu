@@ -2,7 +2,7 @@ import { FloatingField } from "./floating-field";
 import { ChevronLeft, ChevronRight, Image, LoaderCircle, Play, RotateCcw, Search, Video } from "lucide-react";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { api, errorMessage, fileExpired } from "./api";
-import type { Attachment, Message, Transfer } from "./api";
+import type { Attachment, ImageSize, Message, Transfer } from "./api";
 import { canPreview, mediaKind, readAttachmentPage } from "./attachment-media";
 import { Blank, Dialog, usePage } from "./common";
 import { AttachmentDownload, ChatUploadProgress, SharedFile, TransferList } from "./files";
@@ -13,7 +13,15 @@ type ChatMediaScope = {
 };
 type PreviewState = "loading" | "ready" | "failed";
 
-function MediaTile({ message, open }: { message: Message; open: () => void }) {
+function thumbnailStyle(size?: ImageSize) {
+  if (!size || !size[0] || !size[1]) return;
+  const [width, height] = size;
+  return { width: Math.min(1, width / height) * 320, aspectRatio: `${width} / ${height}` };
+}
+
+function MediaTile({ message, open, fitImage, size: hint }: {
+  message: Message; open: () => void; fitImage?: boolean; size?: ImageSize;
+}) {
   const file = message.attachment!;
   const kind = mediaKind(file);
   const resources = useContext(WorkspaceImages);
@@ -25,7 +33,7 @@ function MediaTile({ message, open }: { message: Message; open: () => void }) {
   const key = cachedImage && allowed ? thumbnailKey(message, file) : undefined;
   const expires = !message.local_file && message.expires_at != null
     ? message.expires_at - (resources?.clockOffset ?? 0) : Infinity;
-  const { url, failed } = useWorkspaceImage(key, file.id, undefined, expires, attempt, visible);
+  const { url, size, failed } = useWorkspaceImage(key, file.id, undefined, expires, attempt, visible);
   const status = !allowed ? "failed" : cachedImage ? (url ? "ready" : failed ? "failed" : "loading") : state;
   const element = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -43,6 +51,7 @@ function MediaTile({ message, open }: { message: Message; open: () => void }) {
 
   return <button ref={element} type="button" className="media-tile" data-ready={status === "ready" ? "" : undefined}
     data-cached-image={cachedImage ? "" : undefined}
+    data-fit-image={fitImage ? "" : undefined} style={fitImage ? thumbnailStyle(hint ?? size) : undefined}
     onClick={() => {
       if (status === "failed" && canPreview(file)) {
         setState("loading");
@@ -69,14 +78,25 @@ export function ChatAttachment({ message, transfer, onChanged, open, expired, up
   message: Message; transfer?: Transfer; onChanged: () => void; open: () => void; expired: boolean; upload?: Transfer;
 }) {
   const file = message.attachment!;
+  const fitImage = useContext(WorkspaceImages) !== undefined && mediaKind(file) === "image";
+  const [uploadSize, setUploadSize] = useState<ImageSize>();
+  useEffect(() => {
+    if (!upload || !fitImage || !canPreview(file)) return;
+    let current = true;
+    void api.uploadImageSize(file.id).then(size => { if (current) setUploadSize(size); }).catch(() => {});
+    return () => { current = false; };
+  }, [!!upload, fitImage, file.id]);
   if (expired || !mediaKind(file) || !canPreview(file)) {
     const previewStatus = mediaKind(file) ? "Download to open" : undefined;
     return <SharedFile {...{ message, transfer, onChanged, previewStatus, expired, upload }} />;
   }
+  const size = uploadSize ?? message.preview_size;
   return <div className="chat-media">
-    {upload ? <div className="media-tile"><span className="media-tile-fallback">
+    {upload ? <div className="media-tile" data-fit-image={fitImage ? "" : undefined}
+      style={fitImage ? thumbnailStyle(size) : undefined}><span className="media-tile-fallback">
       {mediaKind(file) === "video" ? <Video size={22} /> : <Image size={22} />}
-      <span>{file.name}</span></span><ChatUploadProgress upload={upload} /></div> : <MediaTile key={file.id} message={message} open={open} />}
+      <span>{file.name}</span></span><ChatUploadProgress upload={upload} /></div>
+      : <MediaTile key={file.id} message={message} open={open} fitImage={fitImage} size={size} />}
     {transfer && <AttachmentDownload file={file} transfer={transfer} onChanged={onChanged} hideSave />}
   </div>;
 }

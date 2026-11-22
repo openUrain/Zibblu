@@ -66,7 +66,11 @@ test("a second window's directory version cannot install an earlier in-flight pr
 test("open, switch and return reuse one thumbnail read and one decode until revoked", async () => {
   let decodes = 0;
   const browserImage = globalThis.Image;
-  globalThis.Image = class { async decode() { decodes++; } };
+  globalThis.Image = class {
+    naturalWidth = 120;
+    naturalHeight = 80;
+    async decode() { decodes++; }
+  };
   try {
     const cache = new ImageCache();
     const media = "thumbnail/chat-a/1/attachment/hash";
@@ -74,7 +78,9 @@ test("open, switch and return reuse one thumbnail read and one decode until revo
     const fetch = async () => { reads++; return new Uint8Array([1, 2]).buffer; };
     const a = cache.acquire(media, Infinity, fetch);
     const aAgain = cache.acquire(media, Infinity, fetch);
-    assert.equal(await a.ready, await aAgain.ready);
+    const image = await a.ready;
+    assert.equal(image, await aAgain.ready);
+    assert.deepEqual(image.size, [120, 80]);
     a.release();
     aAgain.release();
     const returning = cache.acquire(media, Infinity, fetch);
@@ -83,6 +89,9 @@ test("open, switch and return reuse one thumbnail read and one decode until revo
     assert.deepEqual([reads, decodes], [1, 1]);
     cache.retain(() => false);
     assert.equal(cache.get(media), undefined);
+    const expired = cache.acquire(media, Date.now() - 1, fetch);
+    assert.equal(await expired.ready, undefined);
+    assert.deepEqual([reads, decodes], [1, 1]);
   } finally {
     globalThis.Image = browserImage;
   }

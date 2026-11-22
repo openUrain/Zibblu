@@ -9,6 +9,7 @@ mod transfer;
 
 pub use ai_context::AiScope;
 pub use profile_cache::CachedProfile;
+pub use preview_cache::IMAGE_THUMBNAIL;
 pub use transfer::{Direction, Transfer, TransferStatus};
 
 use crate::protocol::*;

@@ -1,4 +1,4 @@
-import type { CachedProfile, Profile } from "./api";
+import type { CachedProfile, ImageSize, Profile } from "./api";
 
 const profileCheckInterval = 60_000;
 const profileLimit = 256;
@@ -106,7 +106,8 @@ export class ProfileCache {
   }
 }
 
-type ImageEntry = { url?: string; bytes: number; expires: number; refs: number; task?: Promise<string | undefined> };
+type CachedImage = { url: string; size: ImageSize };
+type ImageEntry = { image?: CachedImage; bytes: number; expires: number; refs: number; task?: Promise<CachedImage | undefined> };
 
 export class ImageCache {
   private readonly entries = new Map<string, ImageEntry>();
@@ -114,10 +115,11 @@ export class ImageCache {
 
   get(key: string) {
     const entry = this.entries.get(key);
-    return entry && entry.expires > Date.now() ? entry.url : undefined;
+    return entry && entry.expires > Date.now() ? entry.image : undefined;
   }
 
   acquire(key: string, expires: number, read: () => Promise<ArrayBuffer>) {
+    if (expires <= Date.now()) return { ready: Promise.resolve(undefined), release: () => {} };
     let entry = this.entries.get(key);
     if (entry && entry.expires <= Date.now()) {
       this.remove(key, entry);
@@ -128,7 +130,7 @@ export class ImageCache {
     active.expires = expires;
     this.entries.delete(key);
     this.entries.set(key, active);
-    if (!active.url && !active.task) {
+    if (!active.image && !active.task) {
       active.task = read().then(async bytes => {
         const url = URL.createObjectURL(new Blob([bytes]));
         try {
@@ -136,13 +138,13 @@ export class ImageCache {
           image.src = url;
           await image.decode();
           if (this.entries.get(key) === active && active.expires > Date.now()) {
-            active.url = url;
+            active.image = { url, size: [image.naturalWidth, image.naturalHeight] };
             active.bytes = bytes.byteLength;
             this.bytes += active.bytes;
-            return url;
+            return active.image;
           }
         } finally {
-          if (active.url !== url) URL.revokeObjectURL(url);
+          if (active.image?.url !== url) URL.revokeObjectURL(url);
         }
       }).catch(error => {
         if (this.entries.get(key) === active) this.remove(key, active);
@@ -153,7 +155,7 @@ export class ImageCache {
       });
     }
     return {
-      ready: active.task ?? Promise.resolve(active.url),
+      ready: active.task ?? Promise.resolve(active.image),
       release: () => {
         active.refs -= 1;
         this.trim();
@@ -168,7 +170,7 @@ export class ImageCache {
   }
 
   private remove(key: string, entry: ImageEntry) {
-    if (entry.url) URL.revokeObjectURL(entry.url);
+    if (entry.image) URL.revokeObjectURL(entry.image.url);
     this.bytes -= entry.bytes;
     this.entries.delete(key);
   }

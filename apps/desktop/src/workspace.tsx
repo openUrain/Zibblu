@@ -37,6 +37,8 @@ const pages = [
 ] as const;
 type Navigation = typeof pages[number]["name"] | "Me" | "Settings";
 const tabLabels = { Chats: t("Chats", "聊天"), Contacts: t("Contacts", "联系人"), Files: t("Files", "文件"), Me: t("Me", "我的") };
+const hour = 60 * 60 * 1000;
+const currentHour = () => Math.floor(Date.now() / hour) * hour;
 
 export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction, setCloseAction, signedOut }: {
   session: Session; signedOut: (notice?: string) => void;
@@ -72,6 +74,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const syncRetryDelay = useRef(0);
   const appliedRevision = useRef(0);
   const [clockOffset, setClockOffset] = useState(0);
+  const [avatarValidated, setAvatarValidated] = useState(currentHour);
   const [selected, setSelected] = useState<string>();
   const [chatPage, setChatPage] = useState<{ id: string; page: "details" | "search" }>();
   const [mobileChat, setMobileChat] = useState(false);
@@ -274,6 +277,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       await local;
       try {
         apply(await api.sync());
+        setAvatarValidated(currentHour());
         syncRetryDelay.current = 0;
         setConnection("Connected");
         setSyncProblem("");
@@ -543,8 +547,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     refresh={refresh} close={closeProfile} edited={profileEdited}
     message={() => create({ kind: "direct", contact_id: profile.id })} />;
   const viewSelection = privateSelection.current;
-  const imageScope = useMemo(() => windows ? { cache: images, clockOffset, canPreview } : undefined,
-    [images, clockOffset, canPreview]);
+  const imageScope = useMemo(() => windows ? { cache: images, clockOffset, canPreview,
+    avatarExpires: avatarValidated + 24 * hour } : undefined, [images, clockOffset, canPreview, avatarValidated]);
   return <WorkspaceImages.Provider value={imageScope}>
     <People.Provider value={{ remarks: names, avatars: directory.avatars, online: connected, open: openProfile }}>
   <main onClickCapture={event => {

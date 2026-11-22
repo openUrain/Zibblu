@@ -32,6 +32,7 @@ export function Avatar({ name, group = false, large = false, src, online, cached
   name: string; group?: boolean; large?: boolean; src?: string; online?: boolean; cached?: { id: string; version: string };
 }) {
   const node = useRef<HTMLSpanElement>(null);
+  const resources = useContext(WorkspaceImages);
   const [visible, setVisible] = useState(false);
   const key = cached && `avatar/${cached.id}/${cached.version}`;
   useEffect(() => {
@@ -40,7 +41,7 @@ export function Avatar({ name, group = false, large = false, src, online, cached
     observer.observe(node.current);
     return () => observer.disconnect();
   }, [key]);
-  const { url } = useWorkspaceImage(key, cached?.id ?? "", cached?.version, Infinity, Number(online), visible);
+  const { url } = useWorkspaceImage(key, cached?.id ?? "", cached?.version, resources?.avatarExpires, Number(online), visible);
   src = url ?? src;
   const tones = ["violet", "mint", "peach", "blue", "rose"];
   const tone = Array.from(name).reduce((sum, character) => sum + (character.codePointAt(0) ?? 0), 0) % tones.length;

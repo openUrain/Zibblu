@@ -500,6 +500,16 @@ impl Client {
         Ok(json.map(|json| serde_json::from_str(&json)).transpose()?)
     }
 
+    pub async fn staged_image(&self, id: Uuid) -> Result<std::fs::File> {
+        self.ensure_open()?;
+        let key = (id, Direction::Upload);
+        let job = self.job(key).await?.context("This upload is unavailable")?;
+        let file = job.transfer.attachment;
+        ensure!(file.size <= MAX_PASTED_IMAGE_BYTES as u64
+            && file.preview_mime().is_some_and(|mime| mime.starts_with("image/")), "This upload is not an image");
+        open_verified_input(&self.spool(key), file.size)
+    }
+
     async fn store_job(&self, job: &Job) -> Result<()> {
         let mut db = self.db.acquire().await?;
         store_job(&mut db, job).await
