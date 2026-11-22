@@ -16,6 +16,8 @@ import { copyText, useEditMenu, useMenu, useMenuAnchor, useRowMenu } from "./con
 import { FilesView, TransferList, useAttachmentSave } from "./files";
 import { ChatAttachment, MediaHistory, MediaViewer } from "./chat-media";
 import { privatePhaseLabel, privateTitle } from "./private-chat";
+import { RichMessage } from "./rich-message";
+import { conversationSummary, messageSummary } from "./rich-markdown";
 import { phone, ios, useIosBack } from "./ios";
 import { actions as actionLabels, t } from "./locale";
 import { ShareQr } from "./qr";
@@ -72,7 +74,7 @@ export function ChatList({ chats, own, selected, open, newChat, addContact, room
           aria-current={chat.id === selected ? "true" : undefined} onClick={() => open(chat.id)}>
           {chat.title || !peer ? <Avatar name={name} group={!!chat.title} /> : <PersonAvatar user={peer} />}
           <span className="chat-row-text"><strong title={name}>{name}</strong><small>{paired === chat.id
-            ? t("Private chat", "私密聊天") : chat.preview || t("New conversation", "新会话")}</small></span>
+            ? t("Private chat", "私密聊天") : chat.preview ? conversationSummary(chat.preview) : t("New conversation", "新会话")}</small></span>
           <span className="chat-row-status"><time dateTime={new Date(chat.activity_at).toISOString()} title={dateTimeLabel(chat.activity_at)}>{messageTimeLabel(chat.activity_at)}</time>
             {chat.unread > 0 && <span className="unread-count">
               <span aria-hidden="true">{chat.unread > 99 ? "99+" : chat.unread}</span>
@@ -366,7 +368,7 @@ function SearchResults({ conversation, search, revision, latestAiSeq, recalled, 
     {page?.items.map(message => <article key={message.seq}>
       <small>{message.ai_provider ? <ProviderLogo provider={message.ai_provider} /> : displayName(message.sender, remarks)}
         {" · "}{dateTimeLabel(message.created_at)}</small>
-      <p>{message.text}</p>
+      <p>{message.text && messageSummary(message.text, message)}</p>
     </article>)}
     {page?.has_more && <button className="button subtle" disabled={loading} onClick={() => void older()}>Load older matches</button>}
   </div>;
@@ -577,7 +579,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
               ...(file && !transfer && !expiredFile && (!download || download.status === "complete") ? [{ label: ios
                 ? download?.status === "complete" ? t("Share", "分享") : t("Download", "下载") : actionLabels.save, icon: <Download size={15} />,
                 disabled: saving, action: () => void save(file.id) }] : []),
-              ...(copy ? [{ label: "Copy", icon: <Copy size={15} />, action: () => {
+              ...(copy ? [{ label: t("Copy", "复制"), icon: <Copy size={15} />, action: () => {
                 void copyText(copy).catch(error => setRecallError(errorMessage(error)));
               } }] : []),
               ...(message && message.seq > 0 && !message.recalled && !message.expired && !expiredFile ? [{ label: "Quote", icon: <Reply size={15} />, action: () => {
@@ -656,7 +658,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                     : message?.expired ? <div className="bubble recalled-message">
                       {message.expired === "file" ? "This file expired. Ask the sender to share it again." : "This message expired before delivery."}
                     </div>
-                    : <div className="bubble">{message?.text ?? reply?.text}</div>}
+                    : <RichMessage text={text} cacheKey={message ?? reply} />}
                 </div>
                 <div className="message-meta">
                   {!windows && message?.pending && <>
@@ -740,7 +742,7 @@ function QuotedMessage({ conversation, seq, known, hidden }: { conversation: str
   }, [conversation, seq, known, hidden]);
   const quote = known ?? loaded;
   return <div className="message-quote"><Reply size={14} />{quote && !hidden && !quote.recalled && !quote.expired
-    ? <span><strong>{displayName(quote.sender, remarks)}</strong> {quote.text ?? quote.attachment?.name}</span>
+    ? <span><strong>{displayName(quote.sender, remarks)}</strong> {quote.text === null ? quote.attachment?.name : messageSummary(quote.text, quote)}</span>
     : <span>Message unavailable</span>}</div>;
 }
 
@@ -988,7 +990,8 @@ function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, p
           </button>
         </div>
         {saved.quote && <div className="message-quote composer-quote"><Reply size={15} />
-          {quote ? <span><strong>{displayName(quote.sender, remarks)}</strong> {quote.text ?? quote.attachment?.name}</span> : <span>Message unavailable</span>}
+          {quote ? <span><strong>{displayName(quote.sender, remarks)}</strong> {quote.text === null ? quote.attachment?.name : messageSummary(quote.text, quote)}</span>
+            : <span>Message unavailable</span>}
           <button className="icon-button" type="button" aria-label="Remove quote" disabled={sending}
             onClick={() => setDraft(previous => ({ ...previous, quote: undefined, nonce: undefined }))}><X size={15} /></button>
         </div>}

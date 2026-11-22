@@ -54,6 +54,12 @@ Initial functional scope:
 
 Avoid in v1: voice/video, social feeds, bots, automatic cloud-drive sync, complex admin dashboards, mobile before desktop stabilization.
 
+### Message formatting
+
+Compose messages as plain text. Sent messages and assistant replies display Markdown, tables, code and LaTeX. Use single dollars or `\(…\)` for inline math and double dollars or `\[…\]` for display math. Copying a message keeps its original formatting syntax. The code block's copy button copies its contents.
+
+Remote images appear as links. On Windows, hover over an HTTPS image link for 500 ms or press Shift+Enter on the focused link to preview the whole image. The link identifies the third-party request. Activating a link opens it in the system browser.
+
 ### Desktop image formats
 
 | Format | Avatar and cover | Chat attachment |
@@ -77,7 +83,7 @@ Rules:
 - No private messages or attachments written to normal chat history. MVP private mode supports **text**; private file transfer requires a separate later decision.
 - Switching views keeps the private session available alongside ordinary chats. Ending the session or quitting the host closes the channel and clears the in-memory conversation.
 - On iPhone, invitations appear inside the foreground app. Going to the background or losing the current Wi-Fi path ends the local private session. Nearby discovery resumes when Wi-Fi is available in the app again.
-- No cloud AI, push-notification excerpts, search indexing, previews, analytics payloads or logging of private content.
+- Private content stays out of cloud AI, notifications, search indexing, out-of-session previews, analytics and logs.
 - The app cannot retract screenshots, recipient copies or guarantee removal of OS memory/swap remnants. UX copy must not claim absolute erasure.
 
 ## 03 — AI Assistants (explicit read-only)

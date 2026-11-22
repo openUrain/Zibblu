@@ -9,6 +9,7 @@ mod image_viewer;
 mod ios;
 mod media;
 mod private_runtime;
+mod remote_image;
 mod saved_session;
 #[cfg(windows)]
 mod windows_shell;
@@ -55,6 +56,8 @@ fn restrict_viewer(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .manage(remote_image::RemotePreview::default())
         .register_asynchronous_uri_scheme_protocol("zibblu-media", media::preview)
         .setup(|app| {
             #[cfg(target_os = "ios")]
@@ -161,6 +164,9 @@ pub fn run() {
             media::pick_image,
             media::set_profile_image,
             media::preview_image_bytes,
+            remote_image::open_message_link,
+            remote_image::preview_message_image,
+            remote_image::cancel_message_image,
             media::upload_image_size,
             commands::set_read_receipts,
             commands::read_update,

@@ -20,7 +20,15 @@ We **cannot** promise protection from: screenshots or cameras, recipients manual
 - Private text is kept in bounded memory during the session. End, disconnect, timeout and sign-out discard local private state. Switching conversations leaves the active background session running. A restart opens no private transcript.
 - Ending a room keeps only its ID in a per-sign-in set when needed to reject automatic re-entry, including after network changes. An explicit scan of a valid private QR code expresses fresh consent. Private read state lives in the LAN feed and is discarded with it.
 - Connection UI must distinguish `connecting`, `verified private`, and `disconnected`. Never badge a session “private” based only on an SSID or IP range.
-- Block accidental exports, copy-to-normal-history and private-content previews in the first release.
+- Private messages are excluded from automatic export, normal chat history and notification previews.
+
+### Message links and remote images
+
+Markdown and LaTeX are rendered locally from message text. Raw HTML is displayed as text. A message link opens an HTTP(S) URL in the system browser on activation.
+
+An HTTPS image starts as a link. A 500 ms pointer hover or the keyboard preview shortcut starts a direct request from the device to the third party, which receives the URL and the device's public IP address. Image links disclose that request. The preview uses a separate client-side fetch from the LAN conversation. Preview bytes and private rendered content are held in memory and released when their preview or view closes. An explicit copy action writes the selected text or the original message to the system clipboard.
+
+The desktop resolves and verifies the destination before each hop, pins the verified addresses for the TLS connection, and checks its peer address. The preview allows three redirects, six seconds of network time and 4 MiB of input. It accepts matching static PNG, JPEG or WebP up to four million pixels and returns a bounded, re-encoded PNG. It uses no system proxy, cookies or referrer. The WebView displays only the local preview blob.
 
 ## AI least privilege
 
