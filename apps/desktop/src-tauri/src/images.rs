@@ -14,6 +14,7 @@ use zibblu_core::{MAX_PASTED_IMAGE_BYTES, MAX_PROFILE_IMAGE_BYTES};
 const MAX_EDGE: u32 = 8192;
 const MAX_PIXELS: u64 = 16_000_000;
 const MAX_STATIC_PNG_PREVIEW_PIXELS: u64 = 4096 * 4096;
+const MAX_REMOTE_PIXELS: u64 = 4_000_000;
 const MAX_ANIMATION_PIXELS: u64 = 64_000_000;
 const MAX_FRAMES: u64 = 240;
 const MAX_DECODER_BYTES: u64 = 128 * 1024 * 1024;
@@ -106,11 +107,11 @@ fn webp_dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
     ))
 }
 
-fn check_vp8(bytes: &[u8], expected: Option<(u32, u32)>) -> Result<()> {
+fn check_vp8(bytes: &[u8], expected: Option<(u32, u32)>, max_pixels: u64) -> Result<()> {
     let header = bytes.get(6..10).context(DAMAGED)?;
     let width = u32::from(u16::from_le_bytes([header[0], header[1]]) & 0x3fff);
     let height = u32::from(u16::from_le_bytes([header[2], header[3]]) & 0x3fff);
-    check_dimensions(width, height)?;
+    check_pixel_limit(width, height, max_pixels)?;
     ensure!(
         expected.is_none_or(|size| size == (width, height)),
         "{DAMAGED}"
@@ -118,7 +119,7 @@ fn check_vp8(bytes: &[u8], expected: Option<(u32, u32)>) -> Result<()> {
     Ok(())
 }
 
-fn check_webp(bytes: &[u8]) -> Result<()> {
+fn check_webp(bytes: &[u8], max_pixels: u64) -> Result<()> {
     // Bound RIFF chunks and VP8 dimensions before the codec allocates for metadata or pixels.
     let (riff, mut chunks) = bytes.split_at_checked(12).context(DAMAGED)?;
     let size = u64::from(u32::from_le_bytes(riff[4..8].try_into().unwrap()));
@@ -134,23 +135,23 @@ fn check_webp(bytes: &[u8]) -> Result<()> {
                     "{DAMAGED}"
                 );
                 let (width, height) = webp_dimensions(&data[4..])?;
-                remaining_frames = frame_limit(check_dimensions(width, height)?);
+                remaining_frames = frame_limit(check_pixel_limit(width, height, max_pixels)?);
                 canvas = Some((width, height));
             }
-            b"VP8 " => check_vp8(data, canvas)?,
+            b"VP8 " => check_vp8(data, canvas, max_pixels)?,
             b"ANMF" => {
                 ensure!(remaining_frames > 0, "{TOO_MANY_FRAMES}");
                 remaining_frames -= 1;
                 let (header, frame) = data.split_at_checked(16).context(DAMAGED)?;
                 let size = webp_dimensions(&header[6..])?;
-                check_dimensions(size.0, size.1)?;
+                check_pixel_limit(size.0, size.1, max_pixels)?;
                 let (mut tag, mut data, mut tail) = riff_chunk(frame)?;
                 if tag == b"ALPH" {
                     (tag, data, tail) = riff_chunk(tail)?;
                     ensure!(tag == b"VP8 ", "{DAMAGED}");
                 }
                 match tag {
-                    b"VP8 " => check_vp8(data, Some(size))?,
+                    b"VP8 " => check_vp8(data, Some(size), max_pixels)?,
                     b"VP8L" => {}
                     _ => anyhow::bail!("{DAMAGED}"),
                 }
@@ -174,7 +175,7 @@ fn still(mut decoder: impl ImageDecoder) -> Result<DynamicImage> {
 
 pub(crate) fn remote_thumbnail(format: ImageFormat, bytes: &[u8]) -> Result<Vec<u8>> {
     fn thumbnail(mut decoder: impl ImageDecoder) -> Result<Vec<u8>> {
-        check_decoder_limit(&mut decoder, 4_000_000)?;
+        check_decoder_limit(&mut decoder, MAX_REMOTE_PIXELS)?;
         let image = still(decoder)?;
         encode_png(&image.thumbnail(640, 480).into_rgba8())
     }
@@ -188,6 +189,7 @@ pub(crate) fn remote_thumbnail(format: ImageFormat, bytes: &[u8]) -> Result<Vec<
         }
         ImageFormat::Jpeg => thumbnail(image::codecs::jpeg::JpegDecoder::new(source)?),
         ImageFormat::WebP => {
+            check_webp(bytes, MAX_REMOTE_PIXELS)?;
             let decoder = WebPDecoder::new(source)?;
             ensure!(!decoder.has_animation(), "Animated previews are unavailable");
             thumbnail(decoder)
@@ -216,7 +218,7 @@ fn decode(format: ImageFormat, bytes: &[u8], preview: bool) -> Result<DynamicIma
             animation(decoder.into_frames(), pixels)
         }
         ImageFormat::WebP => {
-            check_webp(bytes)?;
+            check_webp(bytes, MAX_PIXELS)?;
             let mut decoder = WebPDecoder::new(source)?;
             let pixels = check_decoder(&mut decoder)?;
             if decoder.has_animation() {
@@ -376,6 +378,27 @@ pub(crate) fn profile_png(bytes: &[u8]) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use image::{Frame, RgbImage, RgbaImage, codecs::gif::GifEncoder};
+
+    #[test]
+    fn remote_webp_checks_frame_size_before_decoding() -> Result<()> {
+        let mut header = [0; 10];
+        header[6..8].copy_from_slice(&2000u16.to_le_bytes());
+        header[8..10].copy_from_slice(&2000u16.to_le_bytes());
+        check_vp8(&header, Some((2000, 2000)), MAX_REMOTE_PIXELS)?;
+        assert!(check_vp8(&header, Some((1999, 2000)), MAX_REMOTE_PIXELS).is_err());
+        header[6..8].copy_from_slice(&2001u16.to_le_bytes());
+        assert!(check_vp8(&header, None, MAX_REMOTE_PIXELS).is_err());
+        check_vp8(&header, None, MAX_PIXELS)?;
+
+        let mut webp = Cursor::new(Vec::new());
+        DynamicImage::from(RgbImage::new(32, 20)).write_to(&mut webp, ImageFormat::WebP)?;
+        let preview = remote_thumbnail(ImageFormat::WebP, webp.get_ref())?;
+        let (format, thumbnail) = read(&preview)?;
+        assert_eq!(format, ImageFormat::Png);
+        assert!(thumbnail.width() <= 640 && thumbnail.height() <= 480);
+        assert_eq!(thumbnail.width() * 20, thumbnail.height() * 32);
+        Ok(())
+    }
 
     #[test]
     fn static_four_k_square_png_preview_preserves_alpha() -> Result<()> {
