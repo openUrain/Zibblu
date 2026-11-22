@@ -111,7 +111,7 @@ function ImageCanvas({ file, previous, next, download, refresh, fullscreen, chan
   const fit = useCallback((turn: number) => {
     const { width, height } = dimensions(turn);
     return width && height && viewport.width && viewport.height
-      ? Math.min(1, viewport.width / width, viewport.height / height) : 1;
+      ? Math.min(viewport.width / width, viewport.height / height) : 1;
   }, [dimensions, viewport]);
   const clamp = useCallback((current: View) => {
     const size = dimensions(current.turn);
@@ -122,8 +122,9 @@ function ImageCanvas({ file, previous, next, download, refresh, fullscreen, chan
   }, [dimensions, fit, viewport]);
   const zoom = useCallback((point: Point, factor: number) => {
     setView(current => {
-      const previous = current.scale ?? fit(current.turn);
-      const scale = Math.max(Math.min(fit(current.turn), 0.25), Math.min(8, previous * factor));
+      const fitted = fit(current.turn);
+      const previous = current.scale ?? fitted;
+      const scale = Math.max(Math.min(fitted, 0.25), Math.min(Math.max(8, fitted), previous * factor));
       const offset = clamp(current);
       const ratio = scale / previous;
       return clamp({ ...current, scale, x: point.x - (point.x - offset.x) * ratio, y: point.y - (point.y - offset.y) * ratio });

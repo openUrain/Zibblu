@@ -2,6 +2,8 @@ use crate::commands::{Desktop, Result as CommandResult};
 #[cfg(windows)]
 use crate::media;
 use anyhow::{Context, Result, ensure};
+#[cfg(windows)]
+use image::{ImageDecoder, metadata::Orientation};
 use serde::Serialize;
 #[cfg(windows)]
 use std::io::Cursor;
@@ -151,25 +153,17 @@ pub(crate) async fn open_image_viewer(
             .await?
             .attachment
             .context("Missing image")?;
+        let dimensions = image_dimensions(&client, message.seq, file).await;
+        require(state.is_current(&client).await, "The session has ended")?;
+        scope.image(&client).await?;
         let app = window.app_handle();
         if let Some(viewer) = app.get_webview_window(LABEL) {
             *state.image_scope.write().expect("image scope") = Some(scope);
             viewer.unminimize().map_err(anyhow::Error::from)?;
+            fit_open_window(&viewer, dimensions)?;
             viewer.set_focus().map_err(anyhow::Error::from)?;
             return Ok(());
         }
-        let dimensions = match media::image_preview(&client, message.seq, file, false).await {
-            Ok((_, bytes)) => tauri::async_runtime::spawn_blocking(move || {
-                image::ImageReader::new(Cursor::new(bytes))
-                    .with_guessed_format()?
-                    .into_dimensions()
-                    .map_err(anyhow::Error::from)
-            })
-            .await
-            .map_err(anyhow::Error::from)?
-            .ok(),
-            Err(_) => None,
-        };
         let monitor = window
             .current_monitor()
             .map_err(anyhow::Error::from)?
@@ -179,8 +173,6 @@ pub(crate) async fn open_image_viewer(
         let scale = monitor.scale_factor();
         let work = area.size.to_logical::<f64>(scale);
         let (width, height) = initial_size(dimensions, work.width, work.height);
-        require(state.is_current(&client).await, "The session has ended")?;
-        scope.image(&client).await?;
         *state.image_scope.write().expect("image scope") = Some(scope);
         let viewer = tauri::WebviewWindowBuilder::new(
             app,
@@ -242,6 +234,75 @@ pub(crate) async fn open_image_viewer(
     }
 }
 
+#[cfg(windows)]
+async fn image_dimensions(client: &Client, seq: i64, file: Attachment) -> Option<(u32, u32)> {
+    let (_, bytes) = media::image_preview(client, seq, file, false).await.ok()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let reader = image::ImageReader::new(Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()?;
+        let mut decoder = reader.into_decoder().ok()?;
+        let (width, height) = decoder.dimensions();
+        Some(match decoder.orientation().ok()? {
+            Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH => (height, width),
+            _ => (width, height),
+        })
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+#[cfg(windows)]
+fn fit_open_window(viewer: &WebviewWindow, dimensions: Option<(u32, u32)>) -> Result<()> {
+    let Some(dimensions) = dimensions else {
+        return Ok(());
+    };
+    if viewer.is_maximized()? || viewer.is_fullscreen()? {
+        return Ok(());
+    }
+    let Some(monitor) = viewer.current_monitor()?.or(viewer.primary_monitor()?) else {
+        return Ok(());
+    };
+    let area = monitor.work_area();
+    let scale = monitor.scale_factor();
+    let work = area.size.to_logical::<f64>(scale);
+    let (width, height) = initial_size(Some(dimensions), work.width, work.height);
+    let desired = LogicalSize::new(width, height).to_physical::<u32>(scale);
+    let inner = viewer.inner_size()?;
+    let outer = viewer.outer_size()?;
+    let position = viewer.outer_position()?;
+    viewer.set_size(PhysicalSize::new(
+        desired.width.min(
+            area.size
+                .width
+                .saturating_sub(outer.width.saturating_sub(inner.width)),
+        ),
+        desired.height.min(
+            area.size
+                .height
+                .saturating_sub(outer.height.saturating_sub(inner.height)),
+        ),
+    ))?;
+    let fitted = viewer.outer_size()?;
+    let x = position.x + (outer.width as i32 - fitted.width as i32) / 2;
+    let y = position.y + (outer.height as i32 - fitted.height as i32) / 2;
+    viewer.set_position(PhysicalPosition::new(
+        x.clamp(
+            area.position.x,
+            area.position.x + area.size.width.saturating_sub(fitted.width) as i32,
+        ),
+        y.clamp(
+            area.position.y,
+            area.position.y + area.size.height.saturating_sub(fitted.height) as i32,
+        ),
+    ))?;
+    Ok(())
+}
+
 #[cfg(any(windows, test))]
 fn initial_size(dimensions: Option<(u32, u32)>, width: f64, height: f64) -> (f64, f64) {
     const CHROME_HEIGHT: f64 = 44.0;
@@ -249,7 +310,7 @@ fn initial_size(dimensions: Option<(u32, u32)>, width: f64, height: f64) -> (f64
     let (w, h) = (f64::from(w), f64::from(h));
     let factor = ((width * 0.9) / w)
         .min((height * 0.9 - CHROME_HEIGHT).max(1.0) / h)
-        .min(1.0);
+        .min(dimensions.map_or(1.0, |_| (MIN_VIEWER_WIDTH / w.max(h)).max(1.0)));
     (
         (w * factor).max(MIN_VIEWER_WIDTH).min(width),
         (h * factor + CHROME_HEIGHT).max(176.0).min(height),
@@ -302,20 +363,35 @@ pub(crate) async fn image_viewer_step(
     forward: bool,
 ) -> CommandResult<()> {
     require(window.label() == LABEL, "Open the image viewer")?;
+    #[cfg(windows)]
+    let _opening = state.image_window.lock().await;
     let selection = scope(&state)?;
     let client = authorize(&state, id).await?;
     let cutoff = selection.cutoff(&client).await?;
     let Some(message) = selection.neighbor(&client, forward, cutoff).await? else {
         return Ok(());
     };
-    let mut scope = state.image_scope.write().expect("image scope");
-    if let Some(active) = scope
-        .as_mut()
-        .filter(|active| active.id == id && active.client.ptr_eq(&selection.client))
+    let file = message.attachment.context("Missing image")?;
+    let next = ImageScope {
+        seq: message.seq,
+        id: file.id,
+        ..selection.clone()
+    };
+    #[cfg(windows)]
+    let dimensions = image_dimensions(&client, next.seq, file).await;
+    next.image(&client).await?;
     {
-        active.seq = message.seq;
-        active.id = message.attachment.context("Missing image")?.id;
+        let mut active = state.image_scope.write().expect("image scope");
+        if !active
+            .as_ref()
+            .is_some_and(|active| active.id == id && active.client.ptr_eq(&selection.client))
+        {
+            return Ok(());
+        }
+        *active = Some(next);
     }
+    #[cfg(windows)]
+    fit_open_window(&window, dimensions)?;
     Ok(())
 }
 
@@ -340,7 +416,10 @@ pub(crate) async fn copy_viewer_image(
             false,
         )
         .await?;
-        let permit = media::IMAGE_JOBS.acquire().await.map_err(anyhow::Error::from)?;
+        let permit = media::IMAGE_JOBS
+            .acquire()
+            .await
+            .map_err(anyhow::Error::from)?;
         let png = tauri::async_runtime::spawn_blocking(move || {
             let _permit = permit;
             crate::images::clipboard_formats(&bytes)
@@ -375,6 +454,19 @@ mod tests {
         let (w, h) = initial_size(Some((3600, 2400)), 1280.0, 720.0);
         assert!((w / (h - 44.0) - 3.0 / 2.0).abs() < 0.001);
         assert!(w <= 1280.0 && h <= 720.0);
-        assert_eq!(initial_size(Some((320, 440)), 1280.0, 720.0).0, MIN_VIEWER_WIDTH);
+        assert_eq!(
+            initial_size(Some((320, 440)), 1280.0, 720.0).0,
+            MIN_VIEWER_WIDTH
+        );
+    }
+
+    #[test]
+    fn small_images_get_room_to_browse_at_their_aspect_ratio() {
+        let (landscape_w, landscape_h) = initial_size(Some((120, 80)), 1280.0, 720.0);
+        assert_eq!(landscape_w, MIN_VIEWER_WIDTH);
+        assert!((landscape_w / (landscape_h - 44.0) - 1.5).abs() < 0.001);
+        let (portrait_w, portrait_h) = initial_size(Some((80, 120)), 1280.0, 720.0);
+        assert_eq!(portrait_w, MIN_VIEWER_WIDTH);
+        assert!(portrait_h > landscape_h && portrait_h <= 720.0);
     }
 }
