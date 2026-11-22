@@ -204,7 +204,7 @@ async fn prune(db: &mut SqliteConnection, own: Uuid, now: i64) -> anyhow::Result
     .await?;
     sqlx::query(
         "DELETE FROM cached_profile_images WHERE expires_at <= ?1 OR (
-           AND NOT EXISTS (SELECT 1 FROM directory
+           NOT EXISTS (SELECT 1 FROM directory
                WHERE json_extract(payload, '$.avatars.\"' || cached_profile_images.user_id || '\"') = version)
            AND NOT EXISTS (SELECT 1 FROM cached_profiles p WHERE p.user_id = cached_profile_images.user_id
                AND version IN (json_extract(p.payload, '$.avatar'), json_extract(p.payload, '$.cover'))))",
