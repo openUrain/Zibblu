@@ -87,7 +87,7 @@ export function WindowClosePrompt({ save }: { save: (action: CloseAction) => Pro
     finally { setBusy(false); }
   }
 
-  return open && <Dialog title="Close Zibblu" close={cancel} closeDisabled={busy}>
+  return open && <Dialog title="Close Zibblu" className="close-action-dialog" close={cancel} closeDisabled={busy}>
     <CloseActionChoices action={action} choose={setAction} disabled={busy} />
     {failure && <p className="inline-error" role="alert">{failure}</p>}
     <div className="dialog-actions">

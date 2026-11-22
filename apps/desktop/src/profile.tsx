@@ -35,7 +35,7 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
   popup, point, active = true, onContactUnavailable, cache, directoryVersion }: {
   session: Session; user: User; relationVersion: string; reconnecting: boolean;
   close: () => void; refresh: () => Promise<void>; edited: (id: string, patch: Partial<Profile>) => void;
-  popup?: boolean; point?: { x: number; y: number }; message: () => Promise<void>;
+  popup?: boolean; point?: { x: number; y: number }; message?: () => Promise<void>;
   active?: boolean; onContactUnavailable?: (id: string) => void;
   cache: ProfileCache; directoryVersion: string;
 }) {
@@ -246,7 +246,7 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
       {!quickCard && <button className="icon-button" type="button" ref={backButton} onClick={back} disabled={busy || picking}
         aria-label={actions.back}><ChevronLeft size={25} /></button>}
       <h1 id={heading} className={quickCard ? "sr-only" : undefined}>{title}</h1>
-      {contactLayout && !editor && <button className="icon-button" type="button" ref={more} disabled={busy || !contact}
+      {!quickCard && contactLayout && !editor && <button className="icon-button" type="button" ref={more} disabled={busy || !contact}
         aria-label={t("Contact actions", "联系人操作")} aria-haspopup="menu" aria-expanded={!!menuAnchor && menuAnchor === more.current}
         onClick={event => openMenu(event.currentTarget, [
           { label: labels.remove, icon: <UserRoundMinus size={18} />, action: () => show("remove") },
@@ -304,11 +304,6 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
               [t("Date added", "添加日期"), ""],
             ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
           </dl>
-          {contactLayout && <button className="button subtle" disabled={busy || !contact} onClick={async () => {
-            setBusy(true);
-            try { await message(); } catch (error) { setSaveError(errorMessage(error)); setBusy(false); }
-          }}>{t("Message", "发消息")}</button>}
-          {profile?.relation === "stranger" && <button className="button primary" onClick={() => show("greeting")}>{labels.greeting}</button>}
           {profile?.relation === "outgoing" && <p role="status">{t("Contact request sent.", "好友请求已发送。")}</p>}
         </> : own ? <div className="profile-rows">
           <Row label={labels.avatar} entry="avatar" choose={() => void pick("avatar")} disabled={!profile || picking}>
@@ -328,7 +323,7 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
           {coverVersion && <div className="profile-cover">{cover && <img src={cover} alt="" />}</div>}
           {profile?.bio && <p className="profile-bio">{profile.bio}</p>}
           {contactLayout && <div className="profile-rows"><Row label={labels.notes} disabled={!contact} choose={() => show("notes")}>{profile?.notes?.remark}</Row></div>}
-          {contactLayout && <button className="button primary profile-direct" disabled={busy || !contact} onClick={async () => {
+          {contactLayout && message && <button className="button primary profile-direct" disabled={busy || !contact} onClick={async () => {
             setBusy(true);
             setSaveError("");
             try { await message(); }

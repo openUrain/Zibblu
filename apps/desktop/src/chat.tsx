@@ -1,7 +1,7 @@
 import { FloatingField } from "./floating-field";
 import {
   ArrowDown, ArrowLeft, ArrowRight, Clock, Check, CheckCheck, ChevronRight, CircleAlert, Copy, Download, FolderOpen, Ghost, LockKeyhole,
-  Image, LoaderCircle, LogOut, MessageCircle, MoreHorizontal, Paperclip, Pause, Play, Plus, QrCode, Radar, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, UserRoundPlus, UsersRound, X,
+  LoaderCircle, LogOut, MessageCircle, MoreHorizontal, Paperclip, Pause, Play, Plus, QrCode, Radar, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, UserRoundPlus, UsersRound, X,
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
@@ -129,7 +129,7 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
 } & ChatDraft) {
   const [showFiles, setShowFiles] = useState(false);
   const [drawer, setDrawer] = useState(false);
-  const [search, setSearch] = useState<"text" | "media">();
+  const [searchOpen, setSearchOpen] = useState(false);
   const [media, setMedia] = useState<Message>();
   const [mediaError, setMediaError] = useState("");
   const [leave, setLeave] = useState(false);
@@ -153,13 +153,14 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
   const detailsButton = useRef<HTMLButtonElement>(null);
   const filesBack = useRef<HTMLButtonElement>(null);
   const drawerReturn = useRef<HTMLButtonElement>(null);
-  const detailsVisible = drawer && !profileOpen && !search && !showFiles && !leave;
+  const secondaryOpen = profileOpen || searchOpen || showFiles || leave;
+  const detailsVisible = drawer && (windows || !secondaryOpen);
   function openMedia(message: Message) {
     setMediaError("");
     const file = message.attachment;
     if (windows && file && mediaKind(file) === "image" && canPreview(file)) {
       setMedia(undefined);
-      setSearch(undefined);
+      setSearchOpen(false);
       void api.openImage(file.id).catch(error => setMediaError(errorMessage(error)));
     } else {
       setMedia(message);
@@ -175,19 +176,19 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
 
   useEffect(() => {
     if (requested?.page === "details") setDrawer(true);
-    if (requested?.page === "search") setSearch("text");
+    if (requested?.page === "search") setSearchOpen(true);
   }, [requested]);
 
   useLayoutEffect(() => {
-    if (detailsVisible) drawerReturn.current?.focus({ preventScroll: true });
-    else wantInvite.current = false;
-  }, [detailsVisible]);
+    if (detailsVisible && !secondaryOpen) drawerReturn.current?.focus({ preventScroll: true });
+    if (!drawer || secondaryOpen) wantInvite.current = false;
+  }, [drawer, detailsVisible, secondaryOpen]);
   useLayoutEffect(() => {
     if (windows && showFiles) filesBack.current?.focus();
   }, [showFiles]);
 
   useEffect(() => {
-    if (!windows || !detailsVisible) return;
+    if (!windows || !detailsVisible || secondaryOpen) return;
     function dismissOutside(event: PointerEvent) {
       if (document.querySelector("dialog:modal") || !(event.target instanceof Element)) return;
       if (detailsButton.current?.contains(event.target) || event.target.closest(".conversation-drawer")) return;
@@ -196,7 +197,7 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
     }
     document.addEventListener("pointerdown", dismissOutside, true);
     return () => document.removeEventListener("pointerdown", dismissOutside, true);
-  }, [detailsVisible]);
+  }, [detailsVisible, secondaryOpen]);
 
   function closeDrawer() {
     drawerReturn.current = null;
@@ -274,7 +275,7 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
       </div>
       {showFiles && <FilesView conversation={chat.id} transfers={transfers} revision={revision} recalled={recalled} hidden={hidden} onChanged={changed} />}
       {(windows || detailsVisible) && <Dialog mobilePage title={details} className="conversation-drawer"
-        modal={!windows} visible={detailsVisible} close={closeDrawer} onKeyDown={keepDrawerFocus}>
+        modal={!windows} visible={detailsVisible} inactive={showFiles} close={closeDrawer} onKeyDown={keepDrawerFocus}>
         {chat.title ? <div className="drawer-identity"><Avatar name={name} group large /><strong>{name}</strong></div>
           : peer && open && <DrawerAction className="drawer-identity" icon={<PersonAvatar user={peer} large />}
             onClick={button => fromDrawer(button, () => open(peer))}>
@@ -293,14 +294,11 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
           {inviteError && <p className="inline-error" role="alert">{inviteError}</p>}
         </section>}
         <div className="drawer-actions">
-          <DrawerAction icon={<Search size={20} />} onClick={button => fromDrawer(button, () => setSearch("text"))}>
+          <DrawerAction icon={<Search size={20} />} onClick={button => fromDrawer(button, () => setSearchOpen(true))}>
             {t("Search chat", "查找聊天内容")}
           </DrawerAction>
           <DrawerAction icon={<FolderOpen size={20} />} onClick={button => fromDrawer(button, () => setShowFiles(true))}>
             {t("Shared files", "共享文件")}
-          </DrawerAction>
-          <DrawerAction icon={<Image size={20} />} onClick={button => fromDrawer(button, () => setSearch("media"))}>
-            {t("Photos and videos", "图片与视频")}
           </DrawerAction>
         </div>
         {groupMember && <div className="drawer-actions">
@@ -324,20 +322,20 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
         }}>Leave group</button>
       </div>
     </Dialog>}
-    {search && <ChatSearch conversation={chat.id} initialTab={search} {...{ revision, latestAiSeq, recalled, hidden, transfers, changed }}
-      openMedia={openMedia} close={() => setSearch(undefined)} />}
+    {searchOpen && <ChatSearch conversation={chat.id} {...{ revision, latestAiSeq, recalled, hidden, transfers, changed }}
+      openMedia={openMedia} close={() => setSearchOpen(false)} />}
     {media && <MediaViewer message={media} conversation={chat.id} {...{ revision, recalled, hidden, transfers }}
       open={openMedia} close={() => setMedia(undefined)} onChanged={changed} />}
   </section>;
 }
 
-function ChatSearch({ conversation, initialTab, revision, latestAiSeq, recalled, hidden, openMedia, close, transfers, changed }: {
+function ChatSearch({ conversation, revision, latestAiSeq, recalled, hidden, openMedia, close, transfers, changed }: {
   conversation: string; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; hidden: ReadonlySet<number>; close: () => void;
-  openMedia: (message: Message) => void; initialTab: "text" | "media"; transfers: Transfer[]; changed: () => void;
+  openMedia: (message: Message) => void; transfers: Transfer[]; changed: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
-  const [tab, setTab] = useState(initialTab);
+  const [tab, setTab] = useState<"text" | "media">("text");
   return <Dialog title={t("Search chat", "查找聊天内容")} mobilePage close={close}>
     <fieldset className="tabs">
       <legend className="sr-only">Search chat by</legend>

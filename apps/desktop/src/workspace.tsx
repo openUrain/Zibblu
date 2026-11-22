@@ -602,9 +602,6 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       <header className={"topbar" + (windows ? " windows-topbar" : "")}>
         <WindowDrag className="app-name">Zibblu</WindowDrag>
         <div className="chat-actions">
-        <button className="icon-button" aria-label="Nearby" title="Nearby"
-          onClick={() => setNearby(true)}><Radar size={20} /></button>
-
         <div className={"connection " + (connected ? "connected" : "disconnected")} role="status">
           <span className="connection-dot" />{connection}
         </div></div>
@@ -698,7 +695,6 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     {quickProfile && (!quickProfile.fromContacts || directoryContact?.id === quickProfile.user.id)
       && <ProfileView key={quickProfile.user.id} popup point={quickProfile.point} user={quickProfile.user} session={session}
       cache={profiles} directoryVersion={profileVersion(quickProfile.user.id)}
-      message={async () => { await create({ kind: "direct", contact_id: quickProfile.user.id }); setQuickProfile(undefined); }}
       relationVersion={directory.contacts.some(person => person.id === quickProfile.user.id) ? "contact"
         : directory.pending_contacts.find(request => request.user.id === quickProfile.user.id)?.request_id ?? "other"}
       reconnecting={connection === "Reconnecting"} refresh={refresh} close={() => setQuickProfile(undefined)}

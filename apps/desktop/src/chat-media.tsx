@@ -1,5 +1,4 @@
-import { FloatingField } from "./floating-field";
-import { ChevronLeft, ChevronRight, Image, LoaderCircle, Play, RotateCcw, Search, Video } from "lucide-react";
+import { ChevronLeft, ChevronRight, Image, LoaderCircle, Play, RotateCcw, Video } from "lucide-react";
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { api, errorMessage, fileExpired } from "./api";
 import type { Attachment, ImageSize, Message, Transfer } from "./api";
@@ -112,31 +111,28 @@ export function ChatAttachment({ message, transfer, onChanged, open, expired, up
 export function MediaHistory({ conversation, revision, recalled, hidden, open, transfers, onChanged }: ChatMediaScope & {
   open: (message: Message) => void; transfers: Transfer[]; onChanged: () => void;
 }) {
-  const [name, setName] = useState("");
   const downloads = transfers.filter(job => job.conversation_id === conversation && job.direction === "download"
     && job.status !== "complete" && mediaKind(job.attachment));
   return <>
-    <FloatingField fieldClass="search media-search" label="Search media by file name" prefixIcon={<Search size={16} />} type="search"
-        value={name} onChange={event => setName(event.target.value)} />
     {downloads.length > 0 && <details className="media-transfers">
       <summary>Transfers ({downloads.length})</summary>
       <TransferList transfers={downloads} onChanged={onChanged} inChat />
     </details>}
-    <MediaResults key={name} {...{ conversation, revision, recalled, hidden, name, open }} />
+    <MediaResults {...{ conversation, revision, recalled, hidden, open }} />
   </>;
 }
 
-function MediaResults({ conversation, revision, recalled, hidden, name, open }: ChatMediaScope & {
-  name: string; open: (message: Message) => void;
+function MediaResults({ conversation, revision, recalled, hidden, open }: ChatMediaScope & {
+  open: (message: Message) => void;
 }) {
   const read = useCallback((before?: number) => readAttachmentPage(
-    cursor => api.files({ conversation_id: conversation, name: name.trim() || undefined, oldest_first: false }, cursor),
-    true, recalled, hidden, before), [conversation, name, recalled, hidden]);
+    cursor => api.files({ conversation_id: conversation, oldest_first: false }, cursor),
+    true, recalled, hidden, before), [conversation, recalled, hidden]);
   const { page, failure, loading, older } = usePage(read, revision, recalled, false, undefined, hidden);
   return <div className="chat-search-results">
     {failure && <p className="inline-error" role="alert">{failure}</p>}
     {!page && !failure && <p className="muted" role="status">Loading photos and videos…</p>}
-    {page?.items.length === 0 && <Blank icon={<Image size={25} />} title="No matching photos or videos" />}
+    {page?.items.length === 0 && <Blank icon={<Image size={25} />} title="No photos or videos" />}
     {page && page.items.length > 0 && <div className="media-grid">{page.items.map(message =>
       fileExpired(message)
         ? <span className="media-tile-fallback" key={message.seq}>{message.attachment!.name}<small>File expired</small></span>

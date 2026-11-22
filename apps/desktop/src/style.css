@@ -466,7 +466,6 @@ svg { vertical-align: middle; }
 }
 .media-tile-fallback { display: grid; justify-items: center; gap: 4px; width: 100%; min-width: 0; padding: 8px; }
 .media-tile-fallback > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.media-search { margin: 0 0 12px; }
 .media-grid {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 4px;
 }
@@ -796,6 +795,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.28); backdrop-filter: blur(8px); 
   translate: 0 0; transition: translate 200ms ease-out, display 200ms allow-discrete;
 }
 .windows .conversation-drawer:not([open]) { pointer-events: none; }
+.windows .chat-files { position: relative; z-index: 11; background: var(--panel); }
 @starting-style {
   .windows .conversation-drawer[open] { translate: 100% 0; }
 }
@@ -970,7 +970,6 @@ button.profile-row:hover { background: var(--hover); }
   --profile-popup-inset: 12px;
   --profile-popup-padding: 12px;
   --profile-popup-radius: 8px;
-  --profile-card-close-size: 32px;
   --profile-row-arrow: 17px;
   --profile-focus-halo: 0 0 4px 1px color-mix(in srgb, var(--accent) 20%, transparent);
   --profile-focus-shadow: 0 0 0 1px var(--accent), var(--profile-focus-halo);
@@ -989,10 +988,6 @@ button.profile-row:hover { background: var(--hover); }
 .profile-popup .profile-card-header {
   position: absolute; inset: var(--profile-popup-padding) var(--profile-popup-padding) auto auto;
   z-index: 1; display: block; min-height: 0; padding: 0; background: transparent;
-}
-.profile-card-header .icon-button {
-  width: var(--profile-card-close-size); min-width: var(--profile-card-close-size); height: var(--profile-card-close-size);
-  border: 0; border-radius: var(--profile-popup-radius); background: var(--panel);
 }
 .profile-popup .profile-content { width: 100%; padding: var(--profile-popup-padding); }
 .profile-popup .profile-rows { border: 0; }
@@ -1133,7 +1128,9 @@ html:has(body.windows .shell) { background: transparent; }
   padding: var(--search-block) var(--search-inline);
 }
 .windows .workspace-content > .files-view { padding: 0 var(--search-inline) 16px; }
+.windows .files-view { display: flex; flex-direction: column; }
 .windows .files-view > .chat-list-head { padding-inline: 0; }
+.windows .files-view > .blank { flex: 1 0 auto; max-width: none; }
 .windows .chat-list-head > .workspace-search {
   --workspace-search-icon-size: 20px;
   --label-start: calc(9px + var(--workspace-search-icon-size) + 11px - 3px);
@@ -1221,12 +1218,14 @@ html:has(body.windows .shell) { background: transparent; }
 }
 .conversation-entry:has(.conversation-avatar) .chat-row > .avatar { visibility: hidden; }
 .formal-dialog { height: min(480px, calc(100dvh - 32px)); }
+.formal-dialog.close-action-dialog { height: fit-content; }
 .formal-dialog.add-friend { height: min(320px, calc(100dvh - 32px)); }
 .formal-dialog.media-viewer { height: min(720px, calc(100dvh - 32px)); }
 .formal-dialog .dialog-head { touch-action: none; cursor: move; user-select: none; }
 .windows .profile-popup {
   width: min(var(--profile-popup-width), 100%); max-height: 100%; overflow: auto;
 }
+.profile-popup .profile-status:empty { display: none; }
 .quick-profile-fields { display: grid; gap: 4px; margin: 8px 0; }
 .quick-profile-fields div { display: grid; grid-template-columns: 40% 1fr; gap: 8px; min-height: 1.5em; }
 .quick-profile-fields dt { color: var(--muted); }
