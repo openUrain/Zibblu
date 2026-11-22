@@ -313,7 +313,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }, [refreshLocal]);
 
   const changed = useCallback(() => {
-    void api.transfers().then(setTransfers).catch(error => setFailure(errorMessage(error)));
+    return api.transfers().then(setTransfers).catch(error => setFailure(errorMessage(error)));
   }, []);
 
   useEffect(() => {

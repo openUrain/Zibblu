@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -75,10 +75,20 @@ struct Job {
     #[serde(flatten)]
     transfer: Transfer,
     destination: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    overwrite: Option<OverwriteTarget>,
     #[serde(default)]
     publishing: bool,
     #[serde(default)]
     retry_at: i64,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct OverwriteTarget {
+    volume: u32,
+    index: u64,
+    size: u64,
+    last_write: u64,
 }
 
 pub(super) type JobKey = (Uuid, Direction);
@@ -102,6 +112,7 @@ impl Job {
                 created_at: None,
             },
             destination: None,
+            overwrite: None,
             publishing: false,
             retry_at: 0,
         }
@@ -243,9 +254,32 @@ impl Client {
         id: Uuid,
         destination: PathBuf,
     ) -> Result<Transfer> {
+        self.queue_download_to(id, destination, None).await
+    }
+
+    #[cfg(windows)]
+    pub async fn queue_windows_save(
+        self: &Arc<Self>,
+        id: Uuid,
+        destination: PathBuf,
+    ) -> Result<Transfer> {
+        // Only pass a path returned by the native save dialog with overwrite confirmation.
+        let path = destination.clone();
+        let overwrite = tokio::task::spawn_blocking(move || overwrite_target(&path, 0)).await??;
+        self.queue_download_to(id, destination, overwrite).await
+    }
+
+    async fn queue_download_to(
+        self: &Arc<Self>,
+        id: Uuid,
+        destination: PathBuf,
+        overwrite: Option<OverwriteTarget>,
+    ) -> Result<Transfer> {
         let _prepare = self.prepare_gate.lock().await;
         self.ensure_open()?;
-        ensure_new_destination(&destination)?;
+        if overwrite.is_none() {
+            ensure_new_destination(&destination)?;
+        }
         let message = self.attachment(id).await?;
         let file = message
             .attachment
@@ -272,6 +306,7 @@ impl Client {
             }
         };
         job.destination = Some(destination);
+        job.overwrite = overwrite;
         job.publishing = false;
         job.retry_at = 0;
         job.transfer.sharer = Some(message.sender);
@@ -690,7 +725,7 @@ impl Client {
         Ok(())
     }
 
-    async fn download(&self, job: &mut Job, stop: &AtomicBool) -> Result<TransferStatus> {
+    async fn download(&self, job: &mut Job, stop: &Arc<AtomicBool>) -> Result<TransferStatus> {
         let attachment = job.transfer.attachment.clone();
         let id = attachment.id;
         let destination = job.destination.clone().context("Choose a save location")?;
@@ -706,7 +741,7 @@ impl Client {
                 .bind(id.to_string())
                 .fetch_one(&self.db)
                 .await?;
-        if !job.publishing {
+        if !job.publishing && job.overwrite.is_none() {
             ensure_new_destination(&destination)?;
         }
         let cached = if has_cache || path.is_file() {
@@ -724,7 +759,7 @@ impl Client {
                 .truncate(false)
                 .open(&spool)
                 .await
-                .context("Could not open the partial download")?;
+                .map_err(save_io_error)?;
             let length = output.metadata().await?.len();
             let offset = if length == attachment.size {
                 length
@@ -747,12 +782,12 @@ impl Client {
                 output
                     .write_all(&bytes)
                     .await
-                    .context("Could not write the partial download")?;
-                output.flush().await?;
+                    .map_err(save_io_error)?;
+                output.flush().await.map_err(save_io_error)?;
                 job.transfer.received += expected as u64;
                 self.store_job(job).await?;
             }
-            output.sync_all().await?;
+            output.sync_all().await.map_err(save_io_error)?;
             drop(output);
             match self.stage_verified(&attachment, spool.clone()).await {
                 Ok(path) => path,
@@ -770,17 +805,21 @@ impl Client {
         job.publishing = true;
         self.store_job(job).await?;
         let file = attachment.clone();
+        let overwrite = job.overwrite.clone();
+        let stop = stop.clone();
         let saved = tokio::task::spawn_blocking(move || {
-            if recovering && destination.try_exists()? {
-                verify_file(&destination, &file)
-            } else {
-                publish_verified(&cached, &destination, &file)
+            publish_download(&cached, &destination, &file, overwrite.as_ref(), recovering, &stop)
+        }).await?;
+        let published = match saved {
+            Ok(published) => published,
+            Err(error) => {
+                job.publishing = false;
+                return Err(error);
             }
-        })
-        .await?;
-        if let Err(error) = saved {
+        };
+        if !published {
             job.publishing = false;
-            return Err(error);
+            return Ok(TransferStatus::Paused);
         }
         let mut tx = self.db.begin().await?;
         let visible: bool = sqlx::query_scalar(
@@ -796,6 +835,7 @@ impl Client {
         }
         record_local_file(&mut tx, &attachment, seq, !has_cache).await?;
         job.publishing = false;
+        job.overwrite = None;
         job.transfer.received = attachment.size;
         job.transfer.status = TransferStatus::Complete;
         store_job(&mut tx, job).await?;
@@ -913,21 +953,113 @@ fn verify_file(path: &std::path::Path, attachment: &Attachment) -> Result<()> {
 }
 
 fn publish_verified(
-    source: &std::path::Path,
-    destination: &std::path::Path,
+    source: &Path,
+    destination: &Path,
     attachment: &Attachment,
 ) -> Result<()> {
-    let parent = destination.parent().context("Choose a save folder")?;
-    let input = open_verified_input(source, attachment.size)?;
-    let mut temp = NamedTempFile::new_in(parent).context("Could not write to the save folder")?;
-    ensure!(
-        staging::hash_copy(input, temp.as_file_mut())? == attachment.sha256,
-        "File verification failed. Retry the download."
-    );
-    temp.as_file().sync_all()?;
-    temp.persist_noclobber(destination)
+    stage_publication(source, destination, attachment)?
+        .persist_noclobber(destination)
         .context("Could not publish the download. Choose an unused filename.")?;
     Ok(())
+}
+
+fn stage_publication(source: &Path, destination: &Path, attachment: &Attachment) -> Result<tempfile::TempPath> {
+    let parent = destination.parent().context("Choose a save folder")?;
+    let input = open_verified_input(source, attachment.size)?;
+    let mut temp = NamedTempFile::new_in(parent).map_err(save_io_error)?;
+    ensure!(
+        staging::hash_copy(input, temp.as_file_mut()).map_err(|error| {
+            error.downcast::<std::io::Error>().map_or_else(|error| error, save_io_error)
+        })? == attachment.sha256,
+        "File verification failed. Retry the download."
+    );
+    temp.as_file().sync_all().map_err(save_io_error)?;
+    Ok(temp.into_temp_path())
+}
+
+fn publish_download(
+    source: &Path,
+    destination: &Path,
+    attachment: &Attachment,
+    overwrite: Option<&OverwriteTarget>,
+    recovering: bool,
+    stop: &AtomicBool,
+) -> Result<bool> {
+    if recovering && verify_file(destination, attachment).is_ok() {
+        return Ok(true);
+    }
+    let temp = stage_publication(source, destination, attachment)?;
+    if stop.load(Ordering::Relaxed) {
+        return Ok(false);
+    }
+    if let Some(expected) = overwrite {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Storage::FileSystem::DELETE;
+
+            // MoveFileEx may report a sharing conflict as access denied. Check delete access first.
+            ensure!(overwrite_target(destination, DELETE)?.as_ref() == Some(expected),
+                "The destination changed. Choose the save location and confirm replacement again.");
+            // The temp file is already verified, closed and on the destination volume.
+            temp.persist(destination).map_err(|error| save_io_error(error.error))?;
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = expected;
+            bail!("Choose a new save location on this device");
+        }
+    } else {
+        temp.persist_noclobber(destination).map_err(|error| save_io_error(error.error))?;
+    }
+    Ok(true)
+}
+
+#[cfg(windows)]
+fn overwrite_target(path: &Path, access: u32) -> Result<Option<OverwriteTarget>> {
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_FLAG_OPEN_REPARSE_POINT, GetFileInformationByHandle,
+    };
+
+    ensure!(path.is_absolute() && path.file_name().is_some(), "Choose an absolute save path");
+    let file = match std::fs::OpenOptions::new()
+        .access_mode(access)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(save_io_error(error)),
+    };
+    let metadata = file.metadata().map_err(save_io_error)?;
+    ensure!(metadata.is_file() && !staging::is_link(&metadata), "Choose a regular file to replace");
+    ensure!(!metadata.permissions().readonly(), "The save destination is read-only. Choose another location or change its permissions.");
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(save_io_error(std::io::Error::last_os_error()));
+    }
+    Ok(Some(OverwriteTarget {
+        volume: info.dwVolumeSerialNumber,
+        index: u64::from(info.nFileIndexHigh) << 32 | u64::from(info.nFileIndexLow),
+        size: metadata.len(),
+        last_write: u64::from(info.ftLastWriteTime.dwHighDateTime) << 32
+            | u64::from(info.ftLastWriteTime.dwLowDateTime),
+    }))
+}
+
+fn save_io_error(error: std::io::Error) -> anyhow::Error {
+    use std::io::ErrorKind;
+    let message = if cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33)) {
+        "The save destination is in use. Close the file and retry."
+    } else {
+        match error.kind() {
+            ErrorKind::AlreadyExists => "The save destination already exists. Choose the location again to confirm replacement.",
+            ErrorKind::PermissionDenied => "Permission denied at the save destination. Check its permissions or choose another location.",
+            ErrorKind::StorageFull => "There is not enough disk space to save the file. Free up space and retry.",
+            _ => "Could not save the attachment",
+        }
+    };
+    anyhow::Error::new(error).context(message)
 }
 
 #[cfg(test)]
@@ -935,6 +1067,56 @@ mod tests {
     use super::*;
     use crate::{AttachmentKind, DeviceSession, FileFilter};
     use super::super::Api;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_replaces_only_the_confirmed_file_with_verified_bytes() -> Result<()> {
+        use sha2::{Digest, Sha256};
+        use std::{fs, os::windows::fs::OpenOptionsExt};
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("cache");
+        let destination = root.path().join("saved.txt");
+        let old = b"edited copy";
+        let new = b"correct copy";
+        let file = Attachment {
+            id: Uuid::new_v4(),
+            kind: AttachmentKind::File,
+            name: "saved.txt".into(),
+            size: new.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(new)),
+        };
+        fs::write(&destination, old)?;
+        let target = overwrite_target(&destination, 0)?;
+        let stop = AtomicBool::new(false);
+        let publish = |target, recovering| {
+            publish_download(&source, &destination, &file, target, recovering, &stop)
+        };
+        fs::write(&source, b"corrupt copy")?;
+        assert!(publish(target.as_ref(), false).unwrap_err().to_string().contains("verification failed"));
+        assert_eq!(fs::read(&destination)?, old);
+
+        fs::write(&source, new)?;
+        assert!(publish(None, false).is_err());
+        stop.store(true, Ordering::Relaxed);
+        assert!(!publish(target.as_ref(), false)?);
+        stop.store(false, Ordering::Relaxed);
+        let locked = fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).open(&destination)?;
+        assert!(publish(target.as_ref(), false).unwrap_err().to_string().contains("in use"));
+        assert_eq!(fs::read(&destination)?, old);
+        drop(locked);
+
+        fs::write(&destination, b"another edit after choosing the destination")?;
+        assert!(publish(target.as_ref(), false).unwrap_err().to_string().contains("destination changed"));
+        assert_eq!(fs::read(&destination)?, b"another edit after choosing the destination");
+        let reconfirmed = overwrite_target(&destination, 0)?;
+        assert!(publish(reconfirmed.as_ref(), true)?);
+        assert!(publish(reconfirmed.as_ref(), true)?);
+        verify_file(&destination, &file)?;
+        assert_eq!(fs::read_dir(root.path())?.count(), 2);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn shared_files_keep_the_upload_position_and_cursor_after_publication() -> Result<()> {

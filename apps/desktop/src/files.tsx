@@ -1,6 +1,6 @@
 import { FloatingField } from "./floating-field";
 import { Archive, Check, CircleAlert, Clock, Download, ExternalLink, File, FileSpreadsheet, FileText, FileType2, FolderOpen, Image, Pause, Play, Presentation, RotateCcw, Search, Share, Trash2, Video } from "lucide-react";
-import { useCallback, useContext, useState } from "react";
+import { useCallback, useContext, useId, useState } from "react";
 import type { ChangeEvent } from "react";
 import { api, errorMessage, fileExpired } from "./api";
 import type { Attachment, FileFilter, Message, Transfer } from "./api";
@@ -66,7 +66,7 @@ export function SharedFile({ message, transfer, onChanged, previewStatus, upload
   </article>;
 }
 
-export function useAttachmentSave(onChanged: () => void) {
+export function useAttachmentSave(onChanged: () => void | Promise<void>) {
   const [saving, setSaving] = useState(false);
   const [failure, setFailure] = useState("");
 
@@ -76,7 +76,7 @@ export function useAttachmentSave(onChanged: () => void) {
     setFailure("");
     try {
       if (await api.save(id)) {
-        onChanged();
+        await onChanged();
         return true;
       }
     }
@@ -108,9 +108,16 @@ export function AttachmentDownload({ file, transfer, onChanged, hideSave = false
   </div>;
 }
 
-function TransferProgress({ transfer, onChanged, chooseNew, choosing, compact = false }: {
-  transfer: Transfer; onChanged: () => void; chooseNew?: () => void; choosing?: boolean; compact?: boolean;
+function LibraryError({ error, id }: { error?: string | null; id: string }) {
+  return <span className="library-error" title={error || undefined}>
+    {error && <><CircleAlert size={16} aria-hidden /><span className="sr-only" id={id} role="alert">{error}</span></>}
+  </span>;
+}
+
+function TransferProgress({ transfer, onChanged, chooseNew, choosing, compact = false, pickerError }: {
+  transfer: Transfer; onChanged: () => void; chooseNew?: () => void; choosing?: boolean; compact?: boolean; pickerError?: string;
 }) {
+  const errorId = useId();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
   const running = transfer.status === "running";
@@ -135,7 +142,7 @@ function TransferProgress({ transfer, onChanged, chooseNew, choosing, compact = 
 
   const pause = running || queued;
   const recovery = failed ? t("Retry", "重试") : t("Resume", "继续");
-  const error = failure || transfer.error;
+  const error = pickerError || failure || transfer.error;
   if (compact) {
     const compactStatus = expired ? t("Expired", "已过期") : failed ? t("Failed", "失败")
       : queued ? t("Queued", "排队中") : running
@@ -144,21 +151,24 @@ function TransferProgress({ transfer, onChanged, chooseNew, choosing, compact = 
         : t("Paused", "已暂停");
     const actionLabel = pause ? t("Pause", "暂停") : recovery;
     return <div className="library-transfer">
-      <div className="library-progress" title={error ?? undefined} tabIndex={error ? 0 : undefined}>
-        <span role={error ? "alert" : "status"} className={error ? "danger" : ""} aria-label={error ? compactStatus + ": " + error : undefined}>
+      <div className="library-progress" title={compactStatus + " " + percentage + "%"}>
+        <span role="status" className={error ? "danger" : ""}>
           {compactStatus} {percentage}%
         </span>
         <progress max={100} value={percentage} aria-label={compactStatus + " " + transfer.attachment.name} />
       </div>
-      {!expired && <button className="icon-button" type="button" disabled={busy}
-        aria-label={actionLabel} title={actionLabel} onClick={() => void action(pause ? "pause" : "resume")}>
-        {pause ? <Pause size={16} /> : failed ? <RotateCcw size={16} /> : <Play size={16} />}
-      </button>}
-      {!pause && !expired && chooseNew && <button className="icon-button" type="button" disabled={busy || choosing}
+      {!pause && <button className="icon-button danger library-discard" type="button" disabled={busy} title={t("Discard transfer", "丢弃传输")}
+        aria-label={t("Discard transfer", "丢弃传输")} onClick={() => void action("discard")}><Trash2 size={16} /></button>}
+      {!pause && !expired && chooseNew && <button className="icon-button library-choose" type="button" disabled={busy || choosing}
         title={t("Choose save location", "选择保存位置")} aria-label={t("Choose save location", "选择保存位置")}
         onClick={chooseNew}><Download size={16} /></button>}
-      {!pause && <button className="icon-button danger" type="button" disabled={busy} title={t("Discard transfer", "丢弃传输")}
-        aria-label={t("Discard transfer", "丢弃传输")} onClick={() => void action("discard")}><Trash2 size={16} /></button>}
+      <LibraryError error={error} id={errorId} />
+      {!expired && <button className={(windows ? "button subtle small" : "icon-button") + " library-transfer-action"} type="button" disabled={busy}
+        aria-label={`${actionLabel} ${transfer.attachment.name}`} aria-describedby={error ? errorId : undefined} title={actionLabel}
+        onClick={() => void action(pause ? "pause" : "resume")}>
+        {pause ? <Pause size={16} /> : failed ? <RotateCcw size={16} /> : <Play size={16} />}
+        {windows && actionLabel}
+      </button>}
     </div>;
   }
 
@@ -275,9 +285,10 @@ function LibraryFile({ message, transfer, onChanged }: { message: Message; trans
   const [openError, setOpenError] = useState("");
   const [opening, setOpening] = useState(false);
   const [needsSave, setNeedsSave] = useState(false);
+  const errorId = useId();
   const saved = windows && transfer?.status === "complete" && !needsSave;
   const expired = !saved && fileExpired(message);
-  const label = saved ? t("Open", "打开") : actions.save;
+  const label = saved ? t("Open", "打开") : saveError ? actions.retry : actions.save;
   const error = saveError || openError;
   const action = async () => {
     setOpenError("");
@@ -308,14 +319,18 @@ function LibraryFile({ message, transfer, onChanged }: { message: Message; trans
     </div>
     <div className="library-actions">
       {transfer && transfer.status !== "complete" ? <TransferProgress transfer={transfer} onChanged={onChanged} compact
-        chooseNew={message.seq > 0 && transfer.direction === "download" && !ios ? () => void save(file.id) : undefined} choosing={saving} />
+        chooseNew={message.seq > 0 && transfer.direction === "download" && !ios ? () => void save(file.id) : undefined}
+        choosing={saving} pickerError={error} />
         : expired ? <span role="status" className="library-expired" title="Ask the sender to share this file again.">{t("Expired", "已过期")}</span>
         : message.seq > 0 && (ios ? <AttachmentDownload file={file} transfer={transfer} onChanged={onChanged} /> :
-          <button className="button subtle small" type="button" disabled={opening || saving} onClick={() => void action()}
-            aria-label={`${label} ${file.name}`}>
-            {saved ? <ExternalLink size={15} /> : <Download size={15} />}{label}
-          </button>)}
-      {error && <span className="library-error" role="alert" tabIndex={0} title={error} aria-label={error}><CircleAlert size={16} /></span>}
+          <>
+            <LibraryError error={error} id={errorId} />
+            <button className="button subtle small" type="button" disabled={opening || saving} onClick={() => void action()}
+              aria-label={`${saving ? actions.saving : label} ${file.name}`} aria-describedby={error ? errorId : undefined}
+              aria-busy={opening || saving}>
+              {saving ? actions.saving : <>{saved ? <ExternalLink size={15} /> : <Download size={15} />}{label}</>}
+            </button>
+          </>)}
     </div>
   </article>;
 }

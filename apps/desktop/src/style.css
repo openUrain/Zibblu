@@ -215,7 +215,8 @@ svg { vertical-align: middle; }
 
 .shell {
   --rail-width: 60px;
-  --list-width: clamp(224px, 25vw, 280px);
+  --list-width-max: 280px;
+  --list-width: clamp(224px, 25vw, var(--list-width-max));
   display: grid; grid-template-columns: var(--rail-width) minmax(0, 1fr); height: 100dvh; overflow: hidden;
 }
 .rail {
@@ -619,6 +620,10 @@ svg { vertical-align: middle; }
 .shared-list, .transfer-list { min-width: 0; }
 .shared-list > .library-file + .library-file, .transfer-list > .shared-file + .shared-file { border-top: 1px solid var(--line); }
 .library-file {
+  --library-transfer-control: 28px;
+  --library-primary-width: 72px;
+  --library-action-gap: 4px;
+  --library-error-size: 16px;
   display: grid; grid-template-columns: minmax(0, 1fr) 184px; align-items: center; gap: 12px;
   min-width: 0; min-height: 64px; padding: 8px 12px; background: var(--panel);
 }
@@ -632,21 +637,32 @@ svg { vertical-align: middle; }
 .library-meta > :not(.library-sender) { flex: none; }
 .library-meta .avatar { width: 16px; height: 16px; border-radius: 4px; font-size: 10px; }
 .library-sender { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.library-actions { display: flex; justify-content: flex-end; align-items: center; gap: 4px; min-width: 0; }
-.library-actions .button { min-width: 72px; white-space: nowrap; border-color: transparent; background: var(--soft); }
+.library-actions { display: flex; justify-content: flex-end; align-items: center; gap: var(--library-action-gap); min-width: 0; }
+.library-actions .button { width: var(--library-primary-width); white-space: nowrap; border-color: transparent; background: var(--soft); }
 .library-actions .button:hover:not(:disabled) { background: var(--hover); }
 .library-error, .library-expired { color: var(--danger); font-size: 12px; }
-.library-error { display: inline-flex; }
-.library-transfer { display: flex; justify-content: flex-end; align-items: center; gap: 4px; min-width: 0; }
+.library-error { display: inline-flex; flex: 0 0 var(--library-error-size); }
+.library-transfer {
+  --library-transfer-primary: var(--library-transfer-control);
+  display: grid; width: 100%; align-items: center; gap: var(--library-action-gap);
+  grid-template-columns: minmax(0, 1fr) repeat(2, var(--library-transfer-control)) var(--library-error-size) var(--library-transfer-primary);
+}
+.windows .library-file {
+  --library-progress-width: 64px;
+  grid-template-columns: minmax(0, 1fr) calc(var(--library-progress-width) + 2 * var(--library-transfer-control) + var(--library-error-size) + var(--library-primary-width) + 4 * var(--library-action-gap));
+}
+.windows .library-transfer { --library-transfer-primary: var(--library-primary-width); }
+.library-discard { grid-column: 2; }
+.library-choose { grid-column: 3; }
+.library-transfer > .library-error { grid-column: 4; }
+.library-transfer-action { grid-column: 5; }
 .library-progress { display: grid; gap: 4px; min-width: 0; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .library-progress span { overflow: hidden; text-overflow: ellipsis; }
 .library-progress progress { width: 100%; height: 4px; accent-color: var(--accent); }
-.library-transfer .icon-button { width: 28px; min-width: 28px; height: 28px; }
+.library-transfer .icon-button { width: var(--library-transfer-control); min-width: 0; height: 28px; }
 .library-transfer .icon-button.danger:hover:not(:disabled) { color: var(--danger); background: var(--danger-bg); }
 @media (max-width: 600px) {
-  .library-file { grid-template-columns: minmax(0, 1fr) 152px; gap: 8px; padding-inline: 4px; }
-  .library-transfer { gap: 2px; }
-  .library-transfer .icon-button { width: 24px; min-width: 24px; }
+  .library-file { --library-transfer-control: 24px; --library-action-gap: 2px; grid-template-columns: minmax(0, 1fr) 152px; gap: 8px; padding-inline: 4px; }
 }
 .shared-file { border-top: 1px solid var(--line); }
 .shared-file {
@@ -1130,6 +1146,8 @@ html:has(body.windows .shell) { background: transparent; }
 .windows .workspace-content > .files-view { padding: 0 var(--search-inline) 16px; }
 .windows .files-view { display: flex; flex-direction: column; }
 .windows .files-view > .chat-list-head { padding-inline: 0; }
+.windows .files-view:not(.chat-files) > .chat-list-head { --workspace-search-row: calc(var(--list-width-max) - 1px); }
+.windows .files-view:not(.chat-files) > .shared-list { max-width: none; }
 .windows .files-view > .blank { flex: 1 0 auto; max-width: none; }
 .windows .chat-list-head > .workspace-search {
   --workspace-search-icon-size: 20px;
