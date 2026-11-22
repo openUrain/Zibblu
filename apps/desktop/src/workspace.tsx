@@ -594,7 +594,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       <header className={"topbar" + (windows ? " windows-topbar" : "")}>
         <WindowDrag className="app-name">Zibblu</WindowDrag>
         <div className="chat-actions">
-        <button className="icon-button" aria-label="Nearby devices" title="Nearby devices"
+        <button className="icon-button" aria-label="Nearby" title="Nearby"
           onClick={() => setNearby(true)}><Radar size={20} /></button>
 
         <div className={"connection " + (connected ? "connected" : "disconnected")} role="status">
@@ -617,7 +617,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           open={selectChat} newChat={() => setNewChat(true)} addContact={() => setNewContact(true)}
           rooms={privateRooms} activePrivate={privateId}
           openPrivate={selectPrivate} createQr={() => void createPrivateCode()}
-          scan={() => setScanning(true)} />
+          scan={() => setScanning(true)} openNearby={() => setNearby(true)} />
         {privateId ? <PrivateChatView key={privateId} id={privateId} own={session.user}
             isContact={id => directory.contacts.some(person => person.id === id)}
             draft={drafts["private/" + privateId]?.text ?? ""}
@@ -654,7 +654,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           <span><strong>{displayName(session.user, names)}</strong><small className="muted">@{session.user.handle}</small></span><ChevronRight size={20} />
         </button>
         <div className="phone-me-actions">
-          <button className="drawer-action" onClick={() => setNearby(true)}><Radar size={19} /> {t("Nearby devices", "附近设备")} <ChevronRight size={17} /></button>
+          <button className="drawer-action" onClick={() => setNearby(true)}><Radar size={19} /> Nearby <ChevronRight size={17} /></button>
           <button className="drawer-action" onClick={() => navigate("Settings")}><Settings size={19} /> Settings <ChevronRight size={17} /></button>
           <button className="drawer-action" onClick={() => setAbout(true)}><Info size={19} /> About Zibblu <ChevronRight size={17} /></button>
         </div>

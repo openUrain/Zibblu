@@ -1,7 +1,7 @@
 import { FloatingField } from "./floating-field";
 import {
   ArrowDown, ArrowLeft, ArrowRight, Clock, Check, CheckCheck, ChevronRight, CircleAlert, Copy, Download, FolderOpen, Ghost, LockKeyhole,
-  Image, LoaderCircle, LogOut, MessageCircle, MoreHorizontal, Paperclip, Pause, Play, Plus, QrCode, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, UserRoundPlus, UsersRound, X,
+  Image, LoaderCircle, LogOut, MessageCircle, MoreHorizontal, Paperclip, Pause, Play, Plus, QrCode, Radar, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, UserRoundPlus, UsersRound, X,
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
@@ -26,11 +26,11 @@ import type { ChatHistoryCache } from "./chat-history-cache";
 
 type ChatPage = "details" | "search";
 
-export function ChatList({ chats, own, selected, open, newChat, addContact, rooms, activePrivate, openPrivate, createQr, scan }: {
+export function ChatList({ chats, own, selected, open, newChat, addContact, rooms, activePrivate, openPrivate, createQr, scan, openNearby }: {
   chats: Conversation[]; own: User; selected?: string; open: (id: string, page?: ChatPage) => void; newChat: () => void;
   addContact: () => void;
   rooms: PrivateSummary[]; activePrivate?: string; openPrivate: (id: string) => void; createQr: () => void;
-  scan: () => void;
+  scan: () => void; openNearby: () => void;
 }) {
   const { remarks, open: showPerson } = useContext(People);
   const menu = useRowMenu();
@@ -49,6 +49,7 @@ export function ChatList({ chats, own, selected, open, newChat, addContact, room
       ...(phone ? [{ label: t("Scan QR code", "扫一扫"), icon: <ScanLine size={18} />, action: scan }] : []),
       { label: t("Add friend", "添加朋友"), icon: <UserRoundPlus size={18} />, action: addContact },
       { label: t("Private chat QR code", "私聊二维码"), icon: <QrCode size={18} />, action: createQr },
+      ...(windows ? [{ label: "Nearby", icon: <Radar size={18} />, action: openNearby }] : []),
     ])}><Plus size={22} /></button>;
   return <aside className="chat-list">
     {ios && <header className="chat-list-title"><h1>{t("Chats", "聊天")}</h1>{add}</header>}
