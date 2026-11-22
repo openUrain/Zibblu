@@ -413,18 +413,24 @@ pub struct UploadProgress {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Directory {
-    #[serde(default)]
+    #[serde(default, serialize_with = "serialize_directory_map")]
     pub names: std::collections::HashMap<Uuid, String>,
     pub contacts: Vec<User>,
     pub conversations: Vec<Conversation>,
     #[serde(default)]
     pub pending_contacts: Vec<PendingContact>,
-    #[serde(default)]
+    #[serde(default, serialize_with = "serialize_directory_map")]
     pub remarks: HashMap<Uuid, String>,
-    #[serde(default)]
+    #[serde(default, serialize_with = "serialize_directory_map")]
     pub avatars: HashMap<Uuid, Uuid>,
     #[serde(default)]
     pub read_receipts: bool,
+}
+
+fn serialize_directory_map<S: serde::Serializer, V: Serialize>(
+    map: &HashMap<Uuid, V>, serializer: S,
+) -> Result<S::Ok, S::Error> {
+    map.iter().collect::<std::collections::BTreeMap<_, _>>().serialize(serializer)
 }
 
 #[derive(Serialize, Deserialize)]

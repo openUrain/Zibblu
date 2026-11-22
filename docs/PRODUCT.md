@@ -70,7 +70,7 @@ Image inputs for profiles, clipboard pastes and inline previews are capped at 16
 
 Rules:
 - Devices need direct UDP on the same subnet or between explicitly approved subnets inside a managed site. The app verifies account-bound device certificates before showing an invitation.
-- **Nearby devices** in the top bar lists discoverable Zibblu instances after sign-in. A selected device can receive a private invitation without a shared conversation or contact relationship. The selected device must authenticate and accept before chatting. In an active session, open a participant's profile to send a separate contact request.
+- **Nearby** lists discoverable Zibblu instances after sign-in. On Windows, open it from the chat list’s search-side plus menu or the top bar. A selected device can receive a private invitation without a shared conversation or contact relationship. The selected device must authenticate and accept before chatting. In an active session, open a participant's profile to send a separate contact request.
 - A direct invitation shows the sender and **Accept** and **Decline**. A group invitation also shows the invitees. Accepted accounts can join as they respond, and a late account or device sees new text only.
 - Invitations cover the app window. Windows shows a compact lower-right prompt while the main window is minimized to the taskbar. Accepting brings the private chat forward. Declining keeps the main window minimized. While hidden to the tray, pending invitations stay in the app.
 - No server relay, online forwarding or unnoticed switch back to normal mode. Connection failure means private mode is unavailable.

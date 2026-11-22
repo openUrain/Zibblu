@@ -176,7 +176,7 @@ export function NearbyDevices({ own, close, invited }: {
     catch (error) { setFailure(errorMessage(error)); setBusy(false); }
   }
 
-  return <Dialog title="Nearby devices" close={() => { if (!busy) close(); }}>
+  return <Dialog title="Nearby" close={close} closeDisabled={busy}>
     {devices.length ? <fieldset className="dialog-contacts" disabled={busy}>
       <legend>Seen on LAN · identity unverified</legend>
       {devices.map(device => <Choice key={device.id} type="radio" name="nearby-device" checked={selected?.id === device.id}
@@ -188,8 +188,8 @@ export function NearbyDevices({ own, close, invited }: {
       </Choice>)}
     </fieldset> : <p className="muted" role="status">
       {status === "starting" ? "Starting LAN discovery…"
-        : status === "network_unavailable" ? (ios ? "Connect to an allowed Wi-Fi network to find nearby devices."
-          : "No approved IPv4 LAN is available. Connect to an allowed Wi-Fi or Ethernet network.")
+        : status === "network_unavailable" ? (ios ? "Nearby requires an allowed Wi-Fi network."
+          : "Nearby requires an approved IPv4 LAN. Connect to an allowed Wi-Fi or Ethernet network.")
         : status === "permission_denied" ? "Allow Zibblu to use the Local Network in iOS Settings, then return here."
         : status === "discovery_failed" ? "LAN discovery could not start or the configured discovery service failed."
         : "No Zibblu devices found. Keep both clients open and signed in on the same allowed network."}

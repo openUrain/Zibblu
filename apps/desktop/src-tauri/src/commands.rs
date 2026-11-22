@@ -215,9 +215,16 @@ impl Desktop {
             let app = app.clone();
             let client = client.clone();
             tauri::async_runtime::spawn(async move {
-                if let Ok(profile) = client.profile(client.user.id).await
+                let profile = match client.cached_profile(client.user.id).await {
+                    Some(cached) => Some(cached.profile),
+                    None => client.profile(client.user.id).await.ok(),
+                };
+                if let Some(profile) = profile
                     && let Some(version) = profile.avatar
-                    && let Ok(bytes) = client.profile_image(client.user.id, version).await
+                    && let Some(bytes) = match client.cached_profile_image(client.user.id, version).await {
+                        Some(bytes) => Some(bytes),
+                        None => client.profile_image(client.user.id, version).await.ok(),
+                    }
                     && let Ok(avatar) = crate::images::saved_avatar(&bytes)
                 {
                     app.state::<Desktop>().remember_avatar(&client, avatar).await;
@@ -649,12 +656,34 @@ pub(crate) async fn messages(
     conversation: Uuid,
     before: Option<i64>,
     search: Option<String>,
-) -> Result<Page> {
-    Ok(state
-        .client()
-        .await?
-        .search_messages(conversation, before, search.as_deref())
-        .await?)
+) -> Result<TimelinePage> {
+    let client = state.client().await?;
+    let page = client.search_messages(conversation, before, search.as_deref()).await?;
+    let sizes = client.cached_thumbnail_sizes(&page.items).await.unwrap_or_default();
+    if !state.is_current(&client).await {
+        return Err(anyhow!("The session has ended").into());
+    }
+    Ok(TimelinePage {
+        items: page.items.into_iter().map(|message| TimelineMessage {
+            preview_size: sizes.get(&message.seq).copied(),
+            message,
+        }).collect(),
+        has_more: page.has_more,
+    })
+}
+
+#[derive(Serialize)]
+pub(crate) struct TimelinePage {
+    items: Vec<TimelineMessage>,
+    has_more: bool,
+}
+
+#[derive(Serialize)]
+struct TimelineMessage {
+    #[serde(flatten)]
+    message: Message,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preview_size: Option<(u32, u32)>,
 }
 
 #[tauri::command]

@@ -28,6 +28,8 @@ import { CloseActionChoices, WindowControls, WindowDrag, windows } from "./windo
 import { ios, phone, useIpadSplit, useIosBack } from "./ios";
 import { WorkspaceSearchField } from "./workspace-search";
 import { ChatHistoryCache } from "./chat-history-cache";
+import { ImageCache, ProfileCache } from "./workspace-cache";
+import { WorkspaceImages } from "./workspace-image";
 
 const pages = [
   { name: "Chats", Icon: MessageSquare }, { name: "Contacts", Icon: UsersRound },
@@ -35,6 +37,8 @@ const pages = [
 ] as const;
 type Navigation = typeof pages[number]["name"] | "Me" | "Settings";
 const tabLabels = { Chats: t("Chats", "聊天"), Contacts: t("Contacts", "联系人"), Files: t("Files", "文件"), Me: t("Me", "我的") };
+const hour = 60 * 60 * 1000;
+const currentHour = () => Math.floor(Date.now() / hour) * hour;
 
 export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction, setCloseAction, signedOut }: {
   session: Session; signedOut: (notice?: string) => void;
@@ -53,6 +57,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [aiReplies, setAiReplies] = useState<AiReply[]>([]);
   const [directory, setDirectory] = useState<Directory>({ contacts: [], conversations: [], pending_contacts: [], remarks: {}, names: {}, avatars: {}, read_receipts: false });
   const [historyCache] = useState(() => new ChatHistoryCache());
+  const [profiles] = useState(() => new ProfileCache());
+  const [images] = useState(() => new ImageCache());
   useLayoutEffect(() => {
     historyCache.retain(new Set(directory.conversations.map(chat => chat.id)));
   }, [directory.conversations, historyCache]);
@@ -68,6 +74,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const syncRetryDelay = useRef(0);
   const appliedRevision = useRef(0);
   const [clockOffset, setClockOffset] = useState(0);
+  const [avatarValidated, setAvatarValidated] = useState(currentHour);
   const [selected, setSelected] = useState<string>();
   const [chatPage, setChatPage] = useState<{ id: string; page: "details" | "search" }>();
   const [mobileChat, setMobileChat] = useState(false);
@@ -92,6 +99,34 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [sharing, setSharing] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const signingOut = useRef(false);
+  const previewAccess = useMemo(() => {
+    const conversations = new Map(directory.conversations.map(chat => [chat.id, chat.joined_after ?? null]));
+    return (id: string, seq: number) => {
+      const cutoff = conversations.get(id);
+      if (cutoff === undefined || recalled.has(seq) || hidden.has(seq)) return;
+      if (cutoff === null) return "online";
+      if (seq > cutoff) return "cached";
+    };
+  }, [directory.conversations, recalled, hidden]);
+
+  useLayoutEffect(() => {
+    const people = new Set(directory.contacts.map(user => user.id));
+    profiles.retain(key => {
+      const [id, relation] = key.split("/");
+      return relation === "own" ? id === session.user.id : people.has(id);
+    });
+    images.retain(key => {
+      const [type, id, version] = key.split("/");
+      if (type === "avatar") return directory.avatars[id] === version;
+      if (type === "cover") return (id === session.user.id || people.has(id))
+        && profiles.get(id + (id === session.user.id ? "/own" : "/contact"))?.profile.cover === version;
+      return previewAccess(id, Number(version)) === "cached";
+    });
+  }, [directory.contacts, directory.avatars, previewAccess, images, profiles, session.user.id]);
+  useLayoutEffect(() => () => {
+    profiles.retain(() => false);
+    images.retain(() => false);
+  }, [profiles, images]);
 
   useEffect(() => {
     if (!ios) return;
@@ -123,9 +158,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
 
   const directoryContact = directory.contacts.find(person => person.id === selectedContact?.id);
   const invalidateContact = useCallback((id: string) => {
+    profiles.retain(key => !key.startsWith(id + "/"));
+    images.retain(key => !key.startsWith("cover/" + id + "/"));
     setSelectedContact(current => current?.id === id ? undefined : current);
     setQuickProfile(current => current?.fromContacts && current.user.id === id ? undefined : current);
-  }, []);
+  }, [profiles, images]);
   useEffect(() => {
     if (selectedContact && !directoryContact) invalidateContact(selectedContact.id);
   }, [selectedContact, directoryContact, invalidateContact]);
@@ -227,8 +264,9 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const apply = useCallback((update: SyncUpdate) => {
     if (signingOut.current || update.revision < appliedRevision.current) return;
     appliedRevision.current = update.revision;
-    setDirectory(update.directory);
-    setClockOffset(update.server_now - Date.now());
+    setDirectory(previous => mergeDirectory(previous, update.directory));
+    const offset = update.server_now - Date.now();
+    setClockOffset(previous => Math.abs(previous - offset) < 250 ? previous : offset);
     setRecalled(previous => previous.size === update.recalled.length ? previous : new Set(update.recalled));
     setRevision(update.revision);
     setLatestAiSeq(update.latest_ai_seq);
@@ -243,6 +281,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       await local;
       try {
         apply(await api.sync());
+        setAvatarValidated(currentHour());
         syncRetryDelay.current = 0;
         setConnection("Connected");
         setSyncProblem("");
@@ -442,7 +481,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     setHidden(previous => new Set(previous).add(seq));
     setDraft(conversation, previous => previous.quote?.seq === seq ? { ...previous, quote: undefined, nonce: undefined } : previous);
     changed();
-    setDirectory(await api.directory());
+    await refreshLocal();
   }
 
   async function share(conversation: string, source: ShareSource) {
@@ -503,14 +542,19 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const splitProfile = ipadSplit && (nav === "Contacts" || nav === "Me");
   const desktopContacts = !ios && nav === "Contacts";
   const chatProfile = nav === "Chats";
+  const profileVersion = (id: string) => JSON.stringify([directory.names[id], directory.remarks[id], directory.avatars[id]]);
   const profilePage = profile && <ProfileView key={profile.id} user={profile} session={session}
+    cache={profiles} directoryVersion={profileVersion(profile.id)}
     reconnecting={connection === "Reconnecting"}
     relationVersion={directory.contacts.some(person => person.id === profile.id) ? "contact"
       : directory.pending_contacts.find(request => request.user.id === profile.id)?.request_id ?? "other"}
     refresh={refresh} close={closeProfile} edited={profileEdited}
     message={() => create({ kind: "direct", contact_id: profile.id })} />;
   const viewSelection = privateSelection.current;
-  return <People.Provider value={{ remarks: names, avatars: directory.avatars, online: connected, open: openProfile }}>
+  const imageScope = useMemo(() => windows ? { cache: images, clockOffset, previewAccess,
+    avatarExpires: avatarValidated + 24 * hour } : undefined, [images, clockOffset, previewAccess, avatarValidated]);
+  return <WorkspaceImages.Provider value={imageScope}>
+    <People.Provider value={{ remarks: names, avatars: directory.avatars, online: connected, open: openProfile }}>
   <main onClickCapture={event => {
     const target = (event.target as Element).closest("button")?.getBoundingClientRect();
     profilePoint.current = event.detail ? { x: event.clientX, y: event.clientY }
@@ -558,7 +602,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       <header className={"topbar" + (windows ? " windows-topbar" : "")}>
         <WindowDrag className="app-name">Zibblu</WindowDrag>
         <div className="chat-actions">
-        <button className="icon-button" aria-label="Nearby devices" title="Nearby devices"
+        <button className="icon-button" aria-label="Nearby" title="Nearby"
           onClick={() => setNearby(true)}><Radar size={20} /></button>
 
         <div className={"connection " + (connected ? "connected" : "disconnected")} role="status">
@@ -581,7 +625,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           open={selectChat} newChat={() => setNewChat(true)} addContact={() => setNewContact(true)}
           rooms={privateRooms} activePrivate={privateId}
           openPrivate={selectPrivate} createQr={() => void createPrivateCode()}
-          scan={() => setScanning(true)} />
+          scan={() => setScanning(true)} openNearby={() => setNearby(true)} />
         {privateId ? <PrivateChatView key={privateId} id={privateId} own={session.user}
             isContact={id => directory.contacts.some(person => person.id === id)}
             draft={drafts["private/" + privateId]?.text ?? ""}
@@ -618,7 +662,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           <span><strong>{displayName(session.user, names)}</strong><small className="muted">@{session.user.handle}</small></span><ChevronRight size={20} />
         </button>
         <div className="phone-me-actions">
-          <button className="drawer-action" onClick={() => setNearby(true)}><Radar size={19} /> {t("Nearby devices", "附近设备")} <ChevronRight size={17} /></button>
+          <button className="drawer-action" onClick={() => setNearby(true)}><Radar size={19} /> Nearby <ChevronRight size={17} /></button>
           <button className="drawer-action" onClick={() => navigate("Settings")}><Settings size={19} /> Settings <ChevronRight size={17} /></button>
           <button className="drawer-action" onClick={() => setAbout(true)}><Info size={19} /> About Zibblu <ChevronRight size={17} /></button>
         </div>
@@ -638,6 +682,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
         }} />} />}
       {!chatProfile && profilePage}
       {windows && directoryContact && <ProfileView key={directoryContact.id} active={desktopContacts}
+        cache={profiles} directoryVersion={profileVersion(directoryContact.id)}
         user={directoryContact} session={session} relationVersion="contact" reconnecting={connection === "Reconnecting"}
         close={() => closeContactDetails(directoryContact.id)} refresh={refresh} edited={profileEdited}
         onContactUnavailable={invalidateContact} message={() => create({ kind: "direct", contact_id: directoryContact.id })} />}
@@ -652,6 +697,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     </div>
     {quickProfile && (!quickProfile.fromContacts || directoryContact?.id === quickProfile.user.id)
       && <ProfileView key={quickProfile.user.id} popup point={quickProfile.point} user={quickProfile.user} session={session}
+      cache={profiles} directoryVersion={profileVersion(quickProfile.user.id)}
       message={async () => { await create({ kind: "direct", contact_id: quickProfile.user.id }); setQuickProfile(undefined); }}
       relationVersion={directory.contacts.some(person => person.id === quickProfile.user.id) ? "contact"
         : directory.pending_contacts.find(request => request.user.id === quickProfile.user.id)?.request_id ?? "other"}
@@ -691,7 +737,21 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       </div>
     </Dialog>}
     {invitation && <PrivateInvitationOverlay key={invitation.id} room={invitation} />}
-  </main></People.Provider>;
+  </main></People.Provider></WorkspaceImages.Provider>;
+}
+
+function mergeDirectory(previous: Directory, next: Directory): Directory {
+  const keep = <T,>(old: T, value: T) => JSON.stringify(old) === JSON.stringify(value) ? old : value;
+  const contacts = keep(previous.contacts, next.contacts);
+  const conversations = keep(previous.conversations, next.conversations);
+  const pending_contacts = keep(previous.pending_contacts, next.pending_contacts);
+  const remarks = keep(previous.remarks, next.remarks);
+  const names = keep(previous.names, next.names);
+  const avatars = keep(previous.avatars, next.avatars);
+  return contacts === previous.contacts && conversations === previous.conversations
+    && pending_contacts === previous.pending_contacts && remarks === previous.remarks
+    && names === previous.names && avatars === previous.avatars && next.read_receipts === previous.read_receipts
+    ? previous : { ...next, contacts, conversations, pending_contacts, remarks, names, avatars };
 }
 
 function WindowsActiveRailIcon({ name }: { name: typeof pages[number]["name"] }) {

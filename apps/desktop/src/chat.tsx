@@ -1,7 +1,7 @@
 import { FloatingField } from "./floating-field";
 import {
-  ArrowDown, ArrowLeft, ArrowRight, Clock, Check, CheckCheck, ChevronRight, Copy, Download, FolderOpen, Ghost, LockKeyhole,
-  Image, LoaderCircle, LogOut, MessageCircle, MoreHorizontal, Paperclip, Plus, QrCode, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, UserRoundPlus, UsersRound, X,
+  ArrowDown, ArrowLeft, ArrowRight, Clock, Check, CheckCheck, ChevronRight, CircleAlert, Copy, Download, FolderOpen, Ghost, LockKeyhole,
+  Image, LoaderCircle, LogOut, MessageCircle, MoreHorizontal, Paperclip, Pause, Play, Plus, QrCode, Radar, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, UserRoundPlus, UsersRound, X,
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
@@ -26,11 +26,11 @@ import type { ChatHistoryCache } from "./chat-history-cache";
 
 type ChatPage = "details" | "search";
 
-export function ChatList({ chats, own, selected, open, newChat, addContact, rooms, activePrivate, openPrivate, createQr, scan }: {
+export function ChatList({ chats, own, selected, open, newChat, addContact, rooms, activePrivate, openPrivate, createQr, scan, openNearby }: {
   chats: Conversation[]; own: User; selected?: string; open: (id: string, page?: ChatPage) => void; newChat: () => void;
   addContact: () => void;
   rooms: PrivateSummary[]; activePrivate?: string; openPrivate: (id: string) => void; createQr: () => void;
-  scan: () => void;
+  scan: () => void; openNearby: () => void;
 }) {
   const { remarks, open: showPerson } = useContext(People);
   const menu = useRowMenu();
@@ -49,6 +49,7 @@ export function ChatList({ chats, own, selected, open, newChat, addContact, room
       ...(phone ? [{ label: t("Scan QR code", "扫一扫"), icon: <ScanLine size={18} />, action: scan }] : []),
       { label: t("Add friend", "添加朋友"), icon: <UserRoundPlus size={18} />, action: addContact },
       { label: t("Private chat QR code", "私聊二维码"), icon: <QrCode size={18} />, action: createQr },
+      ...(windows ? [{ label: "Nearby", icon: <Radar size={18} />, action: openNearby }] : []),
     ])}><Plus size={22} /></button>;
   return <aside className="chat-list">
     {ios && <header className="chat-list-title"><h1>{t("Chats", "聊天")}</h1>{add}</header>}
@@ -396,13 +397,35 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
   const viewedBody = useRef<HTMLDivElement>(null);
   const openMenu = useMenu();
   const { save, saving, failure: saveFailure } = useAttachmentSave(changed);
+  const [shownUploads, setShownUploads] = useState<ReadonlySet<string>>(new Set());
   const press = useRef<{ anchor: HTMLElement; x: number; y: number; timer: number; opened: boolean; released?: number }>(undefined);
   const lastSeq = page?.items[0]?.seq;
-  const pending = transfers.filter(job => job.direction === "upload" && job.conversation_id === chat.id && job.status !== "complete");
+  const chatUploads = transfers.filter(job => job.direction === "upload" && job.conversation_id === chat.id);
+  const pending = chatUploads.filter(job => job.status !== "complete");
+  const published = new Set(page?.items.map(message => message.attachment?.id));
+  useEffect(() => {
+    if (!windows) return;
+    setShownUploads(previous => {
+      const seen = new Set(transfers.filter(job => job.direction === "upload" && job.conversation_id === chat.id
+        && !page?.items.some(message => message.attachment?.id === job.attachment.id)
+        && (job.status !== "complete" || previous.has(job.attachment.id))).map(job => job.attachment.id));
+      return seen.size === previous.size && [...seen].every(id => previous.has(id)) ? previous : seen;
+    });
+  }, [chat.id, page?.items, transfers]);
+  const uploads = windows ? chatUploads.filter(job => !published.has(job.attachment.id)
+    && (job.status !== "complete" || shownUploads.has(job.attachment.id))).map(job => {
+    const time = job.created_at ?? chat.activity_at;
+    const message: Message = { seq: 0, conversation_id: chat.id, sender: own, created_at: time,
+      text: null, attachment: job.attachment, recalled: false };
+    return { transfer: job, reply: undefined, time, key: "file/" + job.attachment.id, message };
+  }) : [];
   const downloads = new Map(transfers.filter(job => job.direction === "download").map(job => [job.attachment.id, job]));
   const history = [
-    ...(page?.items.map(message => ({ message, reply: undefined, time: message.created_at, key: String(message.seq) })) ?? []),
-    ...aiChat.replies.map(reply => ({ message: undefined, reply, time: reply.createdAt, key: reply.id })),
+    ...(page?.items.map(message => ({ message, reply: undefined, transfer: undefined, time: message.created_at,
+      key: windows && message.attachment ? "file/" + message.attachment.id
+        : windows && message.nonce ? "send/" + message.sender.id + "/" + message.nonce : String(message.seq) })) ?? []),
+    ...uploads,
+    ...aiChat.replies.map(reply => ({ message: undefined, reply, transfer: undefined, time: reply.createdAt, key: reply.id })),
   ].sort((a, b) => a.time - b.time || (a.message?.seq ?? Infinity) - (b.message?.seq ?? Infinity));
   const bySequence = new Map(page?.items.map(message => [message.seq, message]));
   const lastMessage = history.at(-1)?.message;
@@ -516,12 +539,13 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
         <p>Say hello or share a file.</p>
       </Blank>}
       <div className="messages" role="log" aria-label="Messages">
-        {history.map(({ message, reply, key, time }) => {
+        {history.map(({ message, reply, transfer, key, time }) => {
           const provider = message?.ai_provider ?? reply?.provider;
           const mine = message?.sender.id === own.id;
           const newGroup = startsTimeGroup(time, previousTime);
           previousTime = time;
-          const animated = !!reply || (!!message && newestAtOpen !== undefined && message.seq > newestAtOpen);
+          const animated = !!reply || (!!message && newestAtOpen !== undefined && message.seq > newestAtOpen
+            && !(windows && mine));
           const now = Date.now() + clockOffset;
           const canRecall = !!message && message.seq > 0 && mine && !provider && !message.recalled && now - time <= 5 * 60_000;
           const avatar = provider ? <ProviderLogo provider={provider} /> : <button className="person-link message-avatar"
@@ -532,10 +556,27 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
           const file = message?.attachment;
           const download = file ? downloads.get(file.id) : undefined;
           const expiredFile = !!message && (fileExpired(message, now) || download?.status === "expired");
+          const deliveryEnded = message === lastMessage && mine && !message?.recalled && !message?.pending && !file
+            && message?.expires_at !== undefined && message.expires_at <= now && !receiptLabel;
+          const receiptStatus = message && message.seq === sent ? receiptLabel : undefined;
+          async function changeTransfer(action: "pause" | "resume" | "discard") {
+            if (!transfer) return;
+            try { await api.transferAction(action, transfer); changed(); }
+            catch (error) { setRecallError(errorMessage(error)); }
+          }
           function actions(selection?: string) {
             const copy = selection || text;
             return [
-              ...(file && !expiredFile && (!download || download.status === "complete") ? [{ label: ios
+              ...(transfer ? [
+                ...(transfer.status === "queued" || transfer.status === "running" ? [
+                  { label: t("Pause", "暂停"), icon: <Pause size={15} />, action: () => void changeTransfer("pause") },
+                ] : [
+                  ...(transfer.status === "expired" ? [] : [{ label: transfer.status === "failed" ? actionLabels.retry : t("Resume", "继续"),
+                    icon: <Play size={15} />, action: () => void changeTransfer("resume") }]),
+                  { label: t("Discard transfer", "丢弃传输"), icon: <Trash2 size={15} />, action: () => void changeTransfer("discard") },
+                ]),
+              ] : []),
+              ...(file && !transfer && !expiredFile && (!download || download.status === "complete") ? [{ label: ios
                 ? download?.status === "complete" ? t("Share", "分享") : t("Download", "下载") : actionLabels.save, icon: <Download size={15} />,
                 disabled: saving, action: () => void save(file.id) }] : []),
               ...(copy ? [{ label: "Copy", icon: <Copy size={15} />, action: () => {
@@ -605,23 +646,29 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                 {chat.title && !provider && !mine && <span className="message-author">{displayName(message!.sender, remarks)}</span>}
                 {message?.reply_to !== undefined && !message.recalled && <QuotedMessage conversation={chat.id} seq={message.reply_to}
                   known={bySequence.get(message.reply_to)} hidden={hidden.has(message.reply_to) || recalled.has(message.reply_to)} />}
-                {message?.recalled ? <div className="bubble recalled-message">Message recalled</div>
-                  : message && file ? <ChatAttachment key={file.id} message={message} transfer={download} expired={expiredFile}
-                    onChanged={changed} open={() => openMedia(message)} />
+                <div className="message-content">
+                  {windows && mine && <MessageDelivery pending={message?.pending} upload={transfer}
+                    retry={message?.pending?.blocked && message.nonce ? () => void retry(message.nonce!)
+                      : transfer && (transfer.status === "failed" || transfer.status === "paused")
+                        ? () => void changeTransfer("resume") : undefined}
+                    receipt={receiptStatus} ended={deliveryEnded} />}
+                  {message?.recalled ? <div className="bubble recalled-message">Message recalled</div>
+                  : message && file ? <ChatAttachment key={file.id} message={message} transfer={download} upload={transfer}
+                    expired={expiredFile} onChanged={changed} open={() => openMedia(message)} />
                     : message?.expired ? <div className="bubble recalled-message">
                       {message.expired === "file" ? "This file expired. Ask the sender to share it again." : "This message expired before delivery."}
                     </div>
                     : <div className="bubble">{message?.text ?? reply?.text}</div>}
+                </div>
                 <div className="message-meta">
-                  {message?.pending && <>
+                  {!windows && message?.pending && <>
                     <small role="status">{message.pending.error ?? <span className="status-icon" title={t("Queued", "排队中")} aria-label={t("Queued", "排队中")} role="img" tabIndex={0}><Clock size={14} aria-hidden /></span>}</small>
                     {message.pending.blocked && message.nonce && <button className="text-button" type="button"
                       onClick={() => void retry(message.nonce!)}><RotateCcw size={13} /> Retry</button>}
                   </>}
-                  {message === lastMessage && mine && !message?.recalled && !message?.pending && !file
-                    && message?.expires_at !== undefined && message.expires_at <= now && !receiptLabel
+                  {!windows && deliveryEnded
                     && <small>Online delivery window ended</small>}
-                  {message && message.seq === sent && receiptLabel && <span className="read-mark" role="img" aria-label={receiptLabel} title={receiptLabel}>
+                  {!windows && receiptStatus && <span className="read-mark" role="img" aria-label={receiptLabel} title={receiptLabel}>
                     {receiptLabel === "Read" ? <CheckCheck size={15} aria-hidden /> : <Check size={15} aria-hidden />}
                   </span>}
                   {reply && <>
@@ -642,7 +689,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
       if (viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
     }}><ArrowDown size={15} /> Latest messages</button>}
   </div>
-    {pending.length > 0 && <section className="composer-transfers" aria-label="Pending uploads">
+    {!windows && pending.length > 0 && <section className="composer-transfers" aria-label="Pending uploads">
       <TransferList transfers={pending} onChanged={changed} inChat />
     </section>}
     <Composer conversation={chat.id} refresh={refresh} share={share} pasteFiles={pasteFiles} changed={changed} aiChat={aiChat}
@@ -655,6 +702,33 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
         setSharingReply(undefined);
       }} />}
   </>;
+}
+
+function MessageDelivery({ pending, upload, receipt, ended, retry }: {
+  pending?: Message["pending"]; upload?: Transfer; receipt?: string; ended?: boolean; retry?: () => void;
+}) {
+  const error = pending?.error || upload?.error;
+  const busy = !!pending && !pending.blocked && !error || upload?.status === "queued"
+    || upload?.status === "running" || upload?.status === "complete";
+  const failed = !!error || pending?.blocked || upload?.status === "failed" || upload?.status === "expired";
+  const status = failed ? error || t("Could not send", "发送失败")
+    : upload?.status === "paused" ? t("Paused", "已暂停")
+      : upload?.status === "complete" ? t("Updating chat", "正在更新聊天")
+      : upload?.status === "running" ? t("Uploading", "上传中") + " "
+        + Math.floor(upload.received * 100 / Math.max(1, upload.attachment.size)) + "%"
+        : busy ? t("Queued", "排队中") : ended ? t("Online delivery window ended", "在线投递已到期") : receipt;
+  return <div className="message-delivery">
+    <span className="sr-only" role="status">{status}</span>
+    {retry ? <button type="button" className={"message-delivery-action" + (failed ? " danger" : "")}
+      title={status} aria-label={(failed ? actionLabels.retry : t("Resume", "继续")) + ": " + status} onClick={retry}>
+      {failed ? <CircleAlert size={16} aria-hidden /> : <Play size={16} aria-hidden />}
+    </button> : status && <span className={failed ? "danger" : receipt ? "read-mark" : undefined}
+      title={status} tabIndex={failed || ended ? 0 : undefined} aria-label={status} role="img">
+      {failed || ended ? <CircleAlert size={16} aria-hidden />
+        : busy ? <span className="message-delivery-ring preview-spinner" aria-hidden />
+          : receipt === "Read" ? <CheckCheck size={16} aria-hidden /> : <Check size={16} aria-hidden />}
+    </span>}
+  </div>;
 }
 
 function QuotedMessage({ conversation, seq, known, hidden }: { conversation: string; seq: number; known?: Message; hidden: boolean }) {

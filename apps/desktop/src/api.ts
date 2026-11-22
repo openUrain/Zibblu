@@ -24,6 +24,7 @@ export type Profile = {
 };
 export type CachedProfile = { profile: Profile; expires_at: number };
 export type Attachment = { id: string; name: string; kind: "file" | "folder"; size: number; sha256: string };
+export type ImageSize = [number, number];
 export type Message = {
   seq: number; conversation_id: string; sender: User; created_at: number;
   text: string | null; attachment: Attachment | null; ai_provider?: AiProvider; recalled: boolean;
@@ -33,6 +34,7 @@ export type Message = {
   expired?: "text" | "file";
   pending?: { error: string | null; blocked: boolean };
   local_file?: boolean;
+  preview_size?: ImageSize;
 };
 export type Draft = { text: string; quote?: Message; image?: File; nonce?: string };
 export type Page = { items: Message[]; has_more: boolean };
@@ -99,6 +101,8 @@ export const api = {
   pasteText: () => invoke<string | null>("paste_text"),
   scanIosQr: () => invoke<string | null>("ios_scan_qr"),
   profileImageUrl: (id: string, version: string) => convertFileSrc(`profile_${id}_${version}`, "zibblu-media"),
+  previewImageBytes: (id: string, profileVersion?: string) => invoke<ArrayBuffer>("preview_image_bytes", { id, profileVersion }),
+  uploadImageSize: (id: string) => invoke<ImageSize>("upload_image_size", { id }),
   readUpdate: (conversation: string, through?: number, sent?: number, viewed?: number) =>
     invoke<MessageReceipt | null>("read_update", { conversation, update: { through, sent: sent === undefined ? [] : [sent], viewed } }),
   setReadReceipts: (enabled: boolean) => invoke<void>("set_read_receipts", { enabled }),

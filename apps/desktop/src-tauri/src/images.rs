@@ -253,6 +253,26 @@ pub(crate) fn preview_image(bytes: &[u8]) -> Result<(&'static str, Vec<u8>)> {
     Ok((format.to_mime_type(), thumbnail))
 }
 
+pub(crate) fn preview_dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
+    let (_, image) = decode_image(bytes, true)?;
+    Ok((image.width(), image.height()))
+}
+
+#[cfg(test)]
+#[test]
+fn preview_dimensions_follow_exif_rotation() -> Result<()> {
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+        .encode(&[0; 30 * 20 * 3], 30, 20, image::ExtendedColorType::Rgb8)?;
+    let exif = b"\xff\xe1\0\x22Exif\0\0MM\0*\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\x06\0\0\0\0\0\0";
+    jpeg.splice(2..2, exif.iter().copied());
+    assert_eq!(preview_dimensions(&jpeg)?, (20, 30));
+    let (_, thumbnail) = preview_image(&jpeg)?;
+    let decoded = image::load_from_memory(&thumbnail)?;
+    assert_eq!((decoded.width(), decoded.height()), (213, 320));
+    Ok(())
+}
+
 #[cfg(windows)]
 pub(crate) fn clipboard_formats(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     let (format, image) = decode_image(bytes, true)?;

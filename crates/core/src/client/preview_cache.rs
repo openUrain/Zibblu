@@ -3,8 +3,60 @@ use sqlx::SqliteConnection;
 
 const MAX_PREVIEW_BYTES: i64 = 64 * 1024 * 1024;
 const MAX_PREVIEW_ENTRIES: i64 = 256;
+pub const IMAGE_THUMBNAIL: i64 = -2;
 
 impl Client {
+    pub async fn cached_thumbnail_sizes(&self, messages: &[Message]) -> Result<HashMap<i64, (u32, u32)>> {
+        let keys: HashMap<_, _> = messages.iter().filter_map(|message| {
+            let file = message.attachment.as_ref()?;
+            file.preview_mime()?.starts_with("image/").then_some((message.seq, &file.sha256))
+        }).collect();
+        if keys.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let headers: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+            "SELECT p.message_seq, substr(p.bytes, 1, 24) FROM json_each(?1) k
+             JOIN media_previews p ON p.message_seq = CAST(k.key AS INTEGER) AND p.sha256 = k.value
+             JOIN preview_eligible e ON e.seq = p.message_seq AND e.sha256 = p.sha256
+             WHERE p.variant = ?2 AND (e.expires_at IS NULL OR e.expires_at > ?3)",
+        )
+        .bind(serde_json::to_string(&keys)?)
+        .bind(IMAGE_THUMBNAIL)
+        .bind(self.server_now())
+        .fetch_all(&self.db)
+        .await?;
+        Ok(headers.into_iter().filter_map(|(seq, header)| {
+            if !header.starts_with(b"\x89PNG\r\n\x1a\n") || header.get(12..16)? != b"IHDR" {
+                return None;
+            }
+            let width = u32::from_be_bytes(header.get(16..20)?.try_into().ok()?);
+            let height = u32::from_be_bytes(header.get(20..24)?.try_into().ok()?);
+            (width != 0 && height != 0).then_some((seq, (width, height)))
+        }).collect())
+    }
+
+    pub async fn preview_attachment(&self, id: Uuid) -> Result<Message> {
+        self.ensure_open()?;
+        let payload: String = sqlx::query_scalar(
+            "SELECT t.payload FROM timeline t JOIN directory d ON d.id = 1
+             JOIN json_each(d.payload, '$.conversations') c
+               ON json_extract(c.value, '$.id') = t.conversation_id
+              AND (json_extract(c.value, '$.joined_after') IS NULL
+                   OR t.seq > json_extract(c.value, '$.joined_after'))
+             WHERE t.attachment_id = ?1 AND t.seq NOT IN (SELECT seq FROM hidden_messages)
+               AND json_extract(t.payload, '$.recalled') IS NOT 1
+               AND (json_extract(t.payload, '$.local_file') = 1 OR
+                    (json_extract(t.payload, '$.expired') IS NULL
+                     AND coalesce(json_extract(t.payload, '$.expires_at'), ?2 + 1) > ?2))",
+        )
+        .bind(id.to_string())
+        .bind(self.server_now())
+        .fetch_optional(&self.db)
+        .await?
+        .context("This attachment is unavailable")?;
+        Ok(serde_json::from_str(&payload)?)
+    }
+
     pub async fn cached_preview(
         &self,
         seq: i64,
@@ -118,15 +170,18 @@ mod tests {
             .bind(directory(Some(0)))
             .execute(&client.db)
             .await?;
+        let attachment_id = Uuid::new_v4();
+        let message: Message = serde_json::from_value(serde_json::json!({
+            "seq": 1, "conversation_id": conversation, "sender": client.user, "created_at": 0, "text": null,
+            "attachment": {"id": attachment_id, "name": "fixture.png", "kind": "file", "size": 24, "sha256": "fixture"},
+            "expires_at": i64::MAX,
+        }))?;
         sqlx::query(
             "INSERT INTO inbox (seq, conversation_id, attachment_id, payload) VALUES (1, ?, ?, ?)",
         )
         .bind(conversation.to_string())
-        .bind(Uuid::new_v4().to_string())
-        .bind(
-            serde_json::json!({"attachment":{"sha256":"fixture"}, "expires_at":i64::MAX})
-                .to_string(),
-        )
+        .bind(attachment_id.to_string())
+        .bind(serde_json::to_string(&message)?)
         .execute(&client.db)
         .await?;
         let bytes = vec![1; MAX_PASTED_IMAGE_BYTES];
@@ -139,10 +194,13 @@ mod tests {
         client
             .remember_preview(1, "fixture", 5, "image/png", &[2, 3])
             .await?;
+        let png_header = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x78\x00\x00\x00\x50";
+        client.remember_preview(1, "fixture", IMAGE_THUMBNAIL, "image/png", png_header).await?;
         client.close().await;
         drop(client);
 
         let client = Client::open(root.path(), service()?, session(id), true).await?;
+        assert_eq!(client.cached_thumbnail_sizes(std::slice::from_ref(&message)).await?.get(&1), Some(&(120, 80)));
         assert_eq!(
             client
                 .cached_preview(1, "fixture", 5)
@@ -171,6 +229,7 @@ mod tests {
             .execute(&client.db)
             .await?;
         assert!(client.cached_preview(1, "fixture", 5).await?.is_none());
+        assert!(client.cached_thumbnail_sizes(std::slice::from_ref(&message)).await?.is_empty());
         sqlx::query("UPDATE inbox SET payload = json_remove(payload, '$.expires_at')")
             .execute(&client.db)
             .await?;
@@ -181,6 +240,8 @@ mod tests {
                 .execute(&client.db)
                 .await?;
             assert!(client.cached_preview(1, "fixture", 5).await?.is_none());
+            assert!(client.cached_thumbnail_sizes(std::slice::from_ref(&message)).await?.is_empty());
+            assert_eq!(client.preview_attachment(attachment_id).await.is_ok(), cutoff.is_none());
         }
         let mut tx = client.db.begin().await?;
         client.prune_media_previews(&mut tx).await?;

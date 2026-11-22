@@ -236,7 +236,7 @@ impl Client {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        if changed {
+        if changed || directory_changed {
             self.history_changed();
         }
         for id in recalled_files {

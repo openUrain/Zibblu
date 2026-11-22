@@ -1,22 +1,44 @@
 import { FloatingField } from "./floating-field";
 import { ChevronLeft, ChevronRight, Image, LoaderCircle, Play, RotateCcw, Search, Video } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { api, errorMessage, fileExpired } from "./api";
-import type { Attachment, Message, Transfer } from "./api";
+import type { Attachment, ImageSize, Message, Transfer } from "./api";
 import { canPreview, mediaKind, readAttachmentPage } from "./attachment-media";
 import { Blank, Dialog, usePage } from "./common";
-import { AttachmentDownload, SharedFile, TransferList } from "./files";
+import { AttachmentDownload, ChatUploadProgress, SharedFile, TransferList } from "./files";
+import { thumbnailKey, useWorkspaceImage, WorkspaceImages } from "./workspace-image";
 
 type ChatMediaScope = {
   conversation: string; revision: number; recalled: ReadonlySet<number>; hidden: ReadonlySet<number>;
 };
 type PreviewState = "loading" | "ready" | "failed";
 
-function MediaTile({ file, open }: { file: Attachment; open: () => void }) {
+function thumbnailStyle(size?: ImageSize) {
+  if (!size || !size[0] || !size[1]) return;
+  const [width, height] = size;
+  return { width: Math.min(1, width / height) * 320, aspectRatio: `${width} / ${height}` };
+}
+
+function MediaTile({ message, open, fitImage, size: hint }: {
+  message: Message; open: () => void; fitImage?: boolean; size?: ImageSize;
+}) {
+  const file = message.attachment!;
   const kind = mediaKind(file);
+  const resources = useContext(WorkspaceImages);
   const [state, setState] = useState<PreviewState>(canPreview(file) ? "loading" : "failed");
   const [visible, setVisible] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const [onlineSize, setOnlineSize] = useState<ImageSize>();
+  const access = resources?.previewAccess(message.conversation_id, message.seq);
+  const allowed = !resources || !!access;
+  const cachedImage = kind === "image" && access === "cached" && canPreview(file);
+  const key = cachedImage && allowed ? thumbnailKey(message, file) : undefined;
+  const expires = !message.local_file && message.expires_at != null
+    ? message.expires_at - (resources?.clockOffset ?? 0) : Infinity;
+  const { url, size, failed } = useWorkspaceImage(key, file.id, undefined, expires, attempt, visible);
+  const status = !allowed ? "failed" : cachedImage ? (url ? "ready" : failed ? "failed" : "loading") : state;
+  // WebView can reuse a decoded image at the same URL even when the response says no-store.
+  const onlineQuery = useMemo(() => access === "online" ? `view=${crypto.randomUUID()}` : "", [access]);
   const element = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const target = element.current;
@@ -29,41 +51,60 @@ function MediaTile({ file, open }: { file: Attachment; open: () => void }) {
     });
     observer.observe(target);
     return () => observer.disconnect();
-  }, [file]);
+  }, [file.id]);
 
-  return <button ref={element} type="button" className="media-tile" data-ready={state === "ready" ? "" : undefined}
+  return <button ref={element} type="button" className="media-tile" data-ready={status === "ready" ? "" : undefined}
+    data-cached-image={cachedImage ? "" : undefined}
+    data-fit-image={fitImage ? "" : undefined} style={fitImage ? thumbnailStyle(hint ?? size ?? onlineSize) : undefined}
     onClick={() => {
-      if (state === "failed" && canPreview(file)) {
+      if (status === "failed" && canPreview(file)) {
         setState("loading");
         setAttempt(value => value + 1);
       }
       open();
     }}
     aria-label={`Open ${kind === "video" ? "video" : "image"} ${file.name}`}>
-    {visible && state !== "failed" && (kind === "image"
-      ? <img src={api.mediaUrl(file.id, "thumbnail") + (attempt ? "&retry=" + attempt : "")} alt="" onLoad={() => setState("ready")} onError={() => setState("failed")} />
-      : <video src={api.mediaUrl(file.id)} muted playsInline preload="metadata"
+    {cachedImage ? url && <img key="cached" src={url} alt="" /> : visible && status !== "failed" && (kind === "image"
+      ? <img key="online" src={api.mediaUrl(file.id, "thumbnail") + (onlineQuery ? "&" + onlineQuery : "")
+        + (attempt ? "&retry=" + attempt : "")} alt="" onLoad={event => {
+        if (fitImage) setOnlineSize([event.currentTarget.naturalWidth, event.currentTarget.naturalHeight]);
+        setState("ready");
+      }} onError={() => setState("failed")} />
+      : <video src={api.mediaUrl(file.id) + (onlineQuery ? "?" + onlineQuery : "")} muted playsInline preload="metadata"
         onLoadedMetadata={() => setState("ready")} onError={() => setState("failed")} aria-hidden="true" />)}
-    {state === "failed" ? <span className="media-tile-fallback">
+    {status === "failed" ? <span className="media-tile-fallback">
       {kind === "video" ? <Video size={22} /> : <Image size={22} />}
       <span>{file.name}</span><small>{canPreview(file) ? "Preview unavailable" : "Download to open"}</small>
     </span> : <>
-      {state === "loading" && <span className="media-tile-status" role="status" aria-label="Loading preview"><LoaderCircle className="preview-spinner" size={16} aria-hidden /></span>}
-      {kind === "video" && state === "ready" && <span className="media-play" aria-hidden="true"><Play size={20} fill="currentColor" /></span>}
+      {status === "loading" && <span className="media-tile-status" role="status" aria-label="Loading preview"><LoaderCircle className="preview-spinner" size={16} aria-hidden /></span>}
+      {kind === "video" && status === "ready" && <span className="media-play" aria-hidden="true"><Play size={20} fill="currentColor" /></span>}
     </>}
   </button>;
 }
 
-export function ChatAttachment({ message, transfer, onChanged, open, expired }: {
-  message: Message; transfer?: Transfer; onChanged: () => void; open: () => void; expired: boolean;
+export function ChatAttachment({ message, transfer, onChanged, open, expired, upload }: {
+  message: Message; transfer?: Transfer; onChanged: () => void; open: () => void; expired: boolean; upload?: Transfer;
 }) {
   const file = message.attachment!;
+  const fitImage = useContext(WorkspaceImages) !== undefined && mediaKind(file) === "image";
+  const [uploadSize, setUploadSize] = useState<ImageSize>();
+  useEffect(() => {
+    if (!upload || !fitImage || !canPreview(file)) return;
+    let current = true;
+    void api.uploadImageSize(file.id).then(size => { if (current) setUploadSize(size); }).catch(() => {});
+    return () => { current = false; };
+  }, [!!upload, fitImage, file.id]);
   if (expired || !mediaKind(file) || !canPreview(file)) {
     const previewStatus = mediaKind(file) ? "Download to open" : undefined;
-    return <SharedFile {...{ message, transfer, onChanged, previewStatus, expired }} />;
+    return <SharedFile {...{ message, transfer, onChanged, previewStatus, expired, upload }} />;
   }
+  const size = uploadSize ?? message.preview_size;
   return <div className="chat-media">
-    <MediaTile key={file.id} file={file} open={open} />
+    {upload ? <div className="media-tile" data-fit-image={fitImage ? "" : undefined}
+      style={fitImage ? thumbnailStyle(size) : undefined}><span className="media-tile-fallback">
+      {mediaKind(file) === "video" ? <Video size={22} /> : <Image size={22} />}
+      <span>{file.name}</span></span><ChatUploadProgress upload={upload} /></div>
+      : <MediaTile key={file.id} message={message} open={open} fitImage={fitImage} size={size} />}
     {transfer && <AttachmentDownload file={file} transfer={transfer} onChanged={onChanged} hideSave />}
   </div>;
 }
@@ -99,7 +140,7 @@ function MediaResults({ conversation, revision, recalled, hidden, name, open }: 
     {page && page.items.length > 0 && <div className="media-grid">{page.items.map(message =>
       fileExpired(message)
         ? <span className="media-tile-fallback" key={message.seq}>{message.attachment!.name}<small>File expired</small></span>
-        : <MediaTile key={message.seq} file={message.attachment!} open={() => open(message)} />)}</div>}
+        : <MediaTile key={message.seq} message={message} open={() => open(message)} />)}</div>}
     {page?.has_more && <button className="button subtle more" disabled={loading} onClick={() => void older()}>
       {loading ? "Loading…" : "Load older media"}
     </button>}
