@@ -1,6 +1,6 @@
 # Zibblu Design System · 当前产品约束与 Always UI 工作规范
 
-> **生效：2026-11-20。** 本文只保留 Zibblu 已确认的品牌、交互、功能与安全约束；**UI 设计方法、数值选择和审查规范以 [Always UI](https://github.com/handFOOLed/always-ui) 的现行 `SKILL.md` 及其必读 references 为准**。
+> **生效：2026-11-20。** 本文只保留 Zibblu 已确认的品牌、交互、功能与安全约束；**UI 设计方法、数值选择和审查规范以仓库内 [Always UI](../.agents/skills/always-ui/SKILL.md) 的固定版本及必读 references 为准**。
 >
 > 2026-11-14 的早期 30 项风格问卷、[Issue #54](https://github.com/openUrain/Zibblu/issues/54) 的旧版界面审计与截图属于**历史决策或测试证据**，不能直接覆盖 [Issue #59](https://github.com/openUrain/Zibblu/issues/59) 及后续 Owner 已批准的修改。旧选择中的 iMessage/Apple 风格措辞不再作为新增 UI 的默认设计指令。
 >
@@ -17,7 +17,7 @@
 
 ## 2. Always UI · 设计与验收流程
 
-Always UI 不内置在本仓库。执行者从已安装的 Skill 读取**实际版本**，安装方式见 [Skills](SKILLS.md)；不得只凭 Prompt 或记忆声称已读取引用。
+Always UI 已内置于 [`.agents/skills/always-ui/`](../.agents/skills/always-ui/SKILL.md)；各电脑和 Agent 优先使用仓库版本，无需依赖个人全局安装。固定上游提交与许可证见 [Skills](SKILLS.md)；不得只凭 Prompt 或记忆声称已读取引用。
 
 | 模式 | 用途 | 允许变更 |
 | --- | --- | --- |
@@ -26,7 +26,7 @@ Always UI 不内置在本仓库。执行者从已安装的 Skill 读取**实际�
 | `$always-ui improve` | 既有界面的局部优化 | 保留导航、布局基线与视觉识别，只作最小高价值修改 |
 | `$always-ui check` | 独立审查 | **只报告**有证据的问题与最小修复建议，不得自行改代码 |
 
-- **Reference-first 强制执行**：设计/审查前先读当前 Skill 的规定文档。当前版本中，`creative`/`design` 必读 `design-intensity.md`、`design-archetypes.md`、`value-presets.md`、`visual-discipline.md`；`improve` 必读 `design-intensity.md`、`check-catalog.md`、`value-presets.md`、`visual-discipline.md`；`check` 必读 `check-catalog.md`、`visual-discipline.md`、`value-presets.md`。若 Skill 更新，以实际 `SKILL.md` 为准。
+- **Reference-first 强制执行**：设计/审查前先读当前 Skill 的规定文档。当前版本中，`creative`/`design` 必读 `design-intensity.md`、`design-archetypes.md`、`value-presets.md`、`visual-discipline.md`；`improve` 必读 `design-intensity.md`、`check-catalog.md`、`value-presets.md`、`visual-discipline.md`；`check` 必读 `check-catalog.md`、`visual-discipline.md`、`value-presets.md`。以仓库内固定 `SKILL.md` 为准；上游更新需另行审查并同步。
 - 处理焦点、展开/折叠、文件名或宿主窗口拖拽时，还须按 Skill 要求阅读 `implementation-notes.md`。未能读取时报告缺口，不伪称完整使用 Skill。
 - **数值选择顺序**：先检查 Zibblu 当前 Token 与平台度量 → 缺失时从 Always UI `value-presets.md` 分类表挑选固定值 → 仅因用户指定、内容尺寸、原生平台或无障碍等必要情况使用说明理由的例外。不得随意创造填充、字号、圆角、阴影、动效或断点值；**不得用预设反过来批判一致的既有 Token**。
 - 应用 Always UI 的四项视觉纪律：颜色按品牌/语义分工、局部按钮层级、装饰须有理由、卡片/容器须有独立职责。这是按证据判断的原则，**不是固定色数或全局禁用渐变、卡片、玻璃**。
