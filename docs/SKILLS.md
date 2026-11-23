@@ -6,8 +6,8 @@
 
 | 来源 | Skill | 用途 |
 | --- | --- | --- |
-| [lennney/stop-that-shit](https://github.com/lennney/stop-that-shit) | `stop-that-shit` | 限定任务范围、分支与变更 |
-| [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) | `ponytail` | 最小完整工程变更 |
+| [lennney/stop-that-shit](https://github.com/lennney/stop-that-shit) | `stop-that-shit` | 防止范围蔓延、无效加固及过度验证；按需声明 change/review 模式 |
+| [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) | `ponytail` | 常规代码任务的最小完整实现、已有能力复用与简明汇报 |
 | [shadcn/improve](https://github.com/shadcn/improve) | `improve` | 仅按需使用的**代码库**审计/改进计划，不是 `$always-ui improve` |
 | [mattpocock/skills](https://github.com/mattpocock/skills) | `codebase-design` | 必要时协助模块边界与代码架构 |
 | [mattpocock/skills](https://github.com/mattpocock/skills) | `diagnosing-bugs` | 困难缺陷排查 |
@@ -33,10 +33,12 @@
 
 ## 工程工作流与维护
 
-1. 按 [AGENTS.md](../AGENTS.md) 与当前 Issue 从最新 `main` 开分支；常规实现使用 `$stop-that-shit change -- ...`，必要时配合 `ponytail`。只有明确授权时才启动代码库 `improve`、其他评审 Skills 或多 Agent 流程。
-2. 完成整个授权模块后运行最小必要验收，报告实际结果；完整性校验、安全权限等必要工作不能被“最小改动”原则删除。
-3. 不自动执行陌生第三方脚本。Skill 文件存在 ≠ 运行时强制保护；不得虚构 Hook/Guard、真机/UI 或 CI 验证结果。
-4. 更改 vendored Skill 时核对 frontmatter、全部 references、许可证及固定上游 SHA；禁止自动追踪线上最新版本。
+1. **先读 [AGENTS.md](../AGENTS.md)** 与当前 Issue，再按任务选择 Skill；从最新 `main` 开分支。常规编码参考仓库 `ponytail` 默认 `full` 的最小完整原则；小修可用 `lite`，`ultra` 只在有明确需要时使用。
+2. 易扩范围、重复防御、反复验证或须区分只读审查/实际修改时，使用仓库 `stop-that-shit`。Codex 提示词第一条非空行写 `$stop-that-shit change -- <任务>`（审查改用 `review`），随后第一步仍需读 `AGENTS.md`。宿主未识别指令时直接读取仓库 Skill 并遵循建议，不得假称 Guard 已生效。
+3. UI 再选仓库内 `always-ui creative/design/improve`；独立 `check` 只审查。不要为了形式机械叠加所有 Skill；只有明确授权时才调用代码库 `improve`、额外评审 Skill 或多 Agent。
+4. 完成整个授权模块后运行最小必要验收，报告实际结果；完整性校验、安全权限等必要工作不能被“最小改动”原则删除。
+5. 不自动执行陌生第三方脚本。Skill 文件存在 ≠ 运行时强制保护；不得虚构 Hook/Guard、真机/UI 或 CI 验证结果。
+6. 更改 vendored Skill 时核对 frontmatter、全部 references、许可证及固定上游 SHA；禁止自动追踪线上最新版本。
 
 Always UI 许可证：[`always-ui/LICENSE`](../.agents/skills/always-ui/LICENSE)。
 
