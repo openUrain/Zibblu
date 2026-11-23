@@ -95,7 +95,9 @@ Issue 明确要求“提交 PR”（如 M1 Issue #1）时，视为该任务已�
 - `.github/workflows/ci.yml`：PR 和 `main` push 的 CI 检查。
 - `.github/PULL_REQUEST_TEMPLATE.md`：人类与 Agent 共用的 PR 描述模板。
 
-- 实现任务优先使用 `$stop-that-shit change -- ...`，需要时配合 `ponytail`，以最少代码完成**全部**责任。
+- **Ponytail（常规编码默认适用）**：先读 `.agents/skills/ponytail/SKILL.md`，默认 `full`，优先复用已有实现与平台能力，做**最小但完整**的修复；`lite` 适合极小变更，`ultra` 仅在明确要求更严格精简/质疑需求必要性时使用。不能为了更小 diff 删除真实测试、权限校验、数据保护或必要调用方修改。
+- **Stop That Shit（按需强化任务边界）**：先读 `.agents/skills/stop-that-shit/SKILL.md`；在任务易扩范围、反复加固、无谓验证循环或须区分 `change` / `review` 时启用。Codex 支持时将 `$stop-that-shit change -- <任务>` 放在提示词**第一条非空行**，只读审查用 `review`。没有 Guard/Hook 时仅作为指导，不得声称机器已经强制阻止操作。
+- **组合策略**：一般代码任务采用 Ponytail 的最小完整原则；确有范围失控风险时叠加 Stop That Shit；涉及 UI 再按设计强度使用仓库内 Always UI。**不机械叠加所有 Skill**，不得覆盖 Issue 的完整验收和安全边界。
 - `improve` 仅用于明确要求的代码库审计与改进计划；Matt Pocock 的 `code-review`、`diagnosing-bugs`、`codebase-design` 按需使用，不自动触发多 Agent 流程。
 - **仓库安装 Skill 不等于已安装 Guard / Hooks**。不得宣称有运行时强制保护，除非在执行环境验证其生效。
 - Skills 是执行辅助，不覆盖本文件、用户授权及 [SECURITY](docs/SECURITY.md)。
@@ -135,14 +137,16 @@ Codex 官方 **Code Review** 需在 Codex 设置中为本仓库开启 `Code revi
 4. **人类 Owner 负责最终合并**。任何自动审查、返修结果都不自动授权合并。
 
 ### 简短任务提示词（下达给 Codex 等 Agent）
-后续提示词一律使用**简短 Markdown**：写清 Issue、目标和特殊约束，禁止复述冗长规范；**第一条必须先读 `AGENTS.md`**，随后按其中要求读取 Issue、权威文档及仓库内 Skill。示例：
+后续提示词一律使用**简短 Markdown**：写清 Issue、目标和特殊约束，禁止复述冗长规范；**执行时第一步必须读取 `AGENTS.md`**，再读取 Issue、权威文档和所需仓库 Skill。若启用 Stop That Shit 的 Codex 指令，为使其生效，允许该指令位于提示词第一条非空行；**必须先阅读 `AGENTS.md` 才能开始代码变更**。示例：
 
 ```markdown
-先阅读 `AGENTS.md`，再处理 Issue #123。
+$stop-that-shit change -- 完成 Zibblu Issue #123。
 
-- 按 Issue 实施，提交中文 PR。
-- UI 使用仓库内 `always-ui`，先读对应 references。
-- 必要验证和 Codex 审查无问题即可结束本轮，不等 CI，不自动合并。
+先阅读 `AGENTS.md`，再阅读 Issue #123 和所需仓库 Skills。
+
+- 使用 Ponytail 的最小完整原则；UI 选用仓库内 `$always-ui improve`。
+- 按 Issue 实施、完成必要验证并提交中文 PR。
+- Codex 审查无问题即可结束本轮，不等 CI，不自动合并。
 ```
 
 ### 合并前的人工核对
