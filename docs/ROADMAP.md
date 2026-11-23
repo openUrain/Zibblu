@@ -49,6 +49,28 @@ Scope:
 
 **Minimum test at completion:** allowed scoped request; out-of-scope data not submitted; write attempt denied; cloud AI blocked in private mode.
 
+## Long-term product and commercialization (direction, not committed milestones)
+
+**Owner decision (2026-11-23):** Zibblu adopts **one product, free personal use, paid advanced organizational capabilities** as its long-term direction. Do not split the client into separate consumer and enterprise messengers. The same core chat, file and protocol experience should work across personal, team and enterprise deployments.
+
+**Positioning:** a simple, local-first messenger with reliable file collaboration, opt-in private LAN sessions and permission-bounded AI. Small technical/project teams are an initial market to validate, not a restriction on free individual use. Avoid becoming a general office suite or copying attendance, approvals, CRM and other unrelated modules.
+
+| Layer | Intended value | Commercial direction |
+| --- | --- | --- |
+| **Community / personal** | Ordinary direct/group chat, file sharing and resume, local history, private LAN chat and personally configured read-only AI | Core product remains free; community self-hosting remains an option |
+| **Team Cloud** | Official hosted service, reduced deployment/maintenance burden and organization-oriented collaboration features | Potential subscription; hosting storage/traffic can have reasonable published quotas, without crippling core chat |
+| **Enterprise** | Organization administration, role/policy controls, SSO, managed model configuration, backup/retention/audit capabilities and professional deployment/support | Potential commercial licensing, support or service contracts for validated needs |
+
+These are **potential capability boundaries, not a current pricing table, feature-completion claim or promise to ship three editions**. Keep one maintainable codebase and add organization features only when backed by user evidence. Core messaging reliability, essential security updates and existing basic privacy controls must not become paywall incentives.
+
+**Non-negotiable boundaries:**
+- M1 ordinary server-routed messages are not end-to-end encrypted; commercial materials must describe their actual privacy model. An enterprise's self-hosted server can access content during online delivery as documented in [SECURITY](SECURITY.md).
+- M2 private LAN text stays authenticated, consent-based and LAN-only with no cloud/AI fallback. Organization policy may enable or disable this mode, **never add a silent administrator backdoor to read private sessions**. Any enterprise retention or audit behavior must be transparent and must not silently change M2's security contract.
+- M3 AI access remains explicitly permission-bounded and read-only. Enterprise model connections or knowledge retrieval must follow the same authorization rules, not gain implicit cross-chat or file access.
+- Before monetization, review the existing public source licenses, third-party dependencies, ownership and commercial module boundary; do not retroactively assume public licensed code can be made proprietary. Account/data governance, support and applicable compliance require separate validation.
+
+**Validation order, not dates:** (1) make the free core trustworthy and pleasant for daily use, including mobile basics and dependable file/message handling; (2) observe sustained use by real small teams, especially conversation-to-file and AI knowledge workflows; (3) test willingness to pay for hosting, organization control and support; (4) scope enterprise capabilities and billing only after demand and operating costs are understood. Do not open implementation Issues for billing, subscriptions, enterprise administration or a second client solely because this direction is recorded.
+
 ## Issue / PR discipline
 
 - One module per implementation PR unless a clearly necessary dependency is separated first.
