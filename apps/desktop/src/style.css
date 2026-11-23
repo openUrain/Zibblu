@@ -217,7 +217,8 @@ svg { vertical-align: middle; }
   --rail-width: 60px;
   --list-width-max: 280px;
   --list-width: clamp(224px, 25vw, var(--list-width-max));
-  display: grid; grid-template-columns: var(--rail-width) minmax(0, 1fr); height: 100dvh; overflow: hidden;
+  position: relative; display: grid; grid-template-columns: var(--rail-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr); height: 100dvh; overflow: hidden;
 }
 .rail {
   display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 12px 8px;
@@ -287,7 +288,7 @@ svg { vertical-align: middle; }
 .workspace-error .icon-button { color: inherit; }
 
 .chat-layout, .workspace-content.contacts-layout {
-  display: grid; grid-template-columns: var(--list-width) minmax(0, 1fr); min-height: 0; flex: 1;
+  display: grid; grid-template-columns: var(--list-width) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); min-height: 0; flex: 1;
 }
 .chat-list { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); border-right: 1px solid var(--line); }
 .chat-list-title { display: none; }
@@ -754,7 +755,6 @@ svg { vertical-align: middle; }
 .contacts .contact-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .contact-name small, .contact-greeting { display: block; }
 .contact-greeting { margin-top: 3px; white-space: pre-wrap; }
-.windows .contacts-layout { grid-template-rows: minmax(0, 1fr); }
 .windows .contacts-screen .new-conversation { background: var(--soft); border-radius: 8px; corner-shape: squircle; }
 .windows .contacts-screen .new-conversation:hover { background: var(--hover); }
 .windows .contacts-list { --contact-group-height: 32px; scroll-padding-block-start: var(--contact-group-height); }
@@ -1062,8 +1062,6 @@ button.profile-row:hover { background: var(--hover); }
 
 @media (max-width: 740px) {
   .chat-header { padding-inline: 13px; }
-  .windows-topbar { gap: 4px; }
-  .windows-topbar .chat-actions { gap: 2px; }
   .chat-layout, .workspace-content.contacts-layout { grid-template-columns: minmax(0, 1fr); }
   .contacts-layout > .chat-blank, body:not(.windows) .profile-open .contacts-layout > .contacts-screen,
   .chat-layout:not(.mobile-chat-open) > :is(.chat-view, .chat-blank, .private-chat),
