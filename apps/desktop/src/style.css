@@ -1061,10 +1061,8 @@ button.profile-row:hover { background: var(--hover); }
 }
 
 @media (max-width: 740px) {
-  .shell { --rail-width: 61px; }
-  .rail { padding-inline: 4px; }
-  .topbar, .chat-header { padding-inline: 13px; }
-  .windows-topbar { padding-inline-end: 0; gap: 4px; }
+  .chat-header { padding-inline: 13px; }
+  .windows-topbar { gap: 4px; }
   .windows-topbar .chat-actions { gap: 2px; }
   .chat-layout, .workspace-content.contacts-layout { grid-template-columns: minmax(0, 1fr); }
   .contacts-layout > .chat-blank, body:not(.windows) .profile-open .contacts-layout > .contacts-screen,
