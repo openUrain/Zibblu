@@ -4,7 +4,7 @@
 
 **交互语言规则（默认强制）**：面向仓库 Owner / 用户的所有自然语言沟通默认使用**简体中文**，包括开发计划、进度、完工汇报、PR 标题及正文、审查意见、返修说明与风险总结。代码标识符、命令、文件路径、协议名称、原样错误日志和必要的技术专有名词保留英文；不要为了翻译破坏代码或接口契约。用户针对某次任务明确要求其他语言时，以当次要求为准。不要因语言要求增加额外文档或翻译工作。
 
-> **UI 设计/审查入口**：[Zibblu 产品交互约束](docs/DESIGN_SYSTEM.md) + [Always UI](https://github.com/handFOOLed/always-ui) 的实际安装版本及必读 references。对应平台微信仍是常规交互基线；Always UI 负责设计方法、数值预设和审查，不能覆盖产品安全、平台与 Owner 决策。
+> **UI 设计/审查入口**：[Zibblu 产品交互约束](docs/DESIGN_SYSTEM.md) + [仓库内 Always UI](.agents/skills/always-ui/SKILL.md) 及必读 references（仓库版本优先于各电脑的全局安装）。对应平台微信仍是常规交互基线；Always UI 负责设计方法、数值预设和审查，不能覆盖产品安全、平台与 Owner 决策。
 >
 > **产品**：Zibblu — *Chat freely. Share privately.* 简洁聊天、可靠文件传输、局域网私密会话、用户按需授权的只读 AI。
 >
@@ -24,7 +24,7 @@ Zibblu 是单一 GitHub 组织仓库，**正常流程不需要 `upstream`**：
 2. 从最新的 `main` 创建任务分支，例如 `feat/m1-chat-files`、`fix/file-resume`、`docs/review-guidelines`。
 3. 只实现当前 Issue / 明确授权范围。完成后推送该分支，向 **`openUrain/Zibblu:main`** 提 PR。
 4. 遵循 [PR 模板](.github/PULL_REQUEST_TEMPLATE.md)，写清实现内容、原因、验证结果和风险。**PR 是给人看的，不是 Agent 运行日志。**
-5. PR 创建后检查 [GitHub Actions CI](.github/workflows/ci.yml) 和 Codex Code Review；处理真实失败及可复现的重要审查意见，有新提交时重新检查对应状态。**没有实际运行的检查不能标为通过。**
+5. PR 创建后以 **Codex Code Review** 为本轮收口依据：审查有实质问题则在当前 PR 返修并复审；**审查明确无问题即可结束本轮任务，无需等待 GitHub Actions CI 运行完毕**。若已知 CI 或必要本地测试失败须如实记录并处理，不得将未运行检查写为通过。**本轮结束不等于合并 PR，合并仍由 Owner 决定。**
 
 Issue 明确要求“提交 PR”（如 M1 Issue #1）时，视为该任务已授权**推送任务分支和创建 PR**；不是授权合并、发布或修改组织设置。
 
@@ -91,18 +91,20 @@ Issue 明确要求“提交 PR”（如 M1 Issue #1）时，视为该任务已�
 - `crates/core/`：Rust 核心客户端、数据与传输能力。
 - `services/online/`：Rust 在线服务及 PostgreSQL 相关代码。
 - `docs/`：产品、架构、安全、路线图、决策及 Skill 来源。
-- `.agents/skills/`：仓库内保留工程 Skills（`stop-that-shit`、`ponytail`、代码库 `improve` 及 Matt Pocock 精选 Skills）；UI 专用 Always UI 从实际 Agent 安装环境加载，**不是仓库内置 Skill**。
+- `.agents/skills/`：仓库内保留工程 Skills 和 **Always UI**（`.agents/skills/always-ui/SKILL.md` + `references/`）；多电脑与 Agent **优先使用仓库固定版本**，不依赖全局安装。
 - `.github/workflows/ci.yml`：PR 和 `main` push 的 CI 检查。
 - `.github/PULL_REQUEST_TEMPLATE.md`：人类与 Agent 共用的 PR 描述模板。
 
-- 实现任务优先使用 `$stop-that-shit change -- ...`，需要时配合 `ponytail`，以最少代码完成**全部**责任。
+- **Ponytail（常规编码默认适用）**：先读 `.agents/skills/ponytail/SKILL.md`，默认 `full`，优先复用已有实现与平台能力，做**最小但完整**的修复；`lite` 适合极小变更，`ultra` 仅在明确要求更严格精简/质疑需求必要性时使用。不能为了更小 diff 删除真实测试、权限校验、数据保护或必要调用方修改。
+- **Stop That Shit（按需强化任务边界）**：先读 `.agents/skills/stop-that-shit/SKILL.md`；在任务易扩范围、反复加固、无谓验证循环或须区分 `change` / `review` 时启用。Codex 支持时将 `$stop-that-shit change -- <任务>` 放在提示词**第一条非空行**，只读审查用 `review`。没有 Guard/Hook 时仅作为指导，不得声称机器已经强制阻止操作。
+- **组合策略**：一般代码任务采用 Ponytail 的最小完整原则；确有范围失控风险时叠加 Stop That Shit；涉及 UI 再按设计强度使用仓库内 Always UI。**不机械叠加所有 Skill**，不得覆盖 Issue 的完整验收和安全边界。
 - `improve` 仅用于明确要求的代码库审计与改进计划；Matt Pocock 的 `code-review`、`diagnosing-bugs`、`codebase-design` 按需使用，不自动触发多 Agent 流程。
 - **仓库安装 Skill 不等于已安装 Guard / Hooks**。不得宣称有运行时强制保护，除非在执行环境验证其生效。
 - Skills 是执行辅助，不覆盖本文件、用户授权及 [SECURITY](docs/SECURITY.md)。
 
 ## 8. 代码与文档风格
 
-- **UI 工作强制先读** `docs/DESIGN_SYSTEM.md`、当前 Issue 与实际安装的 **[Always UI](https://github.com/handFOOLed/always-ui) `SKILL.md`**。按当次任务选择 `$always-ui creative`、`design`、`improve`；结束时可独立用 `$always-ui check` 审查，`check` 本身不改代码。**选定模式后必须先读对应 references**，不能仅凭记忆、README 或通用审美习惯操作。安装/来源与必读表见 [Skills](docs/SKILLS.md)。
+- **UI 工作强制先读** `docs/DESIGN_SYSTEM.md`、当前 Issue 与实际安装的 **仓库内 `.agents/skills/always-ui/SKILL.md`**。按当次任务选择 `$always-ui creative`、`design`、`improve`；结束时可独立用 `$always-ui check` 审查，`check` 本身不改代码。**选定模式后必须先读对应 references**，不能仅凭记忆、README 或通用审美习惯操作。安装/来源与必读表见 [Skills](docs/SKILLS.md)。
 - **UI 优先级**：Owner 明确要求和安全/隐私/无障碍/原生平台行为 → Zibblu 已确认的产品交互、品牌、共享 Token 与功能契约 → Always UI 的设计与检查规则。普通交互 Windows/iPhone/iPad 分别对照相应微信；**保留 Zibblu 原创图标、Lavender、小圆角和经批准的 `FloatingField`**。文件页仅列需要下载且不可在聊天内预览的普通附件，聊天文件卡片显示真实传输进度；私密聊天深色，AI 外发授权明确。
 - **数值与视觉纪律**：先复用项目现有 Token / 平台尺寸；缺失时才在 Always UI `value-presets.md` 分类表选值，必要例外说明理由。按 `visual-discipline.md` 的颜色分工、按钮层级、装饰理由与组件经济性进行设计；避免随意自创数值或将风格偏好当成无障碍缺陷。旧版 `interaction-design-rules` 已从仓库删除，不得继续调用或擅自恢复；`impeccable`、`refactoring-ui` 不作为 Zibblu UI 工作流。
 - **范围和验证**：`creative` 仅在 Owner 授权明显不同视觉方向时使用；`design` 不自动允许全站换肤；`improve` 保留当前布局与识别；`check` 独立审查只报告有证据的问题。若代码尚未实现目标，在 PR 写出实际差距，不能把“规范已写”当成 UI 已完成。UI PR 附真实平台截图/录屏；无法实测标 `BLOCKED`，由 Owner 验收。危险、错误、M2 LAN-only 与 M3 AI 外发授权不可因精简文案被隐藏。
@@ -131,12 +133,25 @@ Codex 官方 **Code Review** 需在 Codex 设置中为本仓库开启 `Code revi
 
 1. Codex 审阅 PR 的真实差异及关联 Issue，优先指出可验证的 bug、数据/隐私泄漏、越权、回归和验收缺口；不针对风格偏好制造噪声。
 2. 开发 Agent 在**当前 PR 分支**修复明确的问题，给出必要的最小复测证据，更新 PR 描述的“审查与返修”。
-3. 不得因机器人评论“没有问题”便声称测试已通过。Codex 评论不是 CI、人工验收或强制合并门禁。
+3. 不得因机器人评论“没有问题”便声称测试已通过。Codex 评论不是 CI、人工验收或强制合并门禁。Codex 审查明确无实质问题时开发 Agent 可以结束当轮，无需等待 CI；pending CI 不得记为 PASS。
 4. **人类 Owner 负责最终合并**。任何自动审查、返修结果都不自动授权合并。
+
+### 简短任务提示词（下达给 Codex 等 Agent）
+后续提示词一律使用**简短 Markdown**：写清 Issue、目标和特殊约束，禁止复述冗长规范；**执行时第一步必须读取 `AGENTS.md`**，再读取 Issue、权威文档和所需仓库 Skill。若启用 Stop That Shit 的 Codex 指令，为使其生效，允许该指令位于提示词第一条非空行；**必须先阅读 `AGENTS.md` 才能开始代码变更**。示例：
+
+```markdown
+$stop-that-shit change -- 完成 Zibblu Issue #123。
+
+先阅读 `AGENTS.md`，再阅读 Issue #123 和所需仓库 Skills。
+
+- 使用 Ponytail 的最小完整原则；UI 选用仓库内 `$always-ui improve`。
+- 按 Issue 实施、完成必要验证并提交中文 PR。
+- Codex 审查无问题即可结束本轮，不等 CI，不自动合并。
+```
 
 ### 合并前的人工核对
 
-- [ ] 查看 PR 的 [GitHub Actions CI](.github/workflows/ci.yml) 状态：`Rust + PostgreSQL`（M1 集成测试）、`React + TypeScript`（前端构建）和 `Tauri Rust (Windows)`（先构建前端产物再执行桌面 Rust 编译检查）。若检查失败或未运行，先明确原因，不得写作 PASS。
+- [ ] **Owner 决定合并前**查看 PR 的 [GitHub Actions CI](.github/workflows/ci.yml) 状态（开发 Agent 不必等待 CI 才结束本轮）：`Rust + PostgreSQL`（M1 集成测试）、`React + TypeScript`（前端构建）和 `Tauri Rust (Windows)`（先构建前端产物再执行桌面 Rust 编译检查）。若检查失败或未运行，先明确原因，不得写作 PASS。
 - [ ] Codex 自动审查已结束；实质性审查发现已修复或说明剩余风险；审查无发现不等于功能测试通过。
 - [ ] 对照当前 Issue 确认验收证据与未验证场景，特别注意 CI **不覆盖** Windows 安装包、实际 GUI 手势和 M2 真实跨设备局域网连接。
 - [ ] Owner 明确决定是否合并；**不允许 Agent 自动合并**。
