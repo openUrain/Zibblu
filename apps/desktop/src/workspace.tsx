@@ -93,13 +93,14 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [failure, setFailure] = useState(session.notice ?? "");
   const [syncProblem, setSyncProblem] = useState("");
-  const [sendFailureCount, setSendFailureCount] = useState(0);
-  const hasSendFailure = sendFailureCount > 0;
+  const [sendFailures, setSendFailures] = useState<number[]>([]);
+  const nextFailure = useRef(0);
+  const visibleFailure = sendFailures[0];
   useEffect(() => {
-    if (!hasSendFailure) return;
-    const timer = window.setTimeout(() => setSendFailureCount(count => Math.max(0, count - 1)), 5000);
+    if (visibleFailure === undefined) return;
+    const timer = window.setTimeout(() => setSendFailures(queue => queue.slice(1)), 5000);
     return () => window.clearTimeout(timer);
-  }, [hasSendFailure, sendFailureCount]);
+  }, [visibleFailure]);
   const [newChat, setNewChat] = useState(false);
   const [newContact, setNewContact] = useState(false);
   const [sendingChats, setSendingChats] = useState<ReadonlySet<string>>(new Set());
@@ -377,7 +378,10 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
         const active = await api.transfers();
         if (!closed) setTransfers(active);
         const notices = await api.takeSendFailureNotices();
-        if (!closed && notices) setSendFailureCount(count => count + notices);
+        if (!closed && notices) {
+          const received = Array.from({ length: notices }, () => nextFailure.current++);
+          setSendFailures(queue => [...queue, ...received]);
+        }
       } catch (error) {
         if (!closed) setFailure(errorMessage(error));
       }
@@ -668,7 +672,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
         <button className="icon-button" aria-label="Dismiss error" onClick={() => setFailure("")}><X size={17} /></button>
       </div>}
       {syncProblem && <div className="workspace-error" role="alert">{syncProblem}</div>}
-      {hasSendFailure && <div className="send-failure-toast" role="alert">
+      {visibleFailure !== undefined && <div key={visibleFailure} className="send-failure-toast" role="alert">
         {t("A message from deleted history could not be sent.", "已删除聊天记录中的一条消息发送失败。")}
       </div>}
       {ios && !connected && <div className="mobile-connection" role="status">{connection}</div>}
