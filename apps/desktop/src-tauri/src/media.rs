@@ -288,10 +288,15 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>, viewer: bool
             })?);
     }
     if let Some(draft_id) = path.strip_prefix("draft_") {
-        ensure!(!viewer, "Draft previews belong to the main window");
         let id = Uuid::parse_str(draft_id)?;
+        if viewer {
+            let scoped = crate::image_viewer::authorize_draft(&app.state::<Desktop>(), id).await?;
+            ensure!(std::sync::Arc::ptr_eq(&client, &scoped), "The session has ended");
+        }
         let drafts = &app.state::<Desktop>().drafts;
-        if let Ok((_, mime, size)) = drafts.preview_video_info(&client, id).await {
+        if !viewer
+            && let Ok((_, _, mime, size)) = drafts.preview_video_info(&client, id).await
+        {
             let response = preview_headers(mime).header(header::ACCEPT_RANGES, "bytes");
             if *request.method() == Method::HEAD {
                 return Ok(response
@@ -332,6 +337,10 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>, viewer: bool
             .preview_image(&client, id, query == Some("thumbnail"))
             .await?;
         ensure!(app.state::<Desktop>().is_current(&client).await, "The session has ended");
+        if viewer {
+            let scoped = crate::image_viewer::authorize_draft(&app.state::<Desktop>(), id).await?;
+            ensure!(std::sync::Arc::ptr_eq(&client, &scoped), "The session has ended");
+        }
         return Ok(preview_headers(&mime)
             .header(header::ACCEPT_RANGES, "none")
             .header(header::CONTENT_LENGTH, bytes.len())

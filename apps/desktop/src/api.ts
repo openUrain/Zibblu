@@ -169,6 +169,7 @@ export const api = {
   mediaUrl: (id: string, variant?: "thumbnail" | "cached-thumbnail") =>
     convertFileSrc(id, "zibblu-media") + (variant ? "?" + variant : ""),
   openImage: (id: string) => invoke<void>("open_image_viewer", { id }),
+  openDraftImage: (id: string) => invoke<void>("open_draft_image_viewer", { id }),
   save: (id: string) => invoke<Transfer | null>("save_attachment", { id }),
   openSaved: (id: string) => invoke<boolean>("open_saved_attachment", { id }),
   transfers: () => invoke<Transfer[]>("transfers"),

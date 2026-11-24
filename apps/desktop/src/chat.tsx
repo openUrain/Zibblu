@@ -966,7 +966,19 @@ function Composer({ conversation, refresh, pickAttachments, pasteFiles, changed,
       <div className="composer-box">
         {attachments.length > 0 && <div className="composer-drafts" role="list" aria-label={t("Attachment drafts", "附件草稿")}>
           {attachments.map(item => <DraftAttachmentCard key={item.id} item={item} disabled={sending}
-            onPreview={() => setPreviewId(item.id)} onRemove={() => removeAttachment(item.id)} />)}
+            onPreview={() => {
+              if (windows && item.media_kind === "image" && item.can_preview) {
+                setFailure("");
+                void api.openDraftImage(item.id).catch(error => {
+                  const reason = isSourceChanged(error)
+                    ? t("File changed. Remove and add it again.", "文件已发生变化，请移除后重新添加")
+                    : errorMessage(error);
+                  setFailure(reason);
+                });
+              } else {
+                setPreviewId(item.id);
+              }
+            }} onRemove={() => removeAttachment(item.id)} />)}
         </div>}
         <div className={"composer-input" + (assistant ? " ai-composer" : "")}>
           {!assistant && <button className="icon-button composer-plus" type="button" title={t("Message tools", "消息工具")}

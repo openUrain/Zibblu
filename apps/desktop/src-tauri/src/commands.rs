@@ -295,6 +295,7 @@ async fn run_outbox(app: AppHandle, client: Arc<Client>, wake: Arc<Notify>) {
             _ = retry.tick() => {},
         }
         if client.flush_pending_messages().await.unwrap_or(false) {
+            let _ = client.resume_queued().await;
             let _ = app.emit_to("main", "message-outbox-changed", ());
         }
     }

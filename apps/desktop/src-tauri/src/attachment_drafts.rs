@@ -6,7 +6,6 @@ use anyhow::{Context, Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    fs::File,
     io::{Read, Seek, SeekFrom},
     path::PathBuf,
     sync::{Arc, Mutex as StdMutex, Weak},
@@ -15,8 +14,9 @@ use tauri::{State, WebviewWindow, ipc::InvokeBody};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 use zibblu_core::{
-    AttachmentKind, CHUNK_SIZE, Client, FileIdentity, MAX_PASTED_IMAGE_BYTES, SourceSnapshot,
-    Transfer, capture_source_snapshot,
+    Attachment, AttachmentKind, CHUNK_SIZE, Client, FileIdentity, MAX_PASTED_IMAGE_BYTES,
+    SourceSnapshot, Transfer, capture_source_snapshot, open_verified_local_file,
+    verify_open_handle,
 };
 
 pub(crate) const MAX_DRAFT_ATTACHMENTS: usize = 8;
@@ -257,6 +257,70 @@ impl AttachmentDrafts {
         store.remove_entry(id);
     }
 
+    pub(crate) fn has_draft(&self, client: &Arc<Client>, id: Uuid) -> bool {
+        let store = self.inner.lock().expect("attachment drafts");
+        store
+            .client
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .is_some_and(|active| Arc::ptr_eq(&active, client))
+            && store.entries.contains_key(&id)
+    }
+
+    pub(crate) fn draft_image_entry(
+        &self,
+        client: &Arc<Client>,
+        id: Uuid,
+    ) -> Result<(Uuid, Attachment)> {
+        let mut store = self.inner.lock().expect("attachment drafts");
+        store.bind(client);
+        let entry = store.entries.get(&id).context("Draft attachment not found")?;
+        let dto = entry.dto();
+        ensure!(
+            dto.media_kind == Some("image") && dto.can_preview,
+            "This draft attachment is not a previewable image"
+        );
+        Ok((
+            entry.conversation,
+            Attachment {
+                id: entry.id,
+                name: entry.name.clone(),
+                kind: entry.kind,
+                size: entry.size,
+                sha256: String::new(),
+            },
+        ))
+    }
+
+    pub(crate) fn draft_image_neighbor(
+        &self,
+        client: &Arc<Client>,
+        conversation: Uuid,
+        id: Uuid,
+        forward: bool,
+    ) -> Option<Uuid> {
+        let mut store = self.inner.lock().expect("attachment drafts");
+        store.bind(client);
+        let images: Vec<Uuid> = store
+            .order
+            .get(&conversation)?
+            .iter()
+            .copied()
+            .filter(|entry_id| {
+                store.entries.get(entry_id).is_some_and(|entry| {
+                    let dto = entry.dto();
+                    dto.media_kind == Some("image") && dto.can_preview
+                })
+            })
+            .collect();
+        let pos = images.iter().position(|entry_id| *entry_id == id)?;
+        if forward {
+            images.get(pos + 1).copied()
+        } else {
+            pos.checked_sub(1).and_then(|idx| images.get(idx).copied())
+        }
+    }
+
     pub(crate) async fn preview_image(
         &self,
         client: &Arc<Client>,
@@ -271,32 +335,33 @@ impl AttachmentDrafts {
             (entry.source.clone(), entry.thumbnail.clone(), entry.size)
         };
         if thumbnail && let Some(thumb) = cached_thumb {
+            if let DraftSource::Local { path, snapshot } = &source {
+                let path = path.clone();
+                let snapshot = snapshot.clone();
+                let valid = tauri::async_runtime::spawn_blocking(move || {
+                    open_verified_local_file(&path, &snapshot).map(|_| ())
+                })
+                .await?;
+                if let Err(error) = valid {
+                    let mut store = self.inner.lock().expect("attachment drafts");
+                    if let Some(entry) = store.entries.get_mut(&id) {
+                        entry.thumbnail = None;
+                    }
+                    return Err(error);
+                }
+            }
+            ensure!(self.has_draft(client, id), "Draft attachment not found");
             return Ok(("image/png".into(), thumb));
         }
         let raw = match source {
             DraftSource::PastedImage { bytes } => bytes.as_ref().clone(),
-            DraftSource::Local { path, .. } => {
+            DraftSource::Local { path, snapshot } => {
                 ensure!(
                     size <= MAX_PASTED_IMAGE_BYTES as u64,
                     "Image too large for inline preview"
                 );
-                tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>> {
-                    let file = File::open(&path).context("Could not read draft image")?;
-                    let meta = file.metadata()?;
-                    ensure!(
-                        meta.is_file() && meta.len() <= MAX_PASTED_IMAGE_BYTES as u64,
-                        "Image too large for inline preview"
-                    );
-                    let mut bytes = Vec::with_capacity(meta.len() as usize);
-                    file.take(MAX_PASTED_IMAGE_BYTES as u64 + 1)
-                        .read_to_end(&mut bytes)?;
-                    ensure!(
-                        bytes.len() <= MAX_PASTED_IMAGE_BYTES,
-                        "Image too large for inline preview"
-                    );
-                    Ok(bytes)
-                })
-                .await??
+                tauri::async_runtime::spawn_blocking(move || read_verified_local_image(&path, &snapshot))
+                    .await??
             }
         };
         let permit = media::IMAGE_JOBS.acquire().await?;
@@ -308,13 +373,16 @@ impl AttachmentDrafts {
         .await??;
         {
             let mut store = self.inner.lock().expect("attachment drafts");
-            if store
-                .client
-                .as_ref()
-                .and_then(Weak::upgrade)
-                .is_some_and(|active| Arc::ptr_eq(&active, client))
-                && let Some(entry) = store.entries.get_mut(&id)
-            {
+            ensure!(
+                store
+                    .client
+                    .as_ref()
+                    .and_then(Weak::upgrade)
+                    .is_some_and(|active| Arc::ptr_eq(&active, client))
+                    && store.entries.contains_key(&id),
+                "Draft attachment not found"
+            );
+            if let Some(entry) = store.entries.get_mut(&id) {
                 entry.thumbnail = Some(thumb.clone());
             }
         }
@@ -329,19 +397,24 @@ impl AttachmentDrafts {
         &self,
         client: &Arc<Client>,
         id: Uuid,
-    ) -> Result<(PathBuf, &'static str, u64)> {
-        let (path, name) = {
+    ) -> Result<(PathBuf, SourceSnapshot, &'static str, u64)> {
+        let (path, snapshot, name) = {
             let mut store = self.inner.lock().expect("attachment drafts");
             store.bind(client);
             let entry = store.entries.get(&id).context("Draft attachment not found")?;
-            let DraftSource::Local { path, .. } = &entry.source else {
+            let DraftSource::Local { path, snapshot } = &entry.source else {
                 anyhow::bail!("Unsupported video draft");
             };
-            (path.clone(), entry.name.clone())
+            (path.clone(), snapshot.clone(), entry.name.clone())
         };
         let mime = video_mime(&name).context("Unsupported video format")?;
-        let size = tokio::fs::metadata(&path).await?.len();
-        Ok((path, mime, size))
+        let check_path = path.clone();
+        let check_snap = snapshot.clone();
+        tauri::async_runtime::spawn_blocking(move || open_verified_local_file(&check_path, &check_snap).map(|_| ()))
+            .await??;
+        ensure!(self.has_draft(client, id), "Draft attachment not found");
+        let size = snapshot.size;
+        Ok((path, snapshot, mime, size))
     }
 
     pub(crate) async fn read_video_range(
@@ -351,20 +424,49 @@ impl AttachmentDrafts {
         start: u64,
         end: u64,
     ) -> Result<(&'static str, u64, u64, u64, Vec<u8>)> {
-        let (path, mime, size) = self.preview_video_info(client, id).await?;
+        let (path, snapshot, mime, size) = self.preview_video_info(client, id).await?;
         ensure!(size > 0 && start < size, "Range out of bounds");
         let capped_end = end.min(size - 1).min(start.saturating_add(CHUNK_SIZE - 1));
         let len = (capped_end - start + 1) as usize;
-        let bytes = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>> {
-            let mut file = File::open(&path)?;
-            file.seek(SeekFrom::Start(start))?;
-            let mut buf = vec![0u8; len];
-            file.read_exact(&mut buf)?;
-            Ok(buf)
+        let bytes = tauri::async_runtime::spawn_blocking(move || {
+            read_verified_local_range(&path, &snapshot, start, len)
         })
         .await??;
+        ensure!(self.has_draft(client, id), "Draft attachment not found");
         Ok((mime, size, start, capped_end, bytes))
     }
+}
+
+fn read_verified_local_image(path: &std::path::Path, snapshot: &SourceSnapshot) -> Result<Vec<u8>> {
+    ensure!(
+        snapshot.size <= MAX_PASTED_IMAGE_BYTES as u64,
+        "Image too large for inline preview"
+    );
+    let mut file = open_verified_local_file(path, snapshot)?;
+    let mut bytes = Vec::with_capacity(snapshot.size as usize);
+    (&mut file)
+        .take(MAX_PASTED_IMAGE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 == snapshot.size && bytes.len() <= MAX_PASTED_IMAGE_BYTES,
+        zibblu_core::SourceChangedError
+    );
+    verify_open_handle(path, &file, snapshot)?;
+    Ok(bytes)
+}
+
+fn read_verified_local_range(
+    path: &std::path::Path,
+    snapshot: &SourceSnapshot,
+    start: u64,
+    len: usize,
+) -> Result<Vec<u8>> {
+    let mut file = open_verified_local_file(path, snapshot)?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut buf = vec![0u8; len];
+    file.read_exact(&mut buf)?;
+    verify_open_handle(path, &file, snapshot)?;
+    Ok(buf)
 }
 
 fn is_inline_image(name: &str) -> bool {
@@ -625,5 +727,31 @@ mod tests {
         let id_a = FileIdentity::Path(PathBuf::from("C:/a/report.pdf"));
         let id_b = FileIdentity::Path(PathBuf::from("C:/b/report.pdf"));
         assert_ne!(id_a, id_b);
+    }
+
+    #[test]
+    fn local_preview_and_video_range_fail_closed_on_replacement() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let img = dir.path().join("photo.png");
+        let vid = dir.path().join("clip.mp4");
+        std::fs::write(&img, b"fake-png-bytes-123456")?;
+        std::fs::write(&vid, b"0123456789abcdef")?;
+
+        let img_snap = capture_source_snapshot(&img)?;
+        let vid_snap = capture_source_snapshot(&vid)?;
+        assert_eq!(read_verified_local_image(&img, &img_snap)?, b"fake-png-bytes-123456");
+        assert_eq!(read_verified_local_range(&vid, &vid_snap, 4, 6)?, b"456789");
+
+        // Replace image with a different file of the same size -> fails closed.
+        let other = dir.path().join("other.png");
+        std::fs::write(&other, b"OTHER-PNG-BYTES-99999")?;
+        std::fs::remove_file(&img)?;
+        std::fs::rename(&other, &img)?;
+        assert!(read_verified_local_image(&img, &img_snap).is_err());
+
+        // Modify video between range reads -> subsequent range fails closed.
+        std::fs::write(&vid, b"ABCDEFGHIJKLMNOP")?;
+        assert!(read_verified_local_range(&vid, &vid_snap, 0, 4).is_err());
+        Ok(())
     }
 }

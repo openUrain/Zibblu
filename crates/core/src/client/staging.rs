@@ -5,8 +5,9 @@ use std::{
     fs::{self, File, Metadata, OpenOptions},
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    time::UNIX_EPOCH,
 };
+#[cfg(not(windows))]
+use std::time::UNIX_EPOCH;
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -28,6 +29,17 @@ pub enum FileIdentity {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderEntrySnapshot {
+    pub rel_path: String,
+    pub is_dir: bool,
+    pub identity: FileIdentity,
+    pub size: u64,
+    pub modified_ticks: u64,
+    pub created_ticks: u64,
+    pub sample_hash: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceSnapshot {
     pub name: String,
     pub kind: AttachmentKind,
@@ -36,7 +48,7 @@ pub struct SourceSnapshot {
     pub modified_ticks: u64,
     pub created_ticks: u64,
     pub sample_hash: Option<[u8; 32]>,
-    pub dir_fingerprint: Option<[u8; 32]>,
+    pub folder_entries: Option<Vec<FolderEntrySnapshot>>,
 }
 
 struct HandleStamp {
@@ -66,6 +78,7 @@ fn open_no_reparse(path: &Path, is_dir: bool) -> io::Result<File> {
     options.open(path)
 }
 
+#[cfg(not(windows))]
 fn time_ticks(time: io::Result<std::time::SystemTime>) -> u64 {
     time.ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
@@ -151,7 +164,7 @@ fn sample_file(file: &mut File, size: u64) -> Result<[u8; 32]> {
     Ok(hasher.finalize().into())
 }
 
-fn folder_fingerprint(root: &Path) -> Result<(u64, [u8; 32])> {
+fn folder_entries_snapshot(root: &Path) -> Result<(u64, Vec<FolderEntrySnapshot>)> {
     let mut entries = Vec::new();
     let mut total_size = 0u64;
     for (index, entry) in WalkDir::new(root)
@@ -162,9 +175,9 @@ fn folder_fingerprint(root: &Path) -> Result<(u64, [u8; 32])> {
     {
         ensure!(index < 4096, "Folders can contain up to 4,096 entries");
         let entry = entry.context("Could not read a folder entry")?;
-        let metadata = fs::symlink_metadata(entry.path())?;
+        let link_meta = fs::symlink_metadata(entry.path())?;
         ensure!(
-            !is_link(&metadata),
+            !is_link(&link_meta),
             "Remove links and junctions before sharing a folder"
         );
         let components: Vec<_> = entry
@@ -178,34 +191,55 @@ fn folder_fingerprint(root: &Path) -> Result<(u64, [u8; 32])> {
                     .context("Folder entries need Windows-compatible names")
             })
             .collect::<Result<_>>()?;
-        let rel = components.join("/");
-        ensure!(rel.len() <= 1024, "A path inside the folder is too long");
-        let kind_byte = if metadata.is_dir() {
-            1u8
+        let rel_path = components.join("/");
+        ensure!(rel_path.len() <= 1024, "A path inside the folder is too long");
+        let is_dir = link_meta.is_dir();
+        let mut file = open_no_reparse(entry.path(), is_dir)
+            .context("Could not open a folder entry")?;
+        let metadata = file.metadata()?;
+        ensure!(
+            !is_link(&metadata),
+            "Remove links and junctions before sharing a folder"
+        );
+        let stamp = handle_stamp(entry.path(), &file, &metadata)?;
+        if is_dir {
+            ensure!(
+                metadata.is_dir(),
+                "Folders can contain regular files and directories"
+            );
+            entries.push(FolderEntrySnapshot {
+                rel_path,
+                is_dir: true,
+                identity: stamp.identity,
+                size: 0,
+                modified_ticks: stamp.modified_ticks,
+                created_ticks: stamp.created_ticks,
+                sample_hash: None,
+            });
         } else {
             ensure!(
                 metadata.is_file(),
                 "Folders can contain regular files and directories"
             );
-            total_size = total_size.saturating_add(metadata.len());
+            total_size = total_size.saturating_add(stamp.size);
             ensure!(
                 total_size <= MAX_ATTACHMENT_SIZE,
                 "Attachments can be up to 256 MiB"
             );
-            2u8
-        };
-        entries.push((rel, kind_byte, metadata.len(), time_ticks(metadata.modified())));
+            let sample_hash = sample_file(&mut file, stamp.size)?;
+            entries.push(FolderEntrySnapshot {
+                rel_path,
+                is_dir: false,
+                identity: stamp.identity,
+                size: stamp.size,
+                modified_ticks: stamp.modified_ticks,
+                created_ticks: stamp.created_ticks,
+                sample_hash: Some(sample_hash),
+            });
+        }
     }
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut hasher = Sha256::new();
-    for (rel, kind_byte, len, mtime) in entries {
-        hasher.update([kind_byte]);
-        hasher.update((rel.len() as u32).to_le_bytes());
-        hasher.update(rel.as_bytes());
-        hasher.update(len.to_le_bytes());
-        hasher.update(mtime.to_le_bytes());
-    }
-    Ok((total_size, hasher.finalize().into()))
+    entries.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    Ok((total_size, entries))
 }
 
 pub fn capture_source_snapshot(source: &Path) -> Result<SourceSnapshot> {
@@ -237,7 +271,7 @@ pub fn capture_source_snapshot(source: &Path) -> Result<SourceSnapshot> {
     let stamp = handle_stamp(source, &file, &metadata)?;
     if is_dir {
         ensure!(metadata.is_dir(), "Choose a regular file or folder");
-        let (total_size, dir_fingerprint) = folder_fingerprint(source)?;
+        let (total_size, folder_entries) = folder_entries_snapshot(source)?;
         Ok(SourceSnapshot {
             name: raw_name.to_owned(),
             kind: AttachmentKind::Folder,
@@ -246,7 +280,7 @@ pub fn capture_source_snapshot(source: &Path) -> Result<SourceSnapshot> {
             modified_ticks: stamp.modified_ticks,
             created_ticks: stamp.created_ticks,
             sample_hash: None,
-            dir_fingerprint: Some(dir_fingerprint),
+            folder_entries: Some(folder_entries),
         })
     } else {
         ensure!(metadata.is_file(), "Choose a regular file");
@@ -263,9 +297,176 @@ pub fn capture_source_snapshot(source: &Path) -> Result<SourceSnapshot> {
             modified_ticks: stamp.modified_ticks,
             created_ticks: stamp.created_ticks,
             sample_hash: Some(sample_hash),
-            dir_fingerprint: None,
+            folder_entries: None,
         })
     }
+}
+
+pub fn open_verified_local_file(source: &Path, expected: &SourceSnapshot) -> Result<File> {
+    if expected.kind != AttachmentKind::File {
+        bail!(SourceChangedError);
+    }
+    let file = open_no_reparse(source, false).map_err(|_| anyhow::Error::new(SourceChangedError))?;
+    verify_open_handle(source, &file, expected)?;
+    Ok(file)
+}
+
+pub fn verify_open_handle(source: &Path, file: &File, expected: &SourceSnapshot) -> Result<()> {
+    let metadata = file.metadata().map_err(|_| anyhow::Error::new(SourceChangedError))?;
+    if is_link(&metadata) || !metadata.is_file() {
+        bail!(SourceChangedError);
+    }
+    let stamp = handle_stamp(source, file, &metadata)
+        .map_err(|_| anyhow::Error::new(SourceChangedError))?;
+    if stamp.identity != expected.identity
+        || stamp.size != expected.size
+        || stamp.modified_ticks != expected.modified_ticks
+        || stamp.created_ticks != expected.created_ticks
+    {
+        bail!(SourceChangedError);
+    }
+    Ok(())
+}
+
+fn verify_folder_root(root: &Path, expected: &SourceSnapshot) -> Result<File> {
+    let link_meta = fs::symlink_metadata(root).map_err(|_| anyhow::Error::new(SourceChangedError))?;
+    if is_link(&link_meta) || !link_meta.is_dir() {
+        bail!(SourceChangedError);
+    }
+    let dir_handle = open_no_reparse(root, true).map_err(|_| anyhow::Error::new(SourceChangedError))?;
+    let meta = dir_handle.metadata().map_err(|_| anyhow::Error::new(SourceChangedError))?;
+    if is_link(&meta) || !meta.is_dir() {
+        bail!(SourceChangedError);
+    }
+    let stamp = handle_stamp(root, &dir_handle, &meta)
+        .map_err(|_| anyhow::Error::new(SourceChangedError))?;
+    if stamp.identity != expected.identity
+        || stamp.modified_ticks != expected.modified_ticks
+        || stamp.created_ticks != expected.created_ticks
+    {
+        bail!(SourceChangedError);
+    }
+    Ok(dir_handle)
+}
+
+fn archive_verified(root: &Path, expected: &SourceSnapshot, output: &mut File) -> Result<()> {
+    let expected_entries = expected
+        .folder_entries
+        .as_ref()
+        .ok_or_else(|| anyhow::Error::new(SourceChangedError))?;
+    let root_handle = verify_folder_root(root, expected)?;
+
+    // Collect current relative paths first so added/removed/reparse entries fail closed.
+    let mut current_paths = Vec::new();
+    for (index, entry) in WalkDir::new(root)
+        .min_depth(1)
+        .follow_links(false)
+        .into_iter()
+        .enumerate()
+    {
+        if index >= 4096 {
+            bail!(SourceChangedError);
+        }
+        let entry = entry.map_err(|_| anyhow::Error::new(SourceChangedError))?;
+        let link_meta =
+            fs::symlink_metadata(entry.path()).map_err(|_| anyhow::Error::new(SourceChangedError))?;
+        if is_link(&link_meta) {
+            bail!(SourceChangedError);
+        }
+        let rel = entry
+            .path()
+            .strip_prefix(root)
+            .map_err(|_| anyhow::Error::new(SourceChangedError))?
+            .components()
+            .map(|part| part.as_os_str().to_str())
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| anyhow::Error::new(SourceChangedError))?
+            .join("/");
+        current_paths.push(rel);
+    }
+    current_paths.sort();
+    if current_paths.len() != expected_entries.len()
+        || current_paths
+            .iter()
+            .zip(expected_entries.iter())
+            .any(|(actual, expected)| actual != &expected.rel_path)
+    {
+        bail!(SourceChangedError);
+    }
+
+    let mut archive = ZipWriter::new(output);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let mut remaining = MAX_ATTACHMENT_SIZE;
+
+    for expected_entry in expected_entries {
+        let entry_path = root.join(&expected_entry.rel_path);
+        let link_meta =
+            fs::symlink_metadata(&entry_path).map_err(|_| anyhow::Error::new(SourceChangedError))?;
+        if is_link(&link_meta) || link_meta.is_dir() != expected_entry.is_dir {
+            bail!(SourceChangedError);
+        }
+        let mut handle = open_no_reparse(&entry_path, expected_entry.is_dir)
+            .map_err(|_| anyhow::Error::new(SourceChangedError))?;
+        let meta = handle
+            .metadata()
+            .map_err(|_| anyhow::Error::new(SourceChangedError))?;
+        if is_link(&meta) || meta.is_dir() != expected_entry.is_dir {
+            bail!(SourceChangedError);
+        }
+        let before = handle_stamp(&entry_path, &handle, &meta)
+            .map_err(|_| anyhow::Error::new(SourceChangedError))?;
+        if before.identity != expected_entry.identity
+            || before.modified_ticks != expected_entry.modified_ticks
+            || before.created_ticks != expected_entry.created_ticks
+            || (!expected_entry.is_dir && before.size != expected_entry.size)
+        {
+            bail!(SourceChangedError);
+        }
+        if expected_entry.is_dir {
+            archive.add_directory(format!("{}/", expected_entry.rel_path), options)?;
+        } else {
+            if expected_entry.size > remaining {
+                bail!("Attachments can be up to 256 MiB");
+            }
+            archive.start_file(&expected_entry.rel_path, options)?;
+            let (copied, _, sample_hash) = copy_and_verify_single_handle(
+                &mut handle,
+                &mut archive,
+                expected_entry.size,
+            )?;
+            if copied != expected_entry.size || expected_entry.sample_hash != Some(sample_hash) {
+                bail!(SourceChangedError);
+            }
+            let after_meta = handle
+                .metadata()
+                .map_err(|_| anyhow::Error::new(SourceChangedError))?;
+            let after = handle_stamp(&entry_path, &handle, &after_meta)
+                .map_err(|_| anyhow::Error::new(SourceChangedError))?;
+            if after.identity != expected_entry.identity
+                || after.size != expected_entry.size
+                || after.modified_ticks != expected_entry.modified_ticks
+                || after.created_ticks != expected_entry.created_ticks
+            {
+                bail!(SourceChangedError);
+            }
+            remaining -= copied;
+        }
+    }
+
+    archive.finish()?;
+    // Re-check root directory handle after archiving.
+    let root_meta = root_handle
+        .metadata()
+        .map_err(|_| anyhow::Error::new(SourceChangedError))?;
+    let root_after = handle_stamp(root, &root_handle, &root_meta)
+        .map_err(|_| anyhow::Error::new(SourceChangedError))?;
+    if root_after.identity != expected.identity
+        || root_after.modified_ticks != expected.modified_ticks
+        || root_after.created_ticks != expected.created_ticks
+    {
+        bail!(SourceChangedError);
+    }
+    Ok(())
 }
 
 pub(super) fn stage_verified(
@@ -275,17 +476,9 @@ pub(super) fn stage_verified(
     id: Uuid,
 ) -> Result<Attachment> {
     if expected.kind == AttachmentKind::Folder {
-        let current = capture_source_snapshot(source).map_err(|_| anyhow::Error::new(SourceChangedError))?;
-        if current != *expected {
-            bail!(SourceChangedError);
-        }
         let mut snapshot =
             NamedTempFile::new_in(spool.parent().context("Missing transfer directory")?)?;
-        archive(source, snapshot.as_file_mut())?;
-        let after = capture_source_snapshot(source).map_err(|_| anyhow::Error::new(SourceChangedError))?;
-        if after != *expected {
-            bail!(SourceChangedError);
-        }
+        archive_verified(source, expected, snapshot.as_file_mut())?;
         snapshot.as_file().sync_all()?;
         let size = snapshot.as_file().metadata()?.len();
         ensure!(
@@ -303,20 +496,7 @@ pub(super) fn stage_verified(
         });
     }
 
-    let mut file = open_no_reparse(source, false).map_err(|_| anyhow::Error::new(SourceChangedError))?;
-    let metadata = file.metadata().map_err(|_| anyhow::Error::new(SourceChangedError))?;
-    if is_link(&metadata) || !metadata.is_file() {
-        bail!(SourceChangedError);
-    }
-    let before = handle_stamp(source, &file, &metadata)
-        .map_err(|_| anyhow::Error::new(SourceChangedError))?;
-    if before.identity != expected.identity
-        || before.size != expected.size
-        || before.modified_ticks != expected.modified_ticks
-        || before.created_ticks != expected.created_ticks
-    {
-        bail!(SourceChangedError);
-    }
+    let mut file = open_verified_local_file(source, expected)?;
     let mut snapshot =
         NamedTempFile::new_in(spool.parent().context("Missing transfer directory")?)?;
     let (copied, sha256, sample_hash) = copy_and_verify_single_handle(
@@ -327,16 +507,7 @@ pub(super) fn stage_verified(
     if copied != expected.size || expected.sample_hash != Some(sample_hash) {
         bail!(SourceChangedError);
     }
-    let after_meta = file.metadata().map_err(|_| anyhow::Error::new(SourceChangedError))?;
-    let after = handle_stamp(source, &file, &after_meta)
-        .map_err(|_| anyhow::Error::new(SourceChangedError))?;
-    if after.identity != expected.identity
-        || after.size != expected.size
-        || after.modified_ticks != expected.modified_ticks
-        || after.created_ticks != expected.created_ticks
-    {
-        bail!(SourceChangedError);
-    }
+    verify_open_handle(source, &file, expected)?;
     snapshot.as_file().sync_all()?;
     snapshot.persist_noclobber(spool)?;
     Ok(Attachment {
@@ -350,7 +521,7 @@ pub(super) fn stage_verified(
 
 fn copy_and_verify_single_handle(
     input: &mut File,
-    output: &mut File,
+    output: &mut impl Write,
     expected_size: u64,
 ) -> Result<(u64, String, [u8; 32])> {
     input.seek(SeekFrom::Start(0))?;
@@ -597,12 +768,19 @@ mod tests {
         .unwrap_err();
         assert!(err.downcast_ref::<SourceChangedError>().is_some());
 
-        // Folder modification is detected.
+        // Folder modification is detected, including same-length replacement with preserved mtime.
         let folder = dir.path().join("pack");
         fs::create_dir_all(&folder)?;
-        fs::write(folder.join("a.txt"), b"v1")?;
+        let member = folder.join("a.txt");
+        fs::write(&member, b"v1-data")?;
+        let orig_mtime = fs::metadata(&member)?.modified()?;
         let folder_snap = capture_source_snapshot(&folder)?;
-        fs::write(folder.join("a.txt"), b"v2-longer")?;
+        // Atomic replacement of member with identical length and preserved mtime must be blocked.
+        let replacement = dir.path().join("replacement.tmp");
+        fs::write(&replacement, b"v2-DATA")?;
+        File::options().write(true).open(&replacement)?.set_modified(orig_mtime)?;
+        fs::remove_file(&member)?;
+        fs::rename(&replacement, &member)?;
         let err = stage_verified(
             &folder,
             &folder_snap,
@@ -611,6 +789,17 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.downcast_ref::<SourceChangedError>().is_some());
+
+        // Fresh snapshot after replacement stages cleanly.
+        let fresh_folder_snap = capture_source_snapshot(&folder)?;
+        let staged_folder = stage_verified(
+            &folder,
+            &fresh_folder_snap,
+            &spool_dir.path().join("5.part"),
+            Uuid::new_v4(),
+        )?;
+        assert_eq!(staged_folder.kind, AttachmentKind::Folder);
+        assert_eq!(staged_folder.name, "pack.zip");
         Ok(())
     }
 }

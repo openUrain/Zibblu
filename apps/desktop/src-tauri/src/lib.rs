@@ -224,6 +224,7 @@ pub fn run() {
             commands::save_attachment,
             commands::open_saved_attachment,
             image_viewer::open_image_viewer,
+            image_viewer::open_draft_image_viewer,
             image_viewer::image_viewer_selection,
             image_viewer::image_viewer_step,
             image_viewer::copy_viewer_image,

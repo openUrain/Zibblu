@@ -94,6 +94,7 @@ struct OverwriteTarget {
 pub(super) type JobKey = (Uuid, Direction);
 
 pub(super) struct Active {
+    conversation: Uuid,
     stop: Arc<AtomicBool>,
     task: JoinHandle<()>,
 }
@@ -475,6 +476,44 @@ impl Client {
         Ok(())
     }
 
+    async fn has_earlier_pending_in_conversation(
+        &self,
+        conversation: Uuid,
+        upload_id: Uuid,
+    ) -> Result<bool> {
+        let chat = conversation.to_string();
+        let pending_text: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM outbox
+                WHERE conversation_id = ?
+                  AND blocked = 0
+                  AND submitted = 0
+                  AND json_extract(work, '$.kind') = 'text'
+            )",
+        )
+        .bind(&chat)
+        .fetch_one(&self.db)
+        .await?;
+        if pending_text {
+            return Ok(true);
+        }
+        let earlier_upload: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM transfers AS earlier
+                JOIN transfers AS cur ON cur.id = ? AND cur.direction = 'upload'
+                WHERE earlier.direction = 'upload'
+                  AND earlier.rowid < cur.rowid
+                  AND json_extract(earlier.payload, '$.conversation_id') = ?
+                  AND json_extract(earlier.payload, '$.status') IN ('queued', 'running')
+            )",
+        )
+        .bind(upload_id.to_string())
+        .bind(&chat)
+        .fetch_one(&self.db)
+        .await?;
+        Ok(earlier_upload)
+    }
+
     async fn launch(
         self: &Arc<Self>,
         mut job: Job,
@@ -484,10 +523,23 @@ impl Client {
             return Ok(job.transfer);
         }
         let key = job.key();
+        if key.1 == Direction::Upload {
+            let conversation = job.transfer.conversation_id;
+            if workers
+                .iter()
+                .any(|((_, dir), active)| *dir == Direction::Upload && active.conversation == conversation)
+                || self
+                    .has_earlier_pending_in_conversation(conversation, key.0)
+                    .await?
+            {
+                return Ok(job.transfer);
+            }
+        }
         job.transfer.status = TransferStatus::Running;
         job.transfer.error = None;
         self.store_job(&job).await?;
         let transfer = job.transfer.clone();
+        let conversation = job.transfer.conversation_id;
         let stop = Arc::new(AtomicBool::new(false));
         let signal = stop.clone();
         let client = self.clone();
@@ -526,40 +578,53 @@ impl Client {
                     job.retry_at = unix_millis() + 2_000;
                 }
             }
-            let mut workers = client.workers.lock().await;
-            let complete = job.transfer.status == TransferStatus::Complete;
-            if complete
-                || (client.store_job(&job).await.is_ok()
-                    && job.transfer.status == TransferStatus::Expired)
             {
-                let _ = fs::remove_file(client.spool(key)).await;
+                let mut workers = client.workers.lock().await;
+                let complete = job.transfer.status == TransferStatus::Complete;
+                if complete
+                    || (client.store_job(&job).await.is_ok()
+                        && job.transfer.status == TransferStatus::Expired)
+                {
+                    let _ = fs::remove_file(client.spool(key)).await;
+                }
+                workers.remove(&key);
             }
-            workers.remove(&key);
+            if !client.closed.load(Ordering::Relaxed) {
+                tokio::spawn(async move {
+                    let _ = client.resume_queued().await;
+                });
+            }
         });
-        workers.insert(key, Active { stop, task });
+        workers.insert(key, Active { conversation, stop, task });
         Ok(transfer)
     }
 
-    pub(super) async fn resume_queued(self: &Arc<Self>) -> Result<()> {
-        let mut workers = self.workers.lock().await;
-        let available = MAX_RUNNING.saturating_sub(workers.len());
-        if available > 0 {
-            let rows: Vec<String> = sqlx::query_scalar(
-                "SELECT payload FROM transfers WHERE json_extract(payload, '$.status') = 'queued'
-                 AND coalesce(json_extract(payload, '$.retry_at'), 0) <= ? ORDER BY rowid LIMIT ?",
-            )
-            .bind(unix_millis())
-            .bind(available as i64)
-            .fetch_all(&self.db)
-            .await?;
-            for row in rows {
-                let job: Job = serde_json::from_str(&row)?;
-                if !workers.contains_key(&job.key()) {
-                    self.launch(job, &mut workers).await?;
+    pub fn resume_queued(
+        self: &Arc<Self>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            let mut workers = self.workers.lock().await;
+            let available = MAX_RUNNING.saturating_sub(workers.len());
+            if available > 0 {
+                let rows: Vec<String> = sqlx::query_scalar(
+                    "SELECT payload FROM transfers WHERE json_extract(payload, '$.status') = 'queued'
+                     AND coalesce(json_extract(payload, '$.retry_at'), 0) <= ? ORDER BY rowid LIMIT 16",
+                )
+                .bind(unix_millis())
+                .fetch_all(&self.db)
+                .await?;
+                for row in rows {
+                    if workers.len() >= MAX_RUNNING {
+                        break;
+                    }
+                    let job: Job = serde_json::from_str(&row)?;
+                    if !workers.contains_key(&job.key()) {
+                        self.launch(job, &mut workers).await?;
+                    }
                 }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     fn spool(&self, (id, direction): JobKey) -> PathBuf {
@@ -650,6 +715,12 @@ impl Client {
             if stop.load(Ordering::Relaxed) {
                 return Ok(TransferStatus::Paused);
             }
+        }
+        if self
+            .has_earlier_pending_in_conversation(conversation, id)
+            .await?
+        {
+            return Ok(TransferStatus::Queued);
         }
         let stamp: Publication = self
             .api
@@ -1276,6 +1347,208 @@ mod tests {
         assert_eq!(second.attachment.id, upload_id);
         assert_eq!(client.transfers().await?.len(), 1);
         client.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mixed_text_and_varying_size_uploads_publish_in_queue_order_across_recovery_and_failure() -> Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct MockState {
+            seq: i64,
+            published: Vec<String>,
+            text_attempts: usize,
+            uploads: HashMap<String, (String, u64, u64)>,
+            fail_name: Option<String>,
+        }
+
+        let state = Arc::new(Mutex::new(MockState {
+            fail_name: Some("bad.txt".into()),
+            ..Default::default()
+        }));
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let server_state = state.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else { break };
+                let state = server_state.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut tmp = [0u8; 4096];
+                    let header_end;
+                    loop {
+                        let Ok(n) = stream.read(&mut tmp).await else { return };
+                        if n == 0 { return; }
+                        buf.extend_from_slice(&tmp[..n]);
+                        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            header_end = pos + 4;
+                            break;
+                        }
+                    }
+                    let headers = String::from_utf8_lossy(&buf[..header_end]).to_string();
+                    let content_len: usize = headers
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse().ok()).flatten()
+                        })
+                        .unwrap_or(0);
+                    while buf.len() < header_end + content_len {
+                        let Ok(n) = stream.read(&mut tmp).await else { return };
+                        if n == 0 { break; }
+                        buf.extend_from_slice(&tmp[..n]);
+                    }
+                    let body = &buf[header_end..header_end + content_len];
+                    let req_line = headers.lines().next().unwrap_or("");
+                    let mut parts = req_line.split_whitespace();
+                    let method = parts.next().unwrap_or("");
+                    let path = parts.next().unwrap_or("");
+
+                    let (status, resp_body) = if method == "POST" && path.ends_with("/messages") {
+                        let mut s = state.lock().unwrap();
+                        s.text_attempts += 1;
+                        if s.text_attempts == 1 {
+                            (503, r#"{"error":"temporary outage"}"#.to_string())
+                        } else {
+                            let val: serde_json::Value = serde_json::from_slice(body).unwrap();
+                            s.seq += 1;
+                            let seq = s.seq;
+                            s.published.push(format!("text:{}", val["text"].as_str().unwrap()));
+                            (200, serde_json::json!({ "seq": seq, "created_at": 1000 + seq, "recalled": false }).to_string())
+                        }
+                    } else if method == "POST" && path.ends_with("/uploads") {
+                        let att: Attachment = serde_json::from_slice(body).unwrap();
+                        let mut s = state.lock().unwrap();
+                        if s.fail_name.as_deref() == Some(att.name.as_str()) {
+                            (400, r#"{"error":"rejected attachment"}"#.to_string())
+                        } else {
+                            let entry = s.uploads.entry(att.id.to_string()).or_insert((att.name.clone(), att.size, 0));
+                            (200, serde_json::json!({ "received": entry.2, "complete": false }).to_string())
+                        }
+                    } else if method == "PUT" && path.contains("/chunks/") {
+                        let segs: Vec<&str> = path.split('/').collect();
+                        let id = segs[3].to_string();
+                        let offset: u64 = segs[5].parse().unwrap();
+                        let slow = {
+                            let s = state.lock().unwrap();
+                            s.uploads.get(&id).is_some_and(|(name, _, _)| name == "large.bin") && offset == 0
+                        };
+                        if slow {
+                            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                        }
+                        let mut s = state.lock().unwrap();
+                        let entry = s.uploads.get_mut(&id).unwrap();
+                        entry.2 = offset + body.len() as u64;
+                        (200, serde_json::json!({ "received": entry.2, "complete": false }).to_string())
+                    } else if method == "POST" && path.ends_with("/complete") {
+                        let segs: Vec<&str> = path.split('/').collect();
+                        let id = segs[3].to_string();
+                        let mut s = state.lock().unwrap();
+                        let name = s.uploads.get(&id).unwrap().0.clone();
+                        s.seq += 1;
+                        let seq = s.seq;
+                        s.published.push(format!("file:{name}"));
+                        (200, serde_json::json!({ "seq": seq, "created_at": 1000 + seq, "recalled": false }).to_string())
+                    } else {
+                        (404, "{}".to_string())
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp_body}",
+                        resp_body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+
+        let root = tempfile::tempdir()?;
+        let files = tempfile::tempdir()?;
+        let large = files.path().join("large.bin");
+        let bad = files.path().join("bad.txt");
+        let small = files.path().join("small.txt");
+        std::fs::write(&large, vec![b'A'; 600 * 1024])?; // 2 chunks, slower
+        std::fs::write(&bad, b"will-fail")?;
+        std::fs::write(&small, b"tiny")?; // 1 chunk, fast
+
+        let session = DeviceSession {
+            user: User { id: Uuid::nil(), handle: "order_tester".into() },
+            device_id: Uuid::nil(),
+            cursor: Uuid::nil(),
+        };
+        let client = Client::open(root.path(), Api::new(&format!("http://{addr}")).unwrap(), session, false).await?;
+        let conversation = Uuid::new_v4();
+        let directory = crate::Directory {
+            contacts: Vec::new(),
+            conversations: vec![crate::Conversation {
+                id: conversation,
+                title: None,
+                members: vec![client.user.clone()],
+                activity_at: 1,
+                preview: None,
+                preview_seq: None,
+                latest_seq: 0,
+                unread: 0,
+                read_through: 0,
+                joined_after: None,
+            }],
+            pending_contacts: Vec::new(),
+            remarks: HashMap::new(),
+            names: HashMap::new(),
+            avatars: HashMap::new(),
+            read_receipts: false,
+        };
+        sqlx::query("INSERT INTO directory (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload")
+            .bind(serde_json::to_string(&directory)?)
+            .execute(&client.db)
+            .await?;
+
+        // Queue text, then large.bin, then bad.txt (400 rejected), then small.txt
+        client
+            .queue_message(
+                conversation,
+                crate::SendMessage {
+                    text: "hello first".into(),
+                    nonce: Uuid::new_v4(),
+                    reply_to: None,
+                },
+            )
+            .await?;
+        let large_snap = staging::capture_source_snapshot(&large)?;
+        let bad_snap = staging::capture_source_snapshot(&bad)?;
+        let small_snap = staging::capture_source_snapshot(&small)?;
+        client.queue_upload_verified(conversation, Uuid::new_v4(), large, large_snap).await?;
+        client.queue_upload_verified(conversation, Uuid::new_v4(), bad, bad_snap).await?;
+        client.queue_upload_verified(conversation, Uuid::new_v4(), small, small_snap).await?;
+
+        // First flush hits 503 on text; force next_attempt=0 to simulate reconnect recovery.
+        let _ = client.flush_pending_messages().await?;
+        sqlx::query("UPDATE outbox SET next_attempt = 0").execute(&client.db).await?;
+        let _ = client.flush_pending_messages().await?;
+        client.resume_queued().await?;
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let published_len = state.lock().unwrap().published.len();
+            if published_len >= 3 {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "timed out waiting for ordered publications");
+            let _ = client.resume_queued().await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        let published = state.lock().unwrap().published.clone();
+        assert_eq!(published, vec!["text:hello first", "file:large.bin", "file:small.txt"]);
+        let transfers = client.transfers().await?;
+        let bad_job = transfers.iter().find(|t| t.attachment.name == "bad.txt").unwrap();
+        assert_eq!(bad_job.status, TransferStatus::Failed);
+
+        client.close().await;
+        server.abort();
         Ok(())
     }
 }
