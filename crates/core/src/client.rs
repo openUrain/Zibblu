@@ -710,6 +710,22 @@ impl Client {
     }
 
     pub async fn create_conversation(&self, request: ConversationRequest) -> Result<Uuid> {
+        self.ensure_open()?;
+        if let ConversationRequest::Direct { contact_id } = &request {
+            let directory = self.membership_directory().await?;
+            if directory.contacts.iter().any(|user| user.id == *contact_id)
+                && let Some(chat) = directory.conversations.iter().find(|chat| chat.title.is_none()
+                    && chat.members.iter().any(|user| user.id == *contact_id)
+                    && chat.members.iter().any(|user| user.id == self.user.id))
+            {
+                let reopened = sqlx::query("DELETE FROM local_deleted_chats WHERE conversation_id = ?")
+                    .bind(chat.id.to_string()).execute(&self.db).await?.rows_affected();
+                if reopened != 0 {
+                    self.history_changed();
+                    return Ok(chat.id);
+                }
+            }
+        }
         let result: ConversationCreated = self
             .api
             .json(
