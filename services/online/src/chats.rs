@@ -462,7 +462,7 @@ pub(crate) async fn recall(
         ));
     }
     let event: i64 = sqlx::query_scalar(
-        "UPDATE messages SET recall_seq = nextval(pg_get_serial_sequence('messages', 'seq')), text = NULL
+        "UPDATE messages SET recall_seq = nextval(pg_get_serial_sequence('messages', 'seq')), text = NULL, attachment_fingerprint = NULL
          WHERE seq = $1 RETURNING recall_seq",
     ).bind(seq).fetch_one(&mut *tx).await?;
     sqlx::query(

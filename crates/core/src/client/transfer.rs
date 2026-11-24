@@ -3,8 +3,8 @@ use super::{
     staging, unix_millis,
 };
 use crate::{
-    Attachment, CHUNK_SIZE, ContentAck, MAX_PASTED_IMAGE_BYTES, Message, Publication,
-    UploadProgress, User,
+    Attachment, CHUNK_SIZE, ContentAck, ForwardRequest, ForwardResult, ForwardUploadProgress,
+    ForwardUploadRequest, MAX_PASTED_IMAGE_BYTES, Message, Publication, UploadProgress, User,
 };
 use anyhow::{Context, Result, bail, ensure};
 use reqwest::{Method, StatusCode};
@@ -184,6 +184,120 @@ impl Client {
                 Ok(transfer)
             })
             .collect()
+    }
+
+    /// Keep the request and its target UUIDs unchanged when retrying an uncertain result.
+    /// An online source does not require a local original.
+    pub async fn forward_attachment(
+        self: &Arc<Self>,
+        source_id: Uuid,
+        request: &ForwardRequest,
+    ) -> Result<Vec<ForwardResult>> {
+        self.ensure_open()?;
+        let route = format!("/v2/files/{source_id}/forward");
+        let mut results = self.forward_results(&route, request).await?;
+        if !results.iter().any(|item| item.status == 410) {
+            return Ok(results);
+        }
+
+        // Only the managed, fully verified original is eligible, never the preview cache.
+        let local = match self.attachment(source_id).await {
+            Ok(message) if !message.recalled && message.local_file => message.attachment,
+            _ => None,
+        };
+        let Some(original) = local else { return Ok(results); };
+        let path = self.managed_path(source_id);
+        let expected = original.clone();
+        let destination = path.clone();
+        let staged = tokio::task::spawn_blocking(move || {
+            stage_publication(&path, &destination, &expected)
+        }).await?;
+        let staged = match staged {
+            Ok(path) => path,
+            Err(_) => {
+                for item in &mut results {
+                    if item.status == 410 {
+                        item.status = 422;
+                        item.error = Some("The local original failed verification.".into());
+                    }
+                }
+                return Ok(results);
+            }
+        };
+        self.ensure_open()?;
+        let upload: ForwardUploadProgress = self.api.json(
+            self.api.request(Method::POST, &format!("/v2/files/{source_id}/forward-upload"))
+                .json(&ForwardUploadRequest { request: request.clone(), original: original.clone() }),
+        ).await?;
+        let mut received = upload.progress.received;
+        ensure!(received <= original.size
+            && (received == original.size || received % CHUNK_SIZE == 0)
+            && (!upload.progress.complete || received == original.size), OnlineError::InvalidResponse);
+        if !upload.progress.complete {
+            let mut file = fs::File::open(&staged).await?;
+            file.seek(SeekFrom::Start(received)).await?;
+            while received < original.size {
+                self.ensure_open()?;
+                let len = (original.size - received).min(CHUNK_SIZE);
+                let mut bytes = vec![0; len as usize];
+                file.read_exact(&mut bytes).await?;
+                let progress: UploadProgress = self.api.json(
+                    self.api.request(Method::PUT, &format!("/v1/files/{}/chunks/{received}", upload.id))
+                        .body(bytes),
+                ).await?;
+                ensure!(progress.received == received + len && !progress.complete,
+                    OnlineError::InvalidResponse);
+                received = progress.received;
+            }
+        }
+        results = self.forward_results(&route, request).await?;
+
+        // Each target receives its own managed file, never a cross-conversation link.
+        self.sync_inbox().await?;
+        let directory = self.directory().await?;
+        for item in &results {
+            let Some(stamp) = item.publication.as_ref() else { continue; };
+            if stamp.recalled || stamp.expires_at.is_some_and(|expiry| expiry <= self.server_now()) {
+                continue;
+            }
+            if !directory.conversations.iter().any(|chat| chat.id == item.target.conversation_id
+                && chat.joined_after.is_some_and(|after| stamp.seq > after)) {
+                continue;
+            }
+            let Ok(message) = self.attachment(item.target.attachment_id).await else { continue; };
+            let Some(file) = message.attachment else { continue; };
+            if message.recalled || message.seq != stamp.seq || file.sha256 != original.sha256
+                || file.size != original.size {
+                continue;
+            }
+            self.stage_verified(&file, staged.to_path_buf()).await?;
+            let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
+            let visible: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM inbox WHERE seq = ? AND attachment_id = ?
+                    AND NOT EXISTS (SELECT 1 FROM hidden_messages WHERE seq = inbox.seq))",
+            ).bind(stamp.seq).bind(file.id.to_string()).fetch_one(&mut *tx).await?;
+            if visible {
+                record_local_file(&mut tx, &file, stamp.seq, true).await?;
+            }
+            tx.commit().await?;
+            if !visible {
+                let _ = fs::remove_file(self.managed_path(file.id)).await;
+            }
+        }
+        self.history_changed();
+        Ok(results)
+    }
+
+    async fn forward_results(&self, route: &str, request: &ForwardRequest) -> Result<Vec<ForwardResult>> {
+        let results: Vec<ForwardResult> = self.api.json(
+            self.api.request(Method::POST, route).json(request),
+        ).await?;
+        ensure!(results.len() == request.targets.len()
+            && results.iter().zip(&request.targets).all(|(item, target)| {
+                &item.target == target && ((item.status == 200) == item.publication.is_some())
+                    && item.publication.as_ref().is_none_or(|stamp| stamp.seq > 0)
+            }), OnlineError::InvalidResponse);
+        Ok(results)
     }
 
     pub async fn queue_upload(

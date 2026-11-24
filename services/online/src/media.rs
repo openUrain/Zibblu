@@ -185,12 +185,12 @@ pub async fn process_one(db: &PgPool) -> anyhow::Result<bool> {
     let job = sqlx::query_as::<_, Job>(
         "SELECT a.id, a.owner_id, a.size, a.sha256 FROM attachments a
          JOIN video_resources r ON r.attachment_id = a.id AND r.kind = 'cover'
-         WHERE a.complete AND r.status = 'pending' AND EXISTS (
-             SELECT 1 FROM attachments ref JOIN messages m ON m.attachment_id = ref.id
-             WHERE coalesce(ref.payload_id, ref.id) = a.id AND ref.complete AND m.recall_seq IS NULL
-               AND coalesce(ref.expires_at > clock_timestamp(), true)
-               AND coalesce(m.expires_at > clock_timestamp(), true))
-         ORDER BY a.id LIMIT 1",
+         JOIN attachments ref ON coalesce(ref.payload_id, ref.id) = a.id
+         JOIN messages m ON m.attachment_id = ref.id
+         WHERE a.complete AND r.status = 'pending' AND ref.complete AND m.recall_seq IS NULL
+           AND coalesce(ref.expires_at > clock_timestamp(), true)
+           AND coalesce(m.expires_at > clock_timestamp(), true)
+         GROUP BY a.id ORDER BY min(m.seq) LIMIT 1",
     ).fetch_optional(&mut *tx).await?;
     let Some(job) = job else { return Ok(false); };
     let scratch = tempfile::tempdir();

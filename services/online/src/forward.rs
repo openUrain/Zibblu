@@ -231,7 +231,19 @@ async fn publish_target(
     let source = source(&mut tx, source_id, auth.user_id).await?;
     require_send_access(&mut tx, target.conversation_id, auth.user_id).await?;
     let root = if source.expired {
-        verified_payload(&mut tx, batch.upload_id, auth.user_id).await?
+        match verified_payload(&mut tx, batch.upload_id, auth.user_id).await {
+            Ok(id) => id,
+            Err(error @ Error(StatusCode::UNPROCESSABLE_ENTITY, _)) => {
+                let id = batch.upload_id.ok_or_else(Error::internal)?;
+                sqlx::query("DELETE FROM attachment_chunks WHERE attachment_id = $1")
+                    .bind(id).execute(&mut *tx).await?;
+                sqlx::query("UPDATE attachments SET received = 0 WHERE id = $1")
+                    .bind(id).execute(&mut *tx).await?;
+                tx.commit().await?;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        }
     } else {
         source.payload_id.ok_or_else(Error::missing)?
     };
@@ -245,6 +257,7 @@ async fn publish_target(
 
     // The feed lock orders recalls, membership changes, expiry sweeps and publication.
     // Recheck the clock after potentially hashing an uploaded original.
+    auth.require(&mut tx).await?;
     let current = self::source(&mut tx, source_id, auth.user_id).await?;
     if current.expired != source.expired {
         return Err(needs_original());
