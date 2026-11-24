@@ -24,7 +24,7 @@ const FORMATS: &str = "mov,matroska,webm,avi";
 pub(crate) fn candidate(bytes: &[u8]) -> bool {
     bytes.get(4..8).is_some_and(|tag| matches!(tag, b"ftyp" | b"moov" | b"mdat" | b"wide" | b"free"))
         || bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3])
-        || (bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"AVI "))
+        || (bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"AVI ".as_slice()))
 }
 
 pub(crate) async fn enqueue(db: &mut PgConnection, id: Uuid) -> Result<()> {
@@ -36,6 +36,8 @@ pub(crate) async fn enqueue(db: &mut PgConnection, id: Uuid) -> Result<()> {
 
 #[derive(FromRow)]
 struct Resource {
+    expired: bool,
+    present: bool,
     kind: String,
     status: String,
     size: Option<i64>,
@@ -46,30 +48,28 @@ fn mime(kind: &str) -> &'static str {
     if kind == "cover" { "image/jpeg" } else { "video/mp4" }
 }
 
-async fn visible(db: &mut PgConnection, id: Uuid, auth: &Auth) -> Result<()> {
+async fn resources(db: &mut PgConnection, id: Uuid, auth: &Auth) -> Result<Vec<Resource>> {
     auth.require(db).await?;
-    let (expired, exists): (bool, bool) = sqlx::query_as(
+    let rows = sqlx::query_as::<_, Resource>(
         "SELECT coalesce(m.expires_at <= statement_timestamp(), false)
-                    OR coalesce(a.expires_at <= statement_timestamp(), false),
-                coalesce(a.complete, false)
+                    OR coalesce(a.expires_at <= statement_timestamp(), false) AS expired,
+                coalesce(a.complete, false) AS present,
+                coalesce(r.kind, '') AS kind, coalesce(r.status, 'unsupported') AS status, r.size, r.sha256
          FROM m1_visible_messages m LEFT JOIN attachments a ON a.id = m.attachment_id
+         LEFT JOIN video_resources r ON r.attachment_id = a.id
          WHERE m.attachment_id = $1 AND m.account_id = $2 AND m.recall_seq IS NULL",
-    ).bind(id).bind(auth.user_id).fetch_optional(db).await?.ok_or_else(Error::missing)?;
-    if expired {
-        return Err(Error(StatusCode::GONE, "The file expired."));
-    }
-    if !exists { return Err(Error::missing()); }
-    Ok(())
+    ).bind(id).bind(auth.user_id).fetch_all(db).await?;
+    let first = rows.first().ok_or_else(Error::missing)?;
+    if first.expired { return Err(Error(StatusCode::GONE, "The file expired.")); }
+    if !first.present { return Err(Error::missing()); }
+    Ok(rows)
 }
 
 pub(crate) async fn metadata(
     State(app): State<App>, auth: Auth, Path(id): Path<Uuid>,
 ) -> Result<Json<Value>> {
     let mut db = app.db.acquire().await?;
-    visible(&mut db, id, &auth).await?;
-    let rows = sqlx::query_as::<_, Resource>(
-        "SELECT kind, status, size, sha256 FROM video_resources WHERE attachment_id = $1",
-    ).bind(id).fetch_all(&mut *db).await?;
+    let rows = resources(&mut db, id, &auth).await?;
     let resource = |kind: &str| {
         let row = rows.iter().find(|r| r.kind == kind);
         json!({
@@ -106,11 +106,9 @@ pub(crate) async fn read(
 ) -> Result<Response> {
     if !matches!(kind.as_str(), "cover" | "preview") { return Err(Error::missing()); }
     let mut db = app.db.acquire().await?;
-    visible(&mut db, id, &auth).await?;
-    let row = sqlx::query_as::<_, Resource>(
-        "SELECT kind, status, size, sha256 FROM video_resources WHERE attachment_id = $1 AND kind = $2",
-    ).bind(id).bind(&kind).fetch_optional(&mut *db).await?;
-    let size = match row.as_ref().map(|r| r.status.as_str()) {
+    let rows = resources(&mut db, id, &auth).await?;
+    let row = rows.iter().find(|r| r.kind == kind);
+    let size = match row.map(|r| r.status.as_str()) {
         Some("ready") => row.and_then(|r| r.size).ok_or_else(Error::internal)?,
         Some("pending") => return Err(Error::conflict("Video resource is being prepared.")),
         Some("failed") => return Err(Error(StatusCode::UNPROCESSABLE_ENTITY, "Video processing failed.")),
@@ -133,7 +131,7 @@ pub(crate) async fn read(
     let mut response = Response::builder()
         .status(if requested.is_some() { StatusCode::PARTIAL_CONTENT } else { StatusCode::OK })
         .header(header::CONTENT_TYPE, mime(&kind))
-        .header(header::CONTENT_LENGTH, end - start + 1)
+        .header(header::CONTENT_LENGTH, (end - start + 1).to_string())
         .header(header::ACCEPT_RANGES, "bytes")
         .header("x-content-type-options", "nosniff");
     if requested.is_some() {
@@ -205,13 +203,7 @@ pub async fn process_one(db: &PgPool) -> anyhow::Result<bool> {
         _ => ["failed", "failed"],
     };
     lock_message_feed(&mut tx).await.map_err(|_| anyhow::anyhow!("Could not lock delivery feed"))?;
-    let live: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM attachments a JOIN messages m ON m.attachment_id = a.id
-         WHERE a.id = $1 AND a.complete AND m.recall_seq IS NULL
-         AND coalesce(a.expires_at > clock_timestamp(), true)
-         AND coalesce(m.expires_at > clock_timestamp(), true))",
-    ).bind(job.id).fetch_one(&mut *tx).await?;
-    if live {
+    if source_live(&mut tx, job.id).await? {
         let (mut account, _, mut total, _) = files::storage_usage(&mut tx, job.owner_id).await
             .map_err(|_| anyhow::anyhow!("Could not check media storage quota"))?;
         for (index, (kind, name)) in [("cover", "cover.jpg"), ("preview", "preview.mp4")].into_iter().enumerate() {
@@ -232,8 +224,21 @@ pub async fn process_one(db: &PgPool) -> anyhow::Result<bool> {
                 .bind(job.id).bind(kind).bind(status).execute(&mut *tx).await?;
         }
     }
+    if !source_live(&mut tx, job.id).await? {
+        sqlx::query("DELETE FROM video_resources WHERE attachment_id = $1")
+            .bind(job.id).execute(&mut *tx).await?;
+    }
     tx.commit().await?;
     Ok(true)
+}
+
+async fn source_live(db: &mut PgConnection, id: Uuid) -> anyhow::Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM attachments a JOIN messages m ON m.attachment_id = a.id
+         WHERE a.id = $1 AND a.complete AND m.recall_seq IS NULL
+         AND coalesce(a.expires_at > clock_timestamp(), true)
+         AND coalesce(m.expires_at > clock_timestamp(), true))",
+    ).bind(id).fetch_one(db).await?)
 }
 
 async fn stage(db: &mut PgConnection, job: &Job, dir: &FsPath) -> anyhow::Result<()> {
@@ -274,68 +279,77 @@ async fn store(db: &mut PgConnection, id: Uuid, kind: &str, path: &FsPath, size:
 
 // Linux service runtime: one subprocess, strict CPU/address-space/file-size limits,
 // no inherited database environment, no network protocols, no unbounded stderr/stdout.
-async fn run(dir: &FsPath, program: &str, args: &[&str], output_limit: i64, seconds: u64, stdout: Stdio) -> bool {
+async fn run(dir: &FsPath, program: &str, args: &[&str], output_limit: i64, seconds: u64, stdout: Stdio) -> std::result::Result<(), &'static str> {
     let mut command = Command::new("prlimit");
     command.env_clear().env("PATH", "/usr/bin:/bin")
         .current_dir(dir)
         .args(["--as=2147483648", "--cpu=90", &format!("--fsize={output_limit}"), "--", program])
         .args(args).stdin(Stdio::null()).stdout(stdout).stderr(Stdio::null()).kill_on_drop(true);
-    let Ok(mut child) = command.spawn() else { return false; };
+    let mut child = command.spawn().map_err(|_| "failed")?;
     match tokio::time::timeout(Duration::from_secs(seconds), child.wait()).await {
-        Ok(Ok(status)) => status.success(),
-        _ => { let _ = child.kill().await; false }
+        Ok(Ok(status)) if status.success() => Ok(()),
+        Ok(Ok(status)) if status.code().is_some_and(|code| code != 126 && code != 127) => Err("unsupported"),
+        _ => { let _ = child.kill().await; Err("failed") }
     }
 }
 
-async fn probe(dir: &FsPath, input: &str) -> Option<f64> {
+async fn probe(dir: &FsPath, input: &str) -> std::result::Result<f64, &'static str> {
     let output = dir.join("probe.json");
-    let stdout = Stdio::from(std::fs::File::create(&output).ok()?);
-    if !run(dir, "ffprobe", &[
+    let stdout = Stdio::from(std::fs::File::create(&output).map_err(|_| "failed")?);
+    run(dir, "ffprobe", &[
         "-v", "error", "-max_alloc", "134217728", "-protocol_whitelist", "file",
-        "-format_whitelist", FORMATS, "-probesize", "8388608", "-analyzeduration", "5000000",
+        "-format_whitelist", FORMATS, "-max_streams", "32", "-probesize", "8388608", "-analyzeduration", "5000000",
         "-select_streams", "V:0", "-show_entries", "stream=width,height:format=duration",
         "-of", "json", input,
-    ], 16384, 10, stdout).await { return None; }
-    let value: Value = serde_json::from_slice(&tokio::fs::read(output).await.ok()?).ok()?;
-    let video = value["streams"].as_array()?.first()?;
-    let width = video["width"].as_u64()?;
-    let height = video["height"].as_u64()?;
-    let duration = value["format"]["duration"].as_str()?.parse::<f64>().ok()?;
-    (width > 0 && height > 0 && width <= 4096 && height <= 4096
-        && width.checked_mul(height)? <= MAX_PIXELS && duration.is_finite()
-        && duration > 0.0 && duration <= MAX_DURATION + 0.1).then_some(duration)
+    ], 16384, 10, stdout).await?;
+    let bytes = tokio::fs::read(output).await.map_err(|_| "failed")?;
+    fn parse(bytes: &[u8]) -> Option<f64> {
+        let value: Value = serde_json::from_slice(bytes).ok()?;
+        let video = value["streams"].as_array()?.first()?;
+        let width = video["width"].as_u64()?;
+        let height = video["height"].as_u64()?;
+        let duration = value["format"]["duration"].as_str()?.parse::<f64>().ok()?;
+        (width > 0 && height > 0 && width <= 4096 && height <= 4096
+            && width.checked_mul(height)? <= MAX_PIXELS && duration.is_finite()
+            && duration > 0.0 && duration <= MAX_DURATION + 0.1).then_some(duration)
+    }
+    parse(&bytes).ok_or("unsupported")
+}
+
+async fn good_size(dir: &FsPath, name: &str, limit: i64) -> Option<i64> {
+    tokio::fs::metadata(dir.join(name)).await.ok().map(|m| m.len() as i64)
+        .filter(|size| (1..=limit).contains(size))
 }
 
 async fn generate(dir: &FsPath, original_size: i64) -> [&'static str; 2] {
-    let Some(duration) = probe(dir, "input").await else { return ["unsupported", "unsupported"]; };
+    let duration = match probe(dir, "input").await {
+        Ok(duration) => duration,
+        Err(status) => return [status, status],
+    };
     if duration > MAX_DURATION { return ["unsupported", "unsupported"]; }
     let input = [
         "-nostdin", "-v", "error", "-max_alloc", "134217728", "-protocol_whitelist", "file",
-        "-format_whitelist", FORMATS, "-probesize", "8388608", "-analyzeduration", "5000000",
+        "-format_whitelist", FORMATS, "-max_streams", "32", "-probesize", "8388608", "-analyzeduration", "5000000",
         "-threads", "2", "-max_pixels", "8294400", "-i", "input",
     ];
     let cover = [
         "-map", "0:V:0", "-an", "-sn", "-dn", "-map_metadata", "-1", "-filter_threads", "1",
-        "-vf", "scale=w=640:h=640:force_original_aspect_ratio=decrease:force_divisible_by=2",
+        "-vf", "scale=w='min(iw,640)':h='min(ih,640)':force_original_aspect_ratio=decrease:force_divisible_by=2",
         "-frames:v", "1", "-q:v", "4", "-threads", "2", "-f", "image2", "cover.jpg",
     ];
     let preview = [
         "-map", "0:V:0", "-map", "0:a:0?", "-sn", "-dn", "-map_metadata", "-1", "-map_chapters", "-1",
-        "-filter_threads", "1", "-vf", "scale=w=1280:h=720:force_original_aspect_ratio=decrease:force_divisible_by=2,fps=30",
+        "-filter_threads", "1", "-vf", "scale=w='min(iw,1280)':h='min(ih,720)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=30",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "25", "-threads", "2",
         "-c:a", "aac", "-b:a", "96k", "-ac", "2", "-movflags", "+faststart",
         "-t", "600", "-f", "mp4", "preview.mp4",
     ];
-    let good_size = async |name: &str, limit: i64| {
-        tokio::fs::metadata(dir.join(name)).await.ok().map(|m| m.len() as i64)
-            .filter(|size| (1..=limit).contains(size))
-    };
-    let cover_status = if run(dir, "ffmpeg", &[input.as_slice(), &cover].concat(), COVER_LIMIT, 20, Stdio::null()).await
-        && good_size("cover.jpg", COVER_LIMIT).await.is_some() { "ready" } else { "failed" };
-    let preview_status = if run(dir, "ffmpeg", &[input.as_slice(), &preview].concat(), PREVIEW_LIMIT, 120, Stdio::null()).await {
-        match good_size("preview.mp4", PREVIEW_LIMIT).await {
+    let cover_status = if run(dir, "ffmpeg", &[input.as_slice(), &cover].concat(), COVER_LIMIT, 20, Stdio::null()).await.is_ok()
+        && good_size(dir, "cover.jpg", COVER_LIMIT).await.is_some() { "ready" } else { "failed" };
+    let preview_status = if run(dir, "ffmpeg", &[input.as_slice(), &preview].concat(), PREVIEW_LIMIT, 120, Stdio::null()).await.is_ok() {
+        match good_size(dir, "preview.mp4", PREVIEW_LIMIT).await {
             Some(size) if size >= original_size => "not_smaller",
-            Some(_) if probe(dir, "preview.mp4").await.is_some_and(|d| (d - duration).abs() <= 0.5_f64.max(duration * 0.02)) => "ready",
+            Some(_) if probe(dir, "preview.mp4").await.is_ok_and(|d| (d - duration).abs() <= 0.1_f64.max(duration * 0.02)) => "ready",
             _ => "failed",
         }
     } else { "failed" };

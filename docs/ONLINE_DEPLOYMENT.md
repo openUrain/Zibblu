@@ -63,6 +63,25 @@ cargo test --locked -p zibblu-online --test m1 -- --nocapture
 docker --context desktop-linux stop zibblu-issue46-zibblu-online-1 zibblu-issue46-postgres-1
 ```
 
+## 视频处理运行时
+
+在线服务 Linux Docker 镜像包含 FFmpeg、ffprobe 和 prlimit（util-linux），Compose 使用 320 MiB 的 /tmp tmpfs，任务结束后清理临时目录，容器停止或重建后 tmpfs 消失；不写入数据库持久卷以外的媒体目录。原生 Linux 开发环境需安装同等工具，异常终止后仅清理该测试进程遗留的 tempfile 目录；非 Linux 原生服务仍可发布及下载原片，但不生成衍生物。
+
+视频任务最多同时处理一个源附件；输入不超过现有 256 MiB，探测上限为 32 个流、8 MiB 探测量和 5 秒分析，最大 3840×2160 等效像素（任一边最多 4096）、10 分钟时长。子进程地址空间 2 GiB、CPU 时间 90 秒、单次分配上限 128 MiB；暂存 30 秒、探测 10 秒、封面 20 秒、预览 120 秒。封面 JPEG 最多 640×640 和 512 KiB；预览 H.264/AAC MP4、最大 1280×720、30 fps、yuv420p、CRF 25、fast、96 kbps 音频、faststart，最多 32 MiB。任何一个资源可独立失败；若压缩版本不比原片小，不存储该预览。磁盘临时文件和数据库存储限制相互独立。
+
+生产批准值保持 `ZIBBLU_FILE_TTL_SECONDS=604800` 与 `ZIBBLU_CLEANUP_INTERVAL_SECONDS=900`，本功能不改变部署环境变量。迁移 `0009_video_resources` 仅新增两个表及索引，不重置现有 Local-First v2 数据。已有客户端可继续使用原片接口。回退到不认识迁移 0009 的旧二进制前，先停止在线应用、备份当前数据库，并在隔离副本验证 SQLx 迁移校验。确需原地回退时，在 Owner 明确批准后于同一事务执行 `DROP TABLE video_resource_chunks; DROP TABLE video_resources; DELETE FROM _sqlx_migrations WHERE version = 9;`，仅丢弃可再生成的衍生物；保留原附件、消息、其他迁移及卷。不要将旧备份恢复到当前库覆盖新消息。
+
+Linux 隔离集成验收（独立 PostgreSQL，禁止使用生产连接串）：
+
+```bash
+cargo test --locked -p zibblu-online --lib media::tests
+cargo test --locked -p zibblu-online --test m1 video_derivatives_and_retention -- --nocapture
+docker build -f deploy/docker/Dockerfile -t zibblu-online-media-test .
+docker run --rm --entrypoint /usr/bin/ffmpeg zibblu-online-media-test -version
+```
+
+Windows/iOS 播放复验：在隔离服务上传视频，使用有效测试 Bearer token 获取 `/v2/files/{id}/media`，等待 preview 为 ready；在对应平台的测试播放器以认证请求读取 MP4 并拖动至中间和尾部，核对 206、音视频及画面，随后撤回并确认新范围请求被拒绝。原片另走原附件分块接口并核对 SHA-256。勿将 token 放入公开 URL 或日志。
+
 ## 未来切换与回滚
 
 - 使用新的 Zibblu PostgreSQL 库及新客户端资料。SQLx `0007_local_first` 遇到含有旧账号的库会拒绝。旧环境及数据库供回滚。旧客户端访问 v2 部署的登录或同步入口时收到升级提示，旧数据留在原环境。

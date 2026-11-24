@@ -18,8 +18,8 @@ CREATE INDEX video_resources_pending ON video_resources (attachment_id) WHERE ki
 CREATE TABLE video_resource_chunks (
     attachment_id UUID NOT NULL,
     kind TEXT NOT NULL,
-    byte_offset BIGINT NOT NULL CHECK (byte_offset >= 0),
-    data BYTEA NOT NULL,
+    byte_offset BIGINT NOT NULL CHECK (byte_offset >= 0 AND byte_offset % 1048576 = 0),
+    data BYTEA NOT NULL CHECK (octet_length(data) BETWEEN 1 AND 1048576),
     PRIMARY KEY (attachment_id, kind, byte_offset),
     FOREIGN KEY (attachment_id, kind) REFERENCES video_resources(attachment_id, kind) ON DELETE CASCADE
 );

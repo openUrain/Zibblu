@@ -37,10 +37,29 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install video processing runtime
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg util-linux
+
+      - name: Test video range parser
+        run: cargo test --locked -p zibblu-online --lib media::tests
+
       - name: Test real messaging and file transfer
         env:
           ZIBBLU_TEST_DATABASE_URL: postgres://zibblu:ci_test_password@localhost:5432/zibblu_test
         run: cargo test --locked -p zibblu-online --test m1
+
+  online-container:
+    name: Online Docker runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build online service
+        run: docker build -f deploy/docker/Dockerfile -t zibblu-online-ci .
+      - name: Verify media executables as the service user
+        run: |
+          docker run --rm --entrypoint /usr/bin/prlimit zibblu-online-ci --as=2147483648 --cpu=90 --fsize=33554432 -- /usr/bin/ffmpeg -version
+          docker run --rm --entrypoint /usr/bin/ffprobe zibblu-online-ci -version
 
   desktop-rust:
     name: Tauri Rust (Windows)

@@ -144,6 +144,17 @@ Record decisions in [DECISIONS.md](DECISIONS.md) when one is actually made.
 - `POST /v2/files/{id}/download` 为显式下载建立设备内容任务。安全保存目标并校验 SHA-256 后，客户端把本地文件清单和待发 ACK 同传输结果提交。`POST /v2/files/{id}/ack` 表示 `content_downloaded_and_sha256_verified`，提交摘要并复核设备、权限、成品和有效期。续传半途、预览、摘要错误和目标冲突都不计入内容 ACK。
 - 文件完整副本可从受管目录再次保存，无需请求服务器块。取消、到期和撤回处理在线与应用管理的入口，用户另存的副本由用户保管。
 
+### 视频衍生资源
+
+原片完整校验后按原协议发布；对具有 MP4/MOV、Matroska/WebM 或 AVI 容器特征的普通文件，在同一事务登记待处理的封面和预览。独立后台工作器以数据库事务 advisory lock 限制同一库的并发为一，读取原片分块到有界临时目录，以 ffprobe 检测真实视频流，再生成 JPEG 封面和 H.264/AAC MP4 预览。转码期间不持有消息 feed 锁；提交衍生资源前取得 feed 锁复核源附件与消息期限、撤回及配额。源过期或已撤回则不保留迟到结果。进程中断回滚待处理事务，重新启动可继续处理仍有效的任务。
+
+`video_resources` 以原附件 UUID 与 `cover` / `preview` 作为独立资源身份，`video_resource_chunks` 保存独立分块。每项有自己的状态、MIME（JPEG/MP4）、字节数和 SHA-256；失败项没有字节数和摘要。只有成品衍生资源占用持久化字节配额，现有单账号 2 GiB、服务 16 GiB 和原附件数量上限不变。衍生资源通过外键随原附件删除；其读取不建立原片内容 ACK。
+
+- `GET /v2/files/{id}/media`：Bearer 鉴权，返回 `attachment_id` 与 `cover`、`preview` 两项。每项含 `id`（原 UUID/类型）、`status`、`mime`、`size`（字节或 null）、`sha256`（独立摘要或 null）。状态为 `pending`、`ready`、`unsupported`、`failed`、`not_smaller`、`quota`。没有衍生资源记录的历史附件或非视频为 `unsupported`。
+- `GET /v2/files/{id}/media/{kind}`：Bearer 鉴权读取对应资源；`HEAD` 返回完整资源的 MIME、Content-Length 与 Accept-Ranges。GET 支持单一 bytes 范围、后缀范围与无结束位置范围，成功为 206 并带 Content-Range，非法或不支持的多范围为 416 并带总长度；无 Range 为 200。每次从数据库读取最多一个原生分块并重新校验授权、撤回及期限。
+- 无认证 401；非可见、已撤回或原件不存在 404；已授权但到期 410；处理中 409；生成失败 422；不支持或预览不比原片小 415；配额不足 507。不能通过衍生资源路径获取服务器任意文件。所有响应私有且禁止缓存。
+- 不改变现有发布、同步、上传、原片下载或内容 ACK 的请求及响应。旧客户端继续访问原片；新客户端可单独获取衍生资源，无需先下载原片。
+
 ### 存储、回收与回滚
 
 | 组件 | 用途 |
