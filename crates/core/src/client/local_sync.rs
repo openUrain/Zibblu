@@ -303,10 +303,24 @@ impl Client {
                     if message.expired.is_none() && !message.recalled {
                         ack.metadata_received.push(message.seq);
                     }
-                    if message.sender.id == self.user.id
-                        && let Some(nonce) = message.nonce
-                    {
-                        self.merge_outbox(&mut tx, nonce, &mut message).await?;
+                    if message.sender.id == self.user.id {
+                        if let Some(id) = page.own_attachment_keys.get(&message.seq).copied()
+                            .or_else(|| message.attachment.as_ref().map(|file| file.id))
+                        {
+                            let suppressed: bool = sqlx::query_scalar(
+                                "SELECT EXISTS(SELECT 1 FROM local_suppressed_sends WHERE kind = 'upload' AND id = ? AND conversation_id = ?)",
+                            ).bind(id.to_string()).bind(message.conversation_id.to_string()).fetch_one(&mut *tx).await?;
+                            if suppressed {
+                                sqlx::query("INSERT OR IGNORE INTO local_deleted_messages (seq, conversation_id, attachment_id) VALUES (?,?,?)")
+                                    .bind(message.seq).bind(message.conversation_id.to_string()).bind(id.to_string())
+                                    .execute(&mut *tx).await?;
+                                changed = true;
+                                continue;
+                            }
+                        }
+                        if let Some(nonce) = message.nonce {
+                            self.merge_outbox(&mut tx, nonce, &mut message).await?;
+                        }
                     }
                     changed |= persist_message(&mut tx, message).await?;
                 }
@@ -524,7 +538,7 @@ pub(super) async fn persist_message(
     }
     let suppressed: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM local_suppressed_sends WHERE conversation_id = ?1
-            AND ((kind = 'text' AND id = ?2) OR (kind = 'upload' AND id IN (?2, ?3))))",
+            AND ((kind = 'text' AND id = ?2) OR (kind = 'upload' AND id = ?3)))",
     ).bind(message.conversation_id.to_string())
         .bind(message.nonce.map(|id| id.to_string()))
         .bind(message.attachment.as_ref().map(|file| file.id.to_string()))
