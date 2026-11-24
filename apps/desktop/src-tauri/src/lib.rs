@@ -175,6 +175,7 @@ pub fn run() {
             commands::set_read_receipts,
             commands::read_update,
             commands::hide_message,
+            commands::hide_pending_upload,
             commands::clear_history,
             commands::delete_conversation,
             commands::take_send_failure_notices,
