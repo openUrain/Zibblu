@@ -124,7 +124,7 @@ impl Job {
 }
 
 impl Client {
-    pub(super) async fn delete_received_history(&self, conversation: Uuid, seq: Option<i64>) -> Result<()> {
+    pub(super) async fn delete_received_history(&self, conversation: Uuid, seq: Option<i64>, delete_chat: bool) -> Result<()> {
         self.ensure_open()?;
         ensure!(seq.is_none_or(|seq| seq > 0), "This message is unavailable");
         let _prepare = self.prepare_gate.lock().await;
@@ -164,6 +164,37 @@ impl Client {
         let mut media_paths = Vec::new();
         let mut legacy_files = Vec::new();
         let mut downloads = Vec::new();
+        if seq.is_none() {
+            sqlx::query("INSERT OR IGNORE INTO local_suppressed_sends (kind, id, conversation_id)
+                SELECT 'text', nonce, conversation_id FROM outbox WHERE conversation_id = ?")
+                .bind(&chat).execute(&mut *tx).await?;
+            sqlx::query("INSERT OR IGNORE INTO local_suppressed_sends (kind, id, conversation_id)
+                SELECT 'upload', id, ?1 FROM transfers WHERE direction = 'upload'
+                    AND json_extract(payload, '$.conversation_id') = ?1
+                    AND json_extract(payload, '$.status') <> 'complete'")
+                .bind(&chat).execute(&mut *tx).await?;
+            sqlx::query("DELETE FROM outbox WHERE conversation_id = ? AND blocked = 1")
+                .bind(&chat).execute(&mut *tx).await?;
+            sqlx::query("UPDATE transfers SET payload = json_set(payload, '$.status', 'queued', '$.retry_at', 0)
+                WHERE direction = 'upload' AND json_extract(payload, '$.conversation_id') = ?
+                    AND json_extract(payload, '$.status') IN ('paused', 'failed', 'expired')")
+                .bind(&chat).execute(&mut *tx).await?;
+        }
+        if delete_chat {
+            sqlx::query("INSERT OR IGNORE INTO local_deleted_chats (conversation_id) VALUES (?)")
+                .bind(&chat).execute(&mut *tx).await?;
+            let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM transfers WHERE direction = 'download'
+                AND json_extract(payload, '$.conversation_id') = ?")
+                .bind(&chat).fetch_all(&mut *tx).await?;
+            for id in ids {
+                sqlx::query("INSERT OR IGNORE INTO cancelled_downloads (id) VALUES (?)")
+                    .bind(&id).execute(&mut *tx).await?;
+                media_paths.extend(media_store::release_media_refs_in_tx(&mut tx, "download", &id).await?);
+                downloads.push(Uuid::parse_str(&id)?);
+            }
+            sqlx::query("DELETE FROM transfers WHERE direction = 'download' AND json_extract(payload, '$.conversation_id') = ?")
+                .bind(&chat).execute(&mut *tx).await?;
+        }
         for (seq, attachment_id) in rows {
             media_paths.extend(media_store::release_media_refs_in_tx(
                 &mut tx, "message", &seq.to_string(),
@@ -178,15 +209,19 @@ impl Client {
             }
             if let Some(id) = attachment_id {
                 sqlx::query(
-                    "DELETE FROM transfers WHERE id = ? AND
-                        (direction = 'download' OR json_extract(payload, '$.status') = 'complete')",
+                    "DELETE FROM transfers WHERE id = ? AND json_extract(payload, '$.status') = 'complete'",
                 ).bind(&id).execute(&mut *tx).await?;
-                downloads.push(Uuid::parse_str(&id)?);
             }
         }
         if seq.is_none() {
             sqlx::query("DELETE FROM local_read_positions WHERE conversation_id = ?")
                 .bind(&chat).execute(&mut *tx).await?;
+        }
+        // Signal active downloads before committing cancellation; external files already published remain user-owned.
+        for id in &downloads {
+            if let Some(active) = workers.get(&(*id, Direction::Download)) {
+                active.stop.store(true, Ordering::Relaxed);
+            }
         }
         tx.commit().await?;
         for id in downloads {
@@ -213,7 +248,7 @@ impl Client {
             "SELECT i.conversation_id, i.seq FROM inbox i JOIN hidden_messages h ON h.seq = i.seq",
         ).fetch_all(&self.db).await?;
         for (conversation, seq) in rows {
-            self.delete_received_history(Uuid::parse_str(&conversation)?, Some(seq)).await?;
+            self.delete_received_history(Uuid::parse_str(&conversation)?, Some(seq), false).await?;
         }
         Ok(())
     }
@@ -224,8 +259,18 @@ impl Client {
         ).fetch_all(&self.db).await?;
         for id in deleted_attachments {
             if let Ok(id) = Uuid::parse_str(&id) {
-                let _ = fs::remove_file(self.spool((id, Direction::Download))).await;
                 let _ = fs::remove_file(self.managed_files.join(id.to_string())).await;
+            }
+        }
+        let retired: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, 'download' FROM cancelled_downloads
+             UNION SELECT id, 'upload' FROM local_suppressed_sends s WHERE s.kind = 'upload'
+                AND NOT EXISTS (SELECT 1 FROM transfers t WHERE t.id = s.id AND t.direction = 'upload')",
+        ).fetch_all(&self.db).await?;
+        for (id, direction) in retired {
+            if let Ok(id) = Uuid::parse_str(&id) {
+                let direction = if direction == "upload" { Direction::Upload } else { Direction::Download };
+                let _ = fs::remove_file(self.spool((id, direction))).await;
             }
         }
         let rows: Vec<String> = sqlx::query_scalar(
@@ -267,7 +312,9 @@ impl Client {
              LEFT JOIN inbox i ON t.id = i.attachment_id
              WHERE (json_extract(t.payload, '$.status') <> 'complete'
                 OR NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h.attachment_id = t.id))
-                AND NOT EXISTS (SELECT 1 FROM local_deleted_messages d WHERE d.attachment_id = t.id)
+                AND NOT EXISTS (SELECT 1 FROM local_suppressed_sends s WHERE s.kind = 'upload' AND t.direction = 'upload' AND s.id = t.id)
+                AND (json_extract(t.payload, '$.status') <> 'complete'
+                    OR NOT EXISTS (SELECT 1 FROM local_deleted_messages d WHERE d.attachment_id = t.id))
              ORDER BY t.rowid DESC",
         )
         .fetch_all(&self.db)
@@ -870,6 +917,7 @@ impl Client {
                 Direction::Upload => client.upload(&mut job, &signal).await,
                 Direction::Download => client.download(&mut job, &signal).await,
             };
+            let mut definitive_failure = false;
             match result {
                 Ok(status) => job.transfer.status = status,
                 Err(error) => {
@@ -897,6 +945,8 @@ impl Client {
                             _ => TransferStatus::Failed,
                         }
                     };
+                    definitive_failure = matches!(job.transfer.status, TransferStatus::Failed | TransferStatus::Expired)
+                        && matches!(error.downcast_ref::<OnlineError>(), Some(OnlineError::Rejected { .. }));
                     job.retry_at = unix_millis() + 2_000;
                 }
             }
@@ -904,9 +954,28 @@ impl Client {
                 let mut workers = client.workers.lock().await;
                 let complete = job.transfer.status == TransferStatus::Complete;
                 let deleted_download = key.1 == Direction::Download && sqlx::query_scalar::<_, bool>(
-                    "SELECT EXISTS(SELECT 1 FROM local_deleted_messages WHERE attachment_id = ?)",
+                    "SELECT EXISTS(SELECT 1 FROM cancelled_downloads WHERE id = ?)",
                 ).bind(key.0.to_string()).fetch_one(&client.db).await.unwrap_or(false);
-                if complete || deleted_download
+                let mut retired = false;
+                if key.1 == Direction::Upload && client.is_suppressed_upload(key.0).await.unwrap_or(false) && !complete {
+                    if definitive_failure {
+                        let finish = async {
+                            let mut tx = client.db.begin_with("BEGIN IMMEDIATE").await?;
+                            sqlx::query("INSERT OR IGNORE INTO send_failure_notices (kind, id) VALUES ('upload', ?)")
+                                .bind(key.0.to_string()).execute(&mut *tx).await?;
+                            sqlx::query("DELETE FROM transfers WHERE id = ? AND direction = 'upload'")
+                                .bind(key.0.to_string()).execute(&mut *tx).await?;
+                            tx.commit().await?;
+                            Ok::<_, anyhow::Error>(())
+                        }.await;
+                        retired = finish.is_ok();
+                    }
+                    if !retired {
+                        // Unknown publication results and local errors need reconciliation with the stable upload ID.
+                        job.transfer.status = TransferStatus::Queued;
+                    }
+                }
+                if complete || deleted_download || retired
                     || (client.store_job(&job).await.is_ok()
                         && job.transfer.status == TransferStatus::Expired)
                 {
@@ -1055,7 +1124,7 @@ impl Client {
             )
             .await?;
         ensure!(stamp.seq > 0, OnlineError::InvalidResponse);
-        if !stamp.recalled && !self.is_locally_deleted(stamp.seq).await? {
+        if !stamp.recalled && !self.is_locally_deleted(stamp.seq).await? && !self.is_suppressed_upload(id).await? {
             let desc = MediaDescriptor {
                 conversation_id: conversation,
                 message_seq: stamp.seq,
@@ -1071,6 +1140,7 @@ impl Client {
             };
             if let Err(error) = self.commit_media_file(&desc, &spool).await
                 && !self.is_locally_deleted(stamp.seq).await?
+                && !self.is_suppressed_upload(id).await?
             {
                 return Err(error);
             }
@@ -1200,17 +1270,23 @@ impl Client {
         let id = attachment.id;
         let destination = job.destination.clone().context("Choose a save location")?;
         let (seq, conv_str): (i64, String) =
-            sqlx::query_as("SELECT seq, conversation_id FROM inbox WHERE attachment_id = ?")
+            sqlx::query_as("SELECT seq, conversation_id FROM inbox WHERE attachment_id = ?1
+                UNION ALL SELECT seq, conversation_id FROM local_deleted_messages WHERE attachment_id = ?1")
                 .bind(id.to_string())
                 .fetch_optional(&self.db)
                 .await?
                 .context("This attachment is no longer available")?;
         let conversation_id = Uuid::parse_str(&conv_str)?;
         let is_hidden: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM hidden_messages WHERE seq = ?)")
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM hidden_messages WHERE seq = ?1)
+                OR EXISTS(SELECT 1 FROM local_deleted_messages WHERE seq = ?1)")
                 .bind(seq)
                 .fetch_one(&self.db)
                 .await?;
+        let revoked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM recall_tombstones WHERE message_seq = ?1)
+            OR EXISTS(SELECT 1 FROM cancelled_downloads WHERE id = ?2)")
+            .bind(seq).bind(id.to_string()).fetch_one(&self.db).await?;
+        ensure!(!revoked && conversation_id == job.transfer.conversation_id, "This attachment is no longer available");
         let variant = MediaVariant::for_attachment(&attachment);
         let spool = self.spool(job.key());
         let has_local_ack: bool =
@@ -1292,7 +1368,7 @@ impl Client {
             }
             output.sync_all().await.map_err(save_io_error)?;
             drop(output);
-            if is_hidden {
+            if is_hidden || self.is_locally_deleted(seq).await? {
                 let check_spool = spool.clone();
                 let check_att = attachment.clone();
                 if let Err(error) =
@@ -1335,6 +1411,10 @@ impl Client {
                         (Some(file_id), path, !has_local_ack)
                     }
                     Err(error) => {
+                        if self.is_locally_deleted(seq).await? {
+                            // A single-message deletion may race the cache commit; retry the independent export.
+                            return Ok(TransferStatus::Queued);
+                        }
                         let _ = fs::remove_file(&spool).await;
                         job.transfer.received = 0;
                         return Err(error);
@@ -1359,6 +1439,10 @@ impl Client {
             if stop.load(Ordering::Relaxed) {
                 return Ok(TransferStatus::Paused);
             }
+            let revoked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM recall_tombstones WHERE message_seq = ?1)
+                OR EXISTS(SELECT 1 FROM cancelled_downloads WHERE id = ?2)")
+                .bind(seq).bind(id.to_string()).fetch_one(&self.db).await?;
+            ensure!(!revoked, "This attachment is no longer available");
             let recovering = job.publishing;
             job.publishing = true;
             self.store_job(job).await?;
@@ -1395,13 +1479,22 @@ impl Client {
             .bind(id.to_string())
             .fetch_one(&mut *tx)
             .await?;
-            if !visible {
+            let deleted: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM local_deleted_messages WHERE seq = ?)")
+                .bind(seq).fetch_one(&mut *tx).await?;
+            if !visible && !deleted {
                 let removed =
                     media_store::release_media_refs_in_tx(&mut tx, "message", &seq.to_string())
                         .await?;
                 tx.commit().await?;
                 self.remove_rel_paths(removed).await;
                 bail!("This attachment was recalled");
+            }
+            if deleted {
+                sqlx::query("DELETE FROM transfers WHERE id = ? AND direction = 'download'")
+                    .bind(id.to_string()).execute(&mut *tx).await?;
+                tx.commit().await?;
+                self.history_changed();
+                return Ok(TransferStatus::Complete);
             }
             if !has_local_ack && !is_hidden {
                 record_local_file(&mut tx, &attachment, seq, need_ack).await?;
@@ -1503,7 +1596,7 @@ async fn store_job(db: &mut SqliteConnection, job: &Job) -> Result<()> {
     sqlx::query(
         "INSERT INTO transfers (id, direction, payload)
              SELECT ?1, ?2, ?3 WHERE ?2 <> 'download' OR NOT EXISTS (
-                 SELECT 1 FROM local_deleted_messages WHERE attachment_id = ?1)
+                 SELECT 1 FROM cancelled_downloads WHERE id = ?1)
              ON CONFLICT (id, direction) DO UPDATE SET payload = excluded.payload",
     )
     .bind(id.to_string())
