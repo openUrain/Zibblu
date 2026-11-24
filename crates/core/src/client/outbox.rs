@@ -113,9 +113,7 @@ impl Client {
         }
         let suppressed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM local_suppressed_sends WHERE kind = 'text' AND id = ?)")
             .bind(&nonce_key).fetch_one(&mut *tx).await?;
-        if suppressed {
-            return Ok(());
-        }
+        ensure!(!suppressed, "This message ID is already in use");
         let inserted: Option<i64> = sqlx::query_scalar(
             "INSERT INTO outbox (nonce, conversation_id, work) VALUES (?,?,?) ON CONFLICT(nonce) DO NOTHING RETURNING id",
         ).bind(&nonce_key).bind(&chat).bind(&serialized).fetch_optional(&mut *tx).await?;
