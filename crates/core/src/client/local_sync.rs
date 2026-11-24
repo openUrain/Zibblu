@@ -440,7 +440,9 @@ impl Client {
         Ok(SyncUpdate {
             directory: self.directory().await?,
             recalled,
-            deleted: sqlx::query_scalar("SELECT seq FROM local_deleted_messages ORDER BY seq").fetch_all(&self.db).await?,
+            deleted: sqlx::query_scalar("SELECT seq FROM local_deleted_messages
+                UNION SELECT -o.id FROM outbox o JOIN local_suppressed_sends s
+                  ON s.kind = 'text' AND s.id = o.nonce ORDER BY 1").fetch_all(&self.db).await?,
             server_now: self.server_now(),
             last_seq,
             revision,
