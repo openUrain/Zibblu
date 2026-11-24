@@ -448,14 +448,15 @@ impl Client {
         })
     }
 
-    pub async fn directory(&self) -> Result<Directory> {
+    pub async fn membership_directory(&self) -> Result<Directory> {
         let json: Option<String> = sqlx::query_scalar("SELECT payload FROM directory WHERE id = 1")
             .fetch_optional(&self.db)
             .await?;
-        let mut directory: Directory = json
-            .map(|value| serde_json::from_str(&value))
-            .transpose()?
-            .unwrap_or_default();
+        Ok(json.map(|value| serde_json::from_str(&value)).transpose()?.unwrap_or_default())
+    }
+
+    pub async fn directory(&self) -> Result<Directory> {
+        let mut directory = self.membership_directory().await?;
         let deleted_chats: Vec<String> = sqlx::query_scalar("SELECT conversation_id FROM local_deleted_chats")
             .fetch_all(&self.db).await?;
         directory.conversations.retain(|chat| !deleted_chats.contains(&chat.id.to_string()));
