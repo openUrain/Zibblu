@@ -111,7 +111,7 @@ pub(crate) async fn page(
             (Uuid::new_v4(), next, more)
         }
     };
-    let events = events(
+    let (events, own_attachment_keys) = events(
         &mut tx,
         &auth,
         current.acked_after,
@@ -139,6 +139,7 @@ pub(crate) async fn page(
     Ok(Json(SyncPage {
         directory,
         events,
+        own_attachment_keys,
         server_time,
         page_id,
         has_more: more,
@@ -151,14 +152,14 @@ async fn events(
     after: i64,
     next: i64,
     offered: Option<&[i64]>,
-) -> Result<Vec<SyncEvent>> {
-    let rows: Vec<(i64, i64, Option<DbJson<Message>>)> = sqlx::query_as(
+) -> Result<(Vec<SyncEvent>, std::collections::HashMap<i64, Uuid>)> {
+    let rows: Vec<(i64, i64, Option<DbJson<Message>>, Option<Uuid>)> = sqlx::query_as(
         "SELECT e.event_seq, m.seq,
            CASE WHEN e.event_seq = m.seq THEN jsonb_build_object(
                'seq', m.seq, 'conversation_id', m.conversation_id,
                'sender', jsonb_build_object('id', a.id, 'handle', a.handle),
                'created_at', m.created_at, 'recalled', m.recall_seq IS NOT NULL,
-               'nonce', CASE WHEN m.sender_id = $2 THEN coalesce(m.nonce, m.attachment_id) END,
+               'nonce', CASE WHEN m.sender_id = $2 THEN m.nonce END,
                'expires_at', (extract(epoch FROM m.expires_at) * 1000)::BIGINT,
                'ai_provider', m.ai_provider,
                'reply_to', CASE WHEN live.payload THEN quote.seq END,
@@ -168,7 +169,8 @@ async fn events(
                ) END,
                'expired', CASE WHEN m.recall_seq IS NULL AND NOT live.payload
                    THEN CASE WHEN m.attachment_id IS NULL THEN 'text' ELSE 'file' END END
-           ) END
+           ) END,
+           CASE WHEN e.event_seq = m.seq AND m.sender_id = $2 THEN m.attachment_id END
          FROM m1_device_events e JOIN m1_visible_messages m ON m.seq = e.message_seq AND m.account_id = $2
          JOIN accounts a ON a.id = m.sender_id
          LEFT JOIN attachments f ON f.id = m.attachment_id
@@ -182,13 +184,17 @@ async fn events(
            AND e.metadata_state = 'pending'
          ORDER BY e.event_seq",
     ).bind(auth.device_id).bind(auth.user_id).bind(after).bind(next).bind(offered).fetch_all(db).await?;
-    Ok(rows
-        .into_iter()
-        .map(|(seq, message_seq, payload)| match payload {
+    let mut own_attachment_keys = std::collections::HashMap::new();
+    let events = rows.into_iter().map(|(seq, message_seq, payload, attachment_key)| {
+        if let Some(id) = attachment_key {
+            own_attachment_keys.insert(message_seq, id);
+        }
+        match payload {
             Some(message) => SyncEvent::Published(message.0),
             None => SyncEvent::Recalled(MessageRecall { seq, message_seq }),
-        })
-        .collect())
+        }
+    }).collect();
+    Ok((events, own_attachment_keys))
 }
 
 pub(crate) async fn ack(
