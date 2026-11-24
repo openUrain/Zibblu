@@ -17,11 +17,11 @@ serde_json.workspace = true
 sha2.workspace = true
 sqlx = { workspace = true, features = ["postgres", "uuid", "json", "migrate", "macros", "tls-rustls-ring-native-roots"] }
 time = "0.3"
-tokio = { workspace = true, features = ["net", "signal"] }
+tokio = { workspace = true, features = ["net", "signal", "fs", "io-util", "process", "time"] }
+tempfile = "3"
 uuid.workspace = true
 zibblu-core.workspace = true
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false }
-tempfile = "3"
 zibblu-core = { workspace = true, features = ["client"] }

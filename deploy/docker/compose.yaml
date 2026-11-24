@@ -52,6 +52,8 @@ services:
       start_period: 15s
       retries: 6
     restart: unless-stopped
+    tmpfs:
+      - /tmp:size=320m,mode=1777
     stop_grace_period: 60s
     logging: *logging
 

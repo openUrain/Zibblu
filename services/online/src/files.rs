@@ -15,8 +15,8 @@ use sqlx::{FromRow, PgConnection};
 use uuid::Uuid;
 use zibblu_core::{Attachment, CHUNK_SIZE, ContentAck, Publication, UploadProgress};
 
-const ACCOUNT_BYTES: i64 = 2 * 1024 * 1024 * 1024;
-const SERVICE_BYTES: i64 = 16 * 1024 * 1024 * 1024;
+pub(crate) const ACCOUNT_BYTES: i64 = 2 * 1024 * 1024 * 1024;
+pub(crate) const SERVICE_BYTES: i64 = 16 * 1024 * 1024 * 1024;
 
 #[derive(FromRow)]
 struct Upload {
@@ -39,6 +39,20 @@ impl Upload {
             complete: self.complete,
         }
     }
+}
+
+pub(crate) async fn storage_usage(db: &mut PgConnection, owner: Uuid) -> Result<(i64, i64, i64, i64)> {
+    Ok(sqlx::query_as(
+        "SELECT coalesce(sum(size) FILTER (WHERE owner_id = $1), 0)::BIGINT,
+                count(*) FILTER (WHERE owner_id = $1 AND original),
+                coalesce(sum(size), 0)::BIGINT, count(*) FILTER (WHERE original)
+         FROM (
+             SELECT owner_id, size, true AS original FROM attachments
+             UNION ALL
+             SELECT a.owner_id, r.size, false FROM video_resources r
+             JOIN attachments a ON a.id = r.attachment_id WHERE r.status = 'ready'
+         ) usage",
+    ).bind(owner).fetch_one(db).await?)
 }
 
 pub(crate) async fn begin(
@@ -98,14 +112,7 @@ pub(crate) async fn begin(
     }
     require_send_access(&mut tx, conversation, auth.user_id).await?;
     check_upload_expiry(&mut tx, file.id, auth.user_id).await?;
-    let (account, account_count, total, total_count): (i64, i64, i64, i64) = sqlx::query_as(
-        "SELECT coalesce(sum(size) FILTER (WHERE owner_id = $1), 0)::BIGINT,
-                count(*) FILTER (WHERE owner_id = $1),
-                coalesce(sum(size), 0)::BIGINT, count(*) FROM attachments",
-    )
-    .bind(auth.user_id)
-    .fetch_one(&mut *tx)
-    .await?;
+    let (account, account_count, total, total_count) = storage_usage(&mut tx, auth.user_id).await?;
     if account + file.size as i64 > ACCOUNT_BYTES
         || account_count >= 256
         || total + file.size as i64 > SERVICE_BYTES
@@ -265,6 +272,7 @@ pub(crate) async fn complete(
     if file.received != file.size {
         return Err(Error::conflict("The upload still has missing chunks."));
     }
+    let mut video_candidate = false;
     let hash = {
         let mut chunks = sqlx::query_scalar::<_, Vec<u8>>(
             "SELECT data FROM attachment_chunks WHERE attachment_id = $1 ORDER BY byte_offset",
@@ -272,7 +280,12 @@ pub(crate) async fn complete(
         .bind(id)
         .fetch(&mut *tx);
         let mut hash = Sha256::new();
+        let mut first = true;
         while let Some(chunk) = chunks.try_next().await? {
+            if first {
+                video_candidate = file.kind == "file" && crate::media::candidate(&chunk);
+                first = false;
+            }
             hash.update(chunk);
         }
         format!("{:x}", hash.finalize())
@@ -307,6 +320,9 @@ pub(crate) async fn complete(
     .ok_or_else(upload_expired)?;
     sqlx::query("UPDATE attachments SET complete = true, expires_at = (SELECT expires_at FROM messages WHERE seq = $2) WHERE id = $1")
         .bind(file.id).bind(seq).execute(&mut *tx).await?;
+    if video_candidate {
+        crate::media::enqueue(&mut tx, id).await?;
+    }
     sync::dispatch(&mut tx, seq).await?;
     let publication = sync::publication(&mut tx, seq).await?;
     tx.commit().await?;
