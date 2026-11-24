@@ -618,6 +618,7 @@ impl Client {
         let blocked: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM recall_tombstones WHERE message_seq = ?1)
                  OR EXISTS(SELECT 1 FROM hidden_messages WHERE seq = ?1)
+                 OR EXISTS(SELECT 1 FROM local_deleted_messages WHERE seq = ?1)
                  OR EXISTS(SELECT 1 FROM inbox WHERE seq = ?1 AND json_extract(payload, '$.recalled') = 1)",
         )
         .bind(desc.message_seq)
@@ -2261,6 +2262,45 @@ mod tests {
         .execute(&client.db)
         .await?;
         Ok(message)
+    }
+
+    #[tokio::test]
+    async fn local_deletion_preserves_unreceived_sequence_gaps_after_restart() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let user = User { id: Uuid::new_v4(), handle: "gap".into() };
+        let device_id = Uuid::new_v4();
+        let cursor = Uuid::new_v4();
+        let session = || DeviceSession { user: user.clone(), device_id, cursor };
+        let api = || Api::new("http://127.0.0.1:7841");
+        let client = Client::open(root.path(), api()?, session(), false).await?;
+        let chat = Uuid::new_v4();
+        setup_directory(&client, &[(chat, Some(0))]).await?;
+        let first = insert_attachment_message(&client, 101, chat, "first.txt", b"first", None).await?;
+        let third = insert_attachment_message(&client, 103, chat, "third.txt", b"third", None).await?;
+        let mut missing = first.clone();
+        missing.seq = 102;
+        missing.attachment.as_mut().unwrap().id = Uuid::new_v4();
+        client.clear_received_history(chat).await?;
+        assert!(client.messages(chat, None).await?.items.is_empty());
+        client.close().await;
+        drop(client);
+        let client = Client::open(root.path(), api()?, session(), false).await?;
+        let mut tx = client.db.begin_with("BEGIN IMMEDIATE").await?;
+        assert!(!super::super::local_sync::persist_message(&mut tx, first).await?);
+        assert!(!super::super::local_sync::persist_message(&mut tx, third).await?);
+        assert!(super::super::local_sync::persist_message(&mut tx, missing).await?);
+        tx.commit().await?;
+        let items = client.messages(chat, None).await?.items;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].seq, 102);
+        client.hide_message(chat, 102).await?;
+        client.hide_message(chat, 102).await?;
+        assert!(client.messages(chat, None).await?.items.is_empty());
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM local_deleted_messages")
+            .fetch_one(&client.db).await?;
+        assert_eq!(count, 3);
+        client.close().await;
+        Ok(())
     }
 
     #[cfg(windows)]
