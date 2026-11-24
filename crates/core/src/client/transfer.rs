@@ -147,7 +147,9 @@ impl Client {
         sqlx::query("UPDATE transfers SET payload = json_set(payload, '$.status', 'queued', '$.retry_at', 0)
             WHERE id = ? AND direction = 'upload' AND json_extract(payload, '$.status') IN ('paused','failed','expired')")
             .bind(id.to_string()).execute(&mut *tx).await?;
+        let paths = release_detached_upload_media(&mut tx, &chat, Some(id)).await?;
         tx.commit().await?;
+        self.remove_rel_paths(paths).await;
         self.history_changed();
         Ok(())
     }
@@ -221,6 +223,7 @@ impl Client {
                 WHERE direction = 'upload' AND json_extract(payload, '$.conversation_id') = ?
                     AND json_extract(payload, '$.status') IN ('paused', 'failed', 'expired')")
                 .bind(&chat).execute(&mut *tx).await?;
+            media_paths.extend(release_detached_upload_media(&mut tx, &chat, None).await?);
         }
         if delete_chat {
             sqlx::query("INSERT OR IGNORE INTO local_deleted_chats (conversation_id) VALUES (?)")
@@ -304,6 +307,18 @@ impl Client {
                 let _ = fs::remove_file(self.managed_files.join(id.to_string())).await;
             }
         }
+        let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
+        let stale_downloads: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT ref_id FROM media_refs r WHERE r.ref_kind = 'download'
+                AND NOT EXISTS (SELECT 1 FROM transfers t WHERE t.id = r.ref_id AND t.direction = 'download'
+                    AND json_extract(t.payload, '$.status') <> 'complete')",
+        ).fetch_all(&mut *tx).await?;
+        let mut paths = Vec::new();
+        for id in stale_downloads {
+            paths.extend(media_store::release_media_refs_in_tx(&mut tx, "download", &id).await?);
+        }
+        tx.commit().await?;
+        self.remove_rel_paths(paths).await;
         let retired: Vec<(String, String)> = sqlx::query_as(
             "SELECT id, 'download' FROM cancelled_downloads
              UNION SELECT id, 'upload' FROM local_suppressed_sends s WHERE s.kind = 'upload'
@@ -1650,6 +1665,19 @@ impl Client {
         ensure!(bytes.len() == expected, OnlineError::InvalidResponse);
         Ok(bytes)
     }
+}
+
+async fn release_detached_upload_media(db: &mut SqliteConnection, chat: &str, id: Option<Uuid>) -> Result<Vec<String>> {
+    let refs: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT r.ref_id FROM media_refs r JOIN local_suppressed_sends s
+            ON s.kind = 'upload' AND s.id = r.attachment_id AND s.conversation_id = r.conversation_id
+            WHERE r.ref_kind = 'message' AND r.conversation_id = ?1 AND (?2 IS NULL OR s.id = ?2)",
+    ).bind(chat).bind(id.map(|id| id.to_string())).fetch_all(&mut *db).await?;
+    let mut paths = Vec::new();
+    for reference in refs {
+        paths.extend(media_store::release_media_refs_in_tx(&mut *db, "message", &reference).await?);
+    }
+    Ok(paths)
 }
 
 async fn store_job(db: &mut SqliteConnection, job: &Job) -> Result<()> {
