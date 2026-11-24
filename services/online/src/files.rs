@@ -45,11 +45,12 @@ pub(crate) async fn storage_usage(db: &mut PgConnection, owner: Uuid) -> Result<
     Ok(sqlx::query_as(
         "SELECT coalesce(sum(size) FILTER (WHERE owner_id = $1), 0)::BIGINT,
                 count(*) FILTER (WHERE owner_id = $1 AND is_original),
-                coalesce(sum(size), 0)::BIGINT, count(*) FILTER (WHERE is_original)
+                coalesce(sum(physical_size), 0)::BIGINT, count(*) FILTER (WHERE is_original)
          FROM (
-             SELECT owner_id, size, true AS is_original FROM attachments
+             SELECT owner_id, size, CASE WHEN payload_id IS NULL THEN size ELSE 0 END AS physical_size,
+                    true AS is_original FROM attachments
              UNION ALL
-             SELECT a.owner_id, r.size, false FROM video_resources r
+             SELECT a.owner_id, r.size, r.size, false FROM video_resources r
              JOIN attachments a ON a.id = r.attachment_id WHERE r.status = 'ready'
          ) payloads",
     ).bind(owner).fetch_one(db).await?)
@@ -69,6 +70,7 @@ pub(crate) async fn begin(
     let mut tx = app.db.begin().await?;
     lock_message_feed(&mut tx).await?;
     auth.require(&mut tx).await?;
+    crate::forward::reject_staged_publication(&mut tx, file.id).await?;
     if let Some(existing) = sqlx::query_as::<_, Upload>(
         "SELECT *, coalesce(expires_at <= statement_timestamp(), false) AS expired FROM attachments WHERE id = $1",
     )
@@ -218,6 +220,7 @@ pub(crate) async fn write_chunk(
     let mut tx = app.db.begin().await?;
     lock_message_feed(&mut tx).await?;
     auth.require(&mut tx).await?;
+    crate::forward::check_staged_chunk(&mut tx, id, auth.user_id).await?;
     let file = lock_upload(&mut tx, id, auth.user_id).await?;
     require_send_access(&mut tx, file.conversation_id, auth.user_id).await?;
     if file.complete || offset != file.received {
@@ -258,6 +261,7 @@ pub(crate) async fn complete(
     let mut tx = app.db.begin().await?;
     lock_message_feed(&mut tx).await?;
     auth.require(&mut tx).await?;
+    crate::forward::reject_staged_publication(&mut tx, id).await?;
     let published: Option<i64> =
         sqlx::query_scalar("SELECT seq FROM messages WHERE attachment_id = $1 AND sender_id = $2")
             .bind(id)
@@ -306,8 +310,9 @@ pub(crate) async fn complete(
         ));
     }
     let seq: i64 = sqlx::query_scalar(
-        "INSERT INTO messages (conversation_id, sender_id, attachment_id, expires_at)
-         SELECT $1, $2, $3, clock_timestamp() + make_interval(secs => $4::int)
+        "INSERT INTO messages (conversation_id, sender_id, attachment_id, expires_at, attachment_fingerprint)
+         SELECT $1, $2, $3, clock_timestamp() + make_interval(secs => $4::int),
+                m1_attachment_fingerprint(name, kind, size, sha256)
          FROM attachments WHERE id = $3 AND coalesce(expires_at > clock_timestamp(), true)
          RETURNING seq",
     )
@@ -336,7 +341,8 @@ pub(crate) async fn read_chunk(
 ) -> Result<Bytes> {
     let (expired, bytes): (bool, Option<Vec<u8>>) = sqlx::query_as(
         "SELECT coalesce(m.expires_at <= statement_timestamp(), false), c.data
-         FROM m1_visible_messages m LEFT JOIN attachment_chunks c ON c.attachment_id = m.attachment_id
+         FROM m1_visible_messages m LEFT JOIN attachments a ON a.id = m.attachment_id
+         LEFT JOIN attachment_chunks c ON c.attachment_id = coalesce(a.payload_id, a.id)
            AND c.byte_offset = $2 AND coalesce(m.expires_at > statement_timestamp(), true)
          WHERE m.attachment_id = $1 AND m.account_id = $3 AND m.recall_seq IS NULL",
     )

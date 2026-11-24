@@ -56,7 +56,7 @@ async fn resources(db: &mut PgConnection, id: Uuid, auth: &Auth) -> Result<Vec<R
                 coalesce(a.complete, false) AS present,
                 coalesce(r.kind, '') AS kind, coalesce(r.status, 'unsupported') AS status, r.size, r.sha256
          FROM m1_visible_messages m LEFT JOIN attachments a ON a.id = m.attachment_id
-         LEFT JOIN video_resources r ON r.attachment_id = a.id
+         LEFT JOIN video_resources r ON r.attachment_id = coalesce(a.payload_id, a.id)
          WHERE m.attachment_id = $1 AND m.account_id = $2 AND m.recall_seq IS NULL",
     ).bind(id).bind(auth.user_id).fetch_all(db).await?;
     let first = rows.first().ok_or_else(Error::missing)?;
@@ -148,7 +148,7 @@ pub(crate) async fn read(
             let chunk: Vec<u8> = sqlx::query_scalar(
                 "SELECT c.data FROM video_resource_chunks c
                  JOIN video_resources r ON (r.attachment_id, r.kind) = (c.attachment_id, c.kind)
-                 JOIN attachments a ON a.id = r.attachment_id
+                 JOIN attachments a ON coalesce(a.payload_id, a.id) = r.attachment_id
                  JOIN m1_visible_messages m ON m.attachment_id = a.id
                  WHERE a.id = $1 AND r.kind = $2 AND c.byte_offset = $3
                    AND m.account_id = $4 AND m.recall_seq IS NULL AND a.complete AND r.status = 'ready'
@@ -184,12 +184,13 @@ pub async fn process_one(db: &PgPool) -> anyhow::Result<bool> {
     if !locked { return Ok(false); }
     let job = sqlx::query_as::<_, Job>(
         "SELECT a.id, a.owner_id, a.size, a.sha256 FROM attachments a
-         JOIN messages m ON m.attachment_id = a.id
          JOIN video_resources r ON r.attachment_id = a.id AND r.kind = 'cover'
-         WHERE a.complete AND r.status = 'pending' AND m.recall_seq IS NULL
-           AND coalesce(a.expires_at > clock_timestamp(), true)
-           AND coalesce(m.expires_at > clock_timestamp(), true)
-         ORDER BY m.seq LIMIT 1",
+         WHERE a.complete AND r.status = 'pending' AND EXISTS (
+             SELECT 1 FROM attachments ref JOIN messages m ON m.attachment_id = ref.id
+             WHERE coalesce(ref.payload_id, ref.id) = a.id AND ref.complete AND m.recall_seq IS NULL
+               AND coalesce(ref.expires_at > clock_timestamp(), true)
+               AND coalesce(m.expires_at > clock_timestamp(), true))
+         ORDER BY a.id LIMIT 1",
     ).fetch_optional(&mut *tx).await?;
     let Some(job) = job else { return Ok(false); };
     let scratch = tempfile::tempdir();
@@ -235,7 +236,7 @@ pub async fn process_one(db: &PgPool) -> anyhow::Result<bool> {
 async fn source_live(db: &mut PgConnection, id: Uuid) -> anyhow::Result<bool> {
     Ok(sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM attachments a JOIN messages m ON m.attachment_id = a.id
-         WHERE a.id = $1 AND a.complete AND m.recall_seq IS NULL
+         WHERE coalesce(a.payload_id, a.id) = $1 AND a.complete AND m.recall_seq IS NULL
          AND coalesce(a.expires_at > clock_timestamp(), true)
          AND coalesce(m.expires_at > clock_timestamp(), true))",
     ).bind(id).fetch_one(db).await?)

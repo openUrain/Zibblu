@@ -472,3 +472,35 @@ pub fn valid_handle(handle: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForwardTarget {
+    pub conversation_id: Uuid,
+    pub attachment_id: Uuid,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ForwardRequest {
+    pub batch_id: Uuid,
+    pub targets: Vec<ForwardTarget>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ForwardResult {
+    pub target: ForwardTarget,
+    pub status: u16,
+    pub publication: Option<Publication>,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ForwardUploadRequest {
+    pub request: ForwardRequest,
+    pub original: Attachment,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ForwardUploadProgress {
+    pub id: Uuid,
+    pub progress: UploadProgress,
+}

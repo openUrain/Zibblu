@@ -2,6 +2,7 @@ mod accounts;
 mod chats;
 mod devices;
 mod files;
+mod forward;
 mod group_invites;
 mod lan_credentials;
 pub mod media;
@@ -93,6 +94,8 @@ pub async fn router_with_retention(
         .route("/v1/files/{id}/complete", post(files::complete))
         .route("/v2/files/{id}/download", post(files::start_download))
         .route("/v2/files/{id}/ack", post(files::ack_content))
+        .route("/v2/files/{id}/forward", post(forward::publish))
+        .route("/v2/files/{id}/forward-upload", post(forward::begin_upload))
         .route("/v2/files/{id}/media", get(media::metadata))
         .route("/v2/files/{id}/media/{kind}", get(media::read))
         .layer(DefaultBodyLimit::max(64 * 1024));
