@@ -110,6 +110,7 @@ pub struct Page {
 pub struct SyncUpdate {
     pub directory: Directory,
     pub recalled: Vec<i64>,
+    pub deleted: Vec<i64>,
     pub server_now: i64,
     pub last_seq: i64,
     pub revision: i64,
@@ -240,6 +241,7 @@ impl Client {
         client
             .migrate_legacy_media_if_needed(previous_device_id)
             .await?;
+        client.recover_media_reclaims().await?;
         client.migrate_hidden_history().await?;
         client.restore_upload_times().await?;
         Ok(client)
@@ -673,11 +675,15 @@ impl Client {
     }
 
     pub async fn hide_message(&self, conversation: Uuid, seq: i64) -> Result<()> {
-        self.delete_received_history(conversation, Some(seq)).await
+        self.delete_received_history(conversation, Some(seq), false).await
     }
 
     pub async fn clear_received_history(&self, conversation: Uuid) -> Result<()> {
-        self.delete_received_history(conversation, None).await
+        self.delete_received_history(conversation, None, false).await
+    }
+
+    pub async fn delete_conversation(&self, conversation: Uuid) -> Result<()> {
+        self.delete_received_history(conversation, None, true).await
     }
 
     pub async fn quoted_message(&self, conversation: Uuid, seq: i64) -> Result<Option<Message>> {
@@ -709,6 +715,9 @@ impl Client {
                     .json(&request),
             )
             .await?;
+        sqlx::query("DELETE FROM local_deleted_chats WHERE conversation_id = ?")
+            .bind(result.id.to_string()).execute(&self.db).await?;
+        self.history_changed();
         Ok(result.id)
     }
 
