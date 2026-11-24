@@ -2282,12 +2282,17 @@ mod tests {
         missing.attachment.as_mut().unwrap().id = Uuid::new_v4();
         client.clear_received_history(chat).await?;
         assert!(client.messages(chat, None).await?.items.is_empty());
+        let legacy = insert_attachment_message(&client, 104, chat, "legacy.txt", b"legacy", None).await?;
+        sqlx::query("INSERT INTO hidden_messages (seq, attachment_id) VALUES (?,?)")
+            .bind(legacy.seq).bind(legacy.attachment.as_ref().unwrap().id.to_string())
+            .execute(&client.db).await?;
         client.close().await;
         drop(client);
         let client = Client::open(root.path(), api()?, session(), false).await?;
         let mut tx = client.db.begin_with("BEGIN IMMEDIATE").await?;
         assert!(!super::super::local_sync::persist_message(&mut tx, first).await?);
         assert!(!super::super::local_sync::persist_message(&mut tx, third).await?);
+        assert!(!super::super::local_sync::persist_message(&mut tx, legacy).await?);
         assert!(super::super::local_sync::persist_message(&mut tx, missing).await?);
         tx.commit().await?;
         let items = client.messages(chat, None).await?.items;
@@ -2298,7 +2303,10 @@ mod tests {
         assert!(client.messages(chat, None).await?.items.is_empty());
         let count: i64 = sqlx::query_scalar("SELECT count(*) FROM local_deleted_messages")
             .fetch_one(&client.db).await?;
-        assert_eq!(count, 3);
+        assert_eq!(count, 4);
+        let legacy_count: i64 = sqlx::query_scalar("SELECT count(*) FROM hidden_messages")
+            .fetch_one(&client.db).await?;
+        assert_eq!(legacy_count, 0);
         client.close().await;
         Ok(())
     }
