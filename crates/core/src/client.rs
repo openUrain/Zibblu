@@ -322,10 +322,13 @@ impl Client {
                 ")), 'created_at', coalesce(json_extract(t.payload, '$.created_at'), 0),
                           'attachment', json_extract(t.payload, '$.attachment')),
                           coalesce(json_extract(t.payload, '$.created_at'), 0), -t.rowid
-                   FROM transfers t WHERE t.direction = 'upload' AND json_extract(t.payload, '$.status') <> 'complete'
+                   FROM transfers t WHERE json_extract(t.payload, '$.status') <> 'complete'
                      AND NOT EXISTS (SELECT 1 FROM inbox i WHERE i.attachment_id = t.id)
                      AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h.attachment_id = t.id)
-                     AND NOT EXISTS (SELECT 1 FROM local_deleted_messages d WHERE d.attachment_id = t.id)
+                     AND ((t.direction = 'upload'
+                        AND NOT EXISTS (SELECT 1 FROM local_suppressed_sends s WHERE s.kind = 'upload' AND s.id = t.id)
+                        AND NOT EXISTS (SELECT 1 FROM local_deleted_messages d WHERE d.attachment_id = t.id))
+                       OR (t.direction = 'download' AND EXISTS (SELECT 1 FROM local_deleted_messages d WHERE d.attachment_id = t.id)))
                    UNION ALL
                    SELECT -t.rowid, i.conversation_id, i.attachment_id, json_set(i.payload, '$.seq', -t.rowid),
                           json_extract(i.payload, '$.created_at'), -t.rowid
