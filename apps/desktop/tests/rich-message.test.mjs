@@ -69,6 +69,10 @@ test("GFM keeps line breaks, allows read-only tasks and never interprets raw HTM
   assert.equal(elements(tree, "img").length, 0);
   assert.ok(text(tree).includes("<script>globalThis.unsafe = true</script>"));
   assert.ok(text(tree).includes("broken \\notACommand still here"));
+
+  const emphasis = renderMessage("*斜体* _italic_ ***粗斜体*** ___bold italic___ **粗体**");
+  assert.equal(elements(emphasis, "em").length, 4);
+  assert.equal(elements(emphasis, "strong").length, 3);
 });
 
 test("summaries use source text without rendered content or truncated destinations", () => {
