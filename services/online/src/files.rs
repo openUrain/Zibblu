@@ -43,16 +43,12 @@ impl Upload {
 
 pub(crate) async fn storage_usage(db: &mut PgConnection, owner: Uuid) -> Result<(i64, i64, i64, i64)> {
     Ok(sqlx::query_as(
-        "SELECT coalesce(sum(size) FILTER (WHERE owner_id = $1), 0)::BIGINT,
-                count(*) FILTER (WHERE owner_id = $1 AND is_original),
-                coalesce(sum(physical_size), 0)::BIGINT, count(*) FILTER (WHERE is_original)
-         FROM (
-             SELECT owner_id, size, CASE WHEN payload_id IS NULL THEN size ELSE 0 END AS physical_size,
-                    true AS is_original FROM attachments
-             UNION ALL
-             SELECT a.owner_id, r.size, r.size, false FROM video_resources r
-             JOIN attachments a ON a.id = r.attachment_id WHERE r.status = 'ready'
-         ) payloads",
+        "SELECT
+             (SELECT coalesce(sum(bytes), 0)::BIGINT FROM m1_attachment_quota WHERE owner_id = $1),
+             (SELECT count(*) FROM m1_attachment_quota WHERE owner_id = $1),
+             (SELECT coalesce(sum(size), 0)::BIGINT FROM attachments WHERE payload_id IS NULL)
+                 + (SELECT coalesce(sum(size), 0)::BIGINT FROM video_resources WHERE status = 'ready'),
+             (SELECT count(*) FROM attachments)",
     ).bind(owner).fetch_one(db).await?)
 }
 

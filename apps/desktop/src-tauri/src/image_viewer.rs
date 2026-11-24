@@ -202,7 +202,7 @@ pub(crate) async fn open_image_viewer(
             .await?
             .attachment
             .context("Missing image")?;
-        let dimensions = image_dimensions(&client, message.seq, file).await;
+        let dimensions = image_dimensions(&client, message.conversation_id, message.seq, file).await;
         require(state.is_current(&client).await, "The session has ended")?;
         scope.image(&client).await?;
         open_or_reuse_viewer(&window, &state, &client, scope, dimensions).await
@@ -316,8 +316,15 @@ async fn bytes_dimensions(bytes: Vec<u8>) -> Option<(u32, u32)> {
 }
 
 #[cfg(windows)]
-async fn image_dimensions(client: &Client, seq: i64, file: Attachment) -> Option<(u32, u32)> {
-    let (_, bytes) = media::image_preview(client, seq, file, false).await.ok()?;
+async fn image_dimensions(
+    client: &Client,
+    conversation_id: Uuid,
+    seq: i64,
+    file: Attachment,
+) -> Option<(u32, u32)> {
+    let (_, bytes) = media::image_preview(client, conversation_id, seq, file, false)
+        .await
+        .ok()?;
     bytes_dimensions(bytes).await
 }
 
@@ -497,7 +504,7 @@ pub(crate) async fn image_viewer_step(
         ..selection.clone()
     };
     #[cfg(windows)]
-    let dimensions = image_dimensions(&client, next.seq, file).await;
+    let dimensions = image_dimensions(&client, next.conversation, next.seq, file).await;
     next.image(&client).await?;
     {
         let mut active = state.image_scope.write().expect("image scope");
@@ -535,6 +542,7 @@ pub(crate) async fn copy_viewer_image(
             let message = client.attachment(id).await?;
             media::image_preview(
                 &client,
+                message.conversation_id,
                 message.seq,
                 message.attachment.context("Missing image")?,
                 false,

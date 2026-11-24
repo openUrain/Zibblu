@@ -20,3 +20,15 @@ CREATE TABLE m1_forward_batches (
     upload_id UUID UNIQUE
 );
 ALTER TABLE messages ADD COLUMN forward_batch UUID REFERENCES m1_forward_batches(id);
+
+-- Account reservations and grants are independent of retained physical roots.
+CREATE VIEW m1_attachment_quota AS
+SELECT a.id, a.owner_id, coalesce(a.payload_id, a.id) AS root_id, a.complete,
+       a.size + CASE WHEN a.complete THEN coalesce((
+           SELECT sum(r.size)::BIGINT FROM video_resources r
+           WHERE r.attachment_id = coalesce(a.payload_id, a.id) AND r.status = 'ready'
+       ), 0) ELSE 0 END AS bytes
+FROM attachments a LEFT JOIN messages m ON m.attachment_id = a.id
+WHERE coalesce(a.expires_at > statement_timestamp(), true)
+  AND (NOT a.complete OR (m.seq IS NOT NULL AND m.recall_seq IS NULL
+       AND coalesce(m.expires_at > statement_timestamp(), true)));

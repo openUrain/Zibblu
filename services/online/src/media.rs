@@ -169,7 +169,6 @@ pub(crate) async fn read(
 #[derive(FromRow)]
 struct Job {
     id: Uuid,
-    owner_id: Uuid,
     size: i64,
     sha256: String,
 }
@@ -183,7 +182,7 @@ pub async fn process_one(db: &PgPool) -> anyhow::Result<bool> {
         .fetch_one(&mut *tx).await?;
     if !locked { return Ok(false); }
     let job = sqlx::query_as::<_, Job>(
-        "SELECT a.id, a.owner_id, a.size, a.sha256 FROM attachments a
+        "SELECT a.id, a.size, a.sha256 FROM attachments a
          JOIN video_resources r ON r.attachment_id = a.id AND r.kind = 'cover'
          JOIN attachments ref ON coalesce(ref.payload_id, ref.id) = a.id
          JOIN messages m ON m.attachment_id = ref.id
@@ -205,18 +204,25 @@ pub async fn process_one(db: &PgPool) -> anyhow::Result<bool> {
     };
     lock_message_feed(&mut tx).await.map_err(|_| anyhow::anyhow!("Could not lock delivery feed"))?;
     if source_live(&mut tx, job.id).await? {
-        let (mut account, _, mut total, _) = files::storage_usage(&mut tx, job.owner_id).await
+        let (_, _, mut total, _) = files::storage_usage(&mut tx, Uuid::nil()).await
             .map_err(|_| anyhow::anyhow!("Could not check media storage quota"))?;
         for (index, (kind, name)) in [("cover", "cover.jpg"), ("preview", "preview.mp4")].into_iter().enumerate() {
             let mut status = outcomes[index];
             if status == "ready" {
                 let path = scratch.as_ref().unwrap().path().join(name);
                 let size = tokio::fs::metadata(&path).await?.len() as i64;
-                if account + size > files::ACCOUNT_BYTES || total + size > files::SERVICE_BYTES {
+                let exceeds_account: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (
+                        SELECT owner_id FROM m1_attachment_quota
+                        GROUP BY owner_id
+                        HAVING sum(bytes) + count(*) FILTER (WHERE complete AND root_id = $1) * $2
+                               > $3 AND count(*) FILTER (WHERE complete AND root_id = $1) > 0
+                    )",
+                ).bind(job.id).bind(size).bind(files::ACCOUNT_BYTES).fetch_one(&mut *tx).await?;
+                if exceeds_account || total + size > files::SERVICE_BYTES {
                     status = "quota";
                 } else {
                     store(&mut tx, job.id, kind, &path, size).await?;
-                    account += size;
                     total += size;
                     continue;
                 }

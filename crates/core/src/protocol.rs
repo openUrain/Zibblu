@@ -491,6 +491,8 @@ pub struct ForwardResult {
     pub status: u16,
     pub publication: Option<Publication>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_error: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]

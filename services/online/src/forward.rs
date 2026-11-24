@@ -252,7 +252,10 @@ async fn publish_target(
     } else {
         source.payload_id.ok_or_else(Error::missing)?
     };
-    let size: i64 = sqlx::query_scalar("SELECT size FROM attachments WHERE id = $1 AND complete AND payload_id IS NULL")
+    let size: i64 = sqlx::query_scalar(
+        "SELECT a.size + coalesce((SELECT sum(r.size)::BIGINT FROM video_resources r
+            WHERE r.attachment_id = a.id AND r.status = 'ready'), 0)
+         FROM attachments a WHERE a.id = $1 AND a.complete AND a.payload_id IS NULL")
         .bind(root).fetch_optional(&mut *tx).await?.ok_or_else(Error::missing)?;
     let (account, count, _, total_count) = storage_usage(&mut tx, auth.user_id).await?;
     if account + size > ACCOUNT_BYTES || count >= 256 || total_count >= 4096 { return Err(quota()); }
@@ -302,7 +305,7 @@ pub(crate) async fn publish(
             Ok(stamp) => (200, Some(stamp), None),
             Err(Error(status, message)) => (status.as_u16(), None, Some(message.to_owned())),
         };
-        results.push(ForwardResult { target: target.clone(), status, publication, error });
+        results.push(ForwardResult { target: target.clone(), status, publication, error, cache_error: None });
     }
     Ok(Json(results))
 }
