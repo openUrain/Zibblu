@@ -939,8 +939,10 @@ async fn video_derivatives_and_retention() -> Result<()> {
     assert_eq!(get(&restart_url).send().await?.error_for_status()?.json::<serde_json::Value>().await?, restarted_meta);
 
     // Group membership revocation immediately removes access to both derivatives.
+    alice.add_contact(outsider.user.id).await?;
+    outsider.respond_contact(alice.user.id, true).await?;
     let group = alice.create_conversation(ConversationRequest::Group {
-        title: format!("video group {suffix}"), contact_ids: vec![bob.user.id],
+        title: format!("video group {suffix}"), contact_ids: vec![bob.user.id, outsider.user.id],
     }).await?;
     let group_id = alice.queue_upload(group, source.clone()).await?.attachment.id;
     wait_transfer(&alice, group_id, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
