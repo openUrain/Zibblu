@@ -437,10 +437,12 @@ svg { vertical-align: middle; }
 .attachment-body { width: min(360px, 83%); max-width: min(83%, 630px); }
 .chat-media { width: 100%; min-width: 0; }
 .chat-file-card { position: relative; }
-.chat-upload-progress {
-  position: absolute; inset-inline: 8px; bottom: 4px; width: calc(100% - 16px);
-  height: 4px; accent-color: var(--accent);
+.upload-overlay {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  border-radius: inherit; background: rgb(0 0 0 / 0.42); color: #fff;
+  pointer-events: none;
 }
+.upload-overlay-queued { background: rgb(0 0 0 / 0.24); }
 .media-tile {
   position: relative; display: grid; place-items: center; width: min(100%, 320px); aspect-ratio: 16 / 9;
   padding: 0; overflow: hidden; border: 0; border-radius: 9px; background: var(--soft); color: var(--ink);
@@ -687,6 +689,7 @@ svg { vertical-align: middle; }
 .file-origin :is(.file-source, .file-sharer) > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-sharer .avatar { width: 24px; height: 24px; border-radius: 6px; font-size: 12px; }
 .file-icon {
+  position: relative; overflow: hidden;
   display: inline-grid; place-items: center; width: 36px; height: 36px; flex: none; border-radius: 8px;
   background: var(--soft); color: var(--primary);
 }

@@ -752,6 +752,30 @@ mod tests {
         // Modify video between range reads -> subsequent range fails closed.
         std::fs::write(&vid, b"ABCDEFGHIJKLMNOP")?;
         assert!(read_verified_local_range(&vid, &vid_snap, 0, 4).is_err());
+
+        // Same-length in-place edit with restored original mtime -> both image and video preview
+        // fail closed via head/tail sample verification.
+        let img2 = dir.path().join("inplace.png");
+        let vid2 = dir.path().join("inplace.mp4");
+        std::fs::write(&img2, b"same-size-image-v1")?;
+        std::fs::write(&vid2, b"same-size-video-v1")?;
+        let img2_mtime = std::fs::metadata(&img2)?.modified()?;
+        let vid2_mtime = std::fs::metadata(&vid2)?.modified()?;
+        let img2_snap = capture_source_snapshot(&img2)?;
+        let vid2_snap = capture_source_snapshot(&vid2)?;
+
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().write(true).open(&img2)?;
+            f.write_all(b"SAME-SIZE-IMAGE-V2")?;
+            f.set_modified(img2_mtime)?;
+            let mut v = std::fs::OpenOptions::new().write(true).open(&vid2)?;
+            v.write_all(b"SAME-SIZE-VIDEO-V2")?;
+            v.set_modified(vid2_mtime)?;
+        }
+        assert!(open_verified_local_file(&img2, &img2_snap).is_err());
+        assert!(read_verified_local_image(&img2, &img2_snap).is_err());
+        assert!(read_verified_local_range(&vid2, &vid2_snap, 0, 8).is_err());
         Ok(())
     }
 }

@@ -376,7 +376,7 @@ impl Client {
         let mut workers = self.workers.lock().await;
         self.ensure_open()?;
         let key = (id, direction);
-        let job = self
+        let mut job = self
             .job(key)
             .await?
             .context("This transfer is unavailable")?;
@@ -388,6 +388,15 @@ impl Client {
         {
             return Ok(job.transfer);
         }
+        if direction == Direction::Upload {
+            // Persist Queued before barrier/capacity checks so retries behind a running upload
+            // or pending text are never dropped and will resume automatically once unblocked.
+            job.transfer.status = TransferStatus::Queued;
+            job.transfer.error = None;
+            job.retry_at = 0;
+            self.store_job(&job).await?;
+            return self.launch(job, &mut workers).await;
+        }
         ensure!(
             workers.len() < MAX_RUNNING,
             "Pause a running transfer or wait for it to finish"
@@ -395,11 +404,26 @@ impl Client {
         self.launch(job, &mut workers).await
     }
 
-    pub async fn discard(&self, id: Uuid, direction: Direction) -> Result<()> {
+    pub async fn discard(self: &Arc<Self>, id: Uuid, direction: Direction) -> Result<()> {
         let _prepare = self.prepare_gate.lock().await;
-        let workers = self.workers.lock().await;
         self.ensure_open()?;
         let key = (id, direction);
+        if direction == Direction::Upload {
+            let active = {
+                let mut workers = self.workers.lock().await;
+                if let Some(active) = workers.remove(&key) {
+                    active.stop.store(true, Ordering::Relaxed);
+                    Some(active)
+                } else {
+                    None
+                }
+            };
+            if let Some(active) = active {
+                let _ = active.task.await;
+            }
+        }
+        let workers = self.workers.lock().await;
+        self.ensure_open()?;
         ensure!(
             !workers.contains_key(&key),
             "Pause the transfer before discarding it"
@@ -408,14 +432,46 @@ impl Client {
             .job(key)
             .await?
             .context("This transfer is unavailable")?;
+        let published_in_inbox: bool = if direction == Direction::Upload {
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inbox WHERE attachment_id = ?)")
+                .bind(id.to_string())
+                .fetch_one(&self.db)
+                .await?
+        } else {
+            false
+        };
         ensure!(
-            job.transfer.status != TransferStatus::Complete,
-            "This transfer is already complete"
+            job.transfer.status != TransferStatus::Complete && !published_in_inbox,
+            "This attachment was already sent."
         );
         if direction == Direction::Upload && job.transfer.status != TransferStatus::Expired {
-            self.api
+            match self
+                .api
                 .send(self.api.request(Method::DELETE, &format!("/v1/files/{id}")))
-                .await?;
+                .await
+            {
+                Ok(_)
+                | Err(OnlineError::Rejected {
+                    status: StatusCode::NOT_FOUND | StatusCode::GONE,
+                    ..
+                }) => {}
+                Err(OnlineError::Rejected {
+                    status: StatusCode::CONFLICT,
+                    ..
+                }) => bail!("This attachment was already sent."),
+                Err(error) => {
+                    // If all chunks were uploaded, /complete may have raced or had an unknown ACK.
+                    // Require server confirmation instead of falsely reporting cancellation.
+                    if job.transfer.received >= job.transfer.attachment.size {
+                        bail!(
+                            "Could not verify whether this attachment was already sent. Reconnect and try again."
+                        );
+                    }
+                    if !matches!(error, OnlineError::Network(_)) {
+                        return Err(error.into());
+                    }
+                }
+            }
         }
         match fs::remove_file(self.spool(key)).await {
             Ok(()) => {}
@@ -427,8 +483,12 @@ impl Client {
             .bind(direction.as_str())
             .execute(&self.db)
             .await?;
+        drop(workers);
         if direction == Direction::Upload {
             self.history_changed();
+            if !self.closed.load(Ordering::Relaxed) {
+                let _ = self.resume_queued().await;
+            }
         }
         Ok(())
     }
@@ -1549,6 +1609,167 @@ mod tests {
 
         client.close().await;
         server.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn upload_retry_persists_queued_behind_running_upload_and_pending_text() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let session = DeviceSession {
+            user: User { id: Uuid::nil(), handle: "retry_tester".into() },
+            device_id: Uuid::nil(),
+            cursor: Uuid::nil(),
+        };
+        let client = Client::open(root.path(), Api::new("http://127.0.0.1:1").unwrap(), session, false).await?;
+        let conversation = Uuid::new_v4();
+        let make_att = |name: &str| Attachment {
+            id: Uuid::new_v4(),
+            kind: AttachmentKind::File,
+            name: name.into(),
+            size: 4,
+            sha256: "0".repeat(64),
+        };
+
+        // Case 1: Retry paused upload A while upload B is actively running in the same conversation.
+        let att_a = make_att("a.txt");
+        let att_b = make_att("b.txt");
+        let mut job_a = Job::new(att_a.clone(), conversation, Direction::Upload);
+        job_a.transfer.status = TransferStatus::Paused;
+        job_a.transfer.error = Some("old pause".into());
+        job_a.retry_at = unix_millis() + 60_000;
+        client.store_job(&job_a).await?;
+        {
+            let mut workers = client.workers.lock().await;
+            workers.insert(
+                (att_b.id, Direction::Upload),
+                Active {
+                    conversation,
+                    stop: Arc::new(AtomicBool::new(false)),
+                    task: tokio::spawn(async {}),
+                },
+            );
+        }
+        let resumed_a = client.resume(att_a.id, Direction::Upload).await?;
+        assert_eq!(resumed_a.status, TransferStatus::Queued);
+        assert_eq!(resumed_a.error, None);
+        let stored_a = client.job((att_a.id, Direction::Upload)).await?.unwrap();
+        assert_eq!(stored_a.transfer.status, TransferStatus::Queued);
+        assert_eq!(stored_a.retry_at, 0);
+        client.workers.lock().await.clear();
+
+        // Case 2: Retry failed upload C while pending text exists in outbox for the same conversation.
+        client
+            .queue_message(
+                conversation,
+                crate::SendMessage {
+                    text: "pending text".into(),
+                    nonce: Uuid::new_v4(),
+                    reply_to: None,
+                },
+            )
+            .await?;
+        let att_c = make_att("c.txt");
+        let mut job_c = Job::new(att_c.clone(), conversation, Direction::Upload);
+        job_c.transfer.status = TransferStatus::Failed;
+        job_c.transfer.error = Some("network failed".into());
+        client.store_job(&job_c).await?;
+        let resumed_c = client.resume(att_c.id, Direction::Upload).await?;
+        assert_eq!(resumed_c.status, TransferStatus::Queued);
+        assert_eq!(resumed_c.error, None);
+        let stored_c = client.job((att_c.id, Direction::Upload)).await?.unwrap();
+        assert_eq!(stored_c.transfer.status, TransferStatus::Queued);
+
+        client.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn upload_discard_handles_in_flight_published_race_and_unknown_ack() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let src_dir = tempfile::tempdir()?;
+        let original = src_dir.path().join("keep_me.txt");
+        std::fs::write(&original, b"user-original-file")?;
+
+        let session = DeviceSession {
+            user: User { id: Uuid::nil(), handle: "discard_tester".into() },
+            device_id: Uuid::nil(),
+            cursor: Uuid::nil(),
+        };
+        let client = Client::open(root.path(), Api::new("http://127.0.0.1:1").unwrap(), session, false).await?;
+        let conversation = Uuid::new_v4();
+
+        // Case 1: Discard upload with partial received < size while offline succeeds and keeps original file.
+        let att_partial = Attachment {
+            id: Uuid::new_v4(),
+            kind: AttachmentKind::File,
+            name: "keep_me.txt".into(),
+            size: 100,
+            sha256: "0".repeat(64),
+        };
+        let mut job_partial = Job::new(att_partial.clone(), conversation, Direction::Upload);
+        job_partial.transfer.status = TransferStatus::Queued;
+        job_partial.transfer.received = 0;
+        std::fs::write(client.spool(job_partial.key()), b"staged-copy")?;
+        client.store_job(&job_partial).await?;
+        client.discard(att_partial.id, Direction::Upload).await?;
+        assert!(client.job(job_partial.key()).await?.is_none());
+        assert!(!client.spool(job_partial.key()).exists());
+        assert!(original.exists(), "discard must never delete the user's original file");
+
+        // Case 2: Discard upload when all chunks were uploaded (received == size) and server unreachable
+        // fails closed so we never falsely claim cancellation on an unknown /complete ACK.
+        let att_unknown = Attachment {
+            id: Uuid::new_v4(),
+            kind: AttachmentKind::File,
+            name: "unknown_ack.txt".into(),
+            size: 10,
+            sha256: "0".repeat(64),
+        };
+        let mut job_unknown = Job::new(att_unknown.clone(), conversation, Direction::Upload);
+        job_unknown.transfer.status = TransferStatus::Failed;
+        job_unknown.transfer.received = 10;
+        client.store_job(&job_unknown).await?;
+        let err = client.discard(att_unknown.id, Direction::Upload).await.unwrap_err();
+        assert!(err.to_string().contains("Could not verify whether this attachment was already sent"));
+        assert!(client.job(job_unknown.key()).await?.is_some());
+
+        // Case 3: Discard upload already recorded in inbox (published race) is rejected.
+        let att_sent = Attachment {
+            id: Uuid::new_v4(),
+            kind: AttachmentKind::File,
+            name: "sent.txt".into(),
+            size: 5,
+            sha256: "0".repeat(64),
+        };
+        let mut job_sent = Job::new(att_sent.clone(), conversation, Direction::Upload);
+        job_sent.transfer.status = TransferStatus::Queued;
+        client.store_job(&job_sent).await?;
+        let mut tx = client.db.begin().await?;
+        persist_message(
+            &mut tx,
+            Message {
+                seq: 99,
+                conversation_id: conversation,
+                sender: client.user.clone(),
+                created_at: 1000,
+                text: None,
+                attachment: Some(att_sent.clone()),
+                ai_provider: None,
+                recalled: false,
+                reply_to: None,
+                nonce: None,
+                expires_at: None,
+                expired: None,
+                pending: None,
+                local_file: false,
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        let err = client.discard(att_sent.id, Direction::Upload).await.unwrap_err();
+        assert!(err.to_string().contains("already sent"));
+
+        client.close().await;
         Ok(())
     }
 }

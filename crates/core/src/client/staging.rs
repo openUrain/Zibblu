@@ -306,9 +306,22 @@ pub fn open_verified_local_file(source: &Path, expected: &SourceSnapshot) -> Res
     if expected.kind != AttachmentKind::File {
         bail!(SourceChangedError);
     }
-    let file = open_no_reparse(source, false).map_err(|_| anyhow::Error::new(SourceChangedError))?;
+    let mut file =
+        open_no_reparse(source, false).map_err(|_| anyhow::Error::new(SourceChangedError))?;
     verify_open_handle(source, &file, expected)?;
+    verify_file_sample(&mut file, expected)?;
     Ok(file)
+}
+
+pub fn verify_file_sample(file: &mut File, expected: &SourceSnapshot) -> Result<()> {
+    if let Some(expected_sample) = expected.sample_hash {
+        let actual = sample_file(file, expected.size)
+            .map_err(|_| anyhow::Error::new(SourceChangedError))?;
+        if actual != expected_sample {
+            bail!(SourceChangedError);
+        }
+    }
+    Ok(())
 }
 
 pub fn verify_open_handle(source: &Path, file: &File, expected: &SourceSnapshot) -> Result<()> {

@@ -12,7 +12,7 @@ pub use profile_cache::CachedProfile;
 pub use preview_cache::IMAGE_THUMBNAIL;
 pub use staging::{
     FileIdentity, FolderEntrySnapshot, SourceChangedError, SourceSnapshot,
-    capture_source_snapshot, open_verified_local_file, verify_open_handle,
+    capture_source_snapshot, open_verified_local_file, verify_file_sample, verify_open_handle,
 };
 pub use transfer::{Direction, Transfer, TransferStatus};
 

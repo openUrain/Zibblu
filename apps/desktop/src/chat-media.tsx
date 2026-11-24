@@ -4,7 +4,7 @@ import { api, errorMessage, fileExpired } from "./api";
 import type { Attachment, ImageSize, Message, Transfer } from "./api";
 import { canPreview, mediaKind, readAttachmentPage } from "./attachment-media";
 import { Blank, Dialog, usePage } from "./common";
-import { AttachmentDownload, ChatUploadProgress, SharedFile, TransferList } from "./files";
+import { AttachmentDownload, SharedFile, TransferList, UploadOverlay } from "./files";
 import { thumbnailKey, useWorkspaceImage, WorkspaceImages } from "./workspace-image";
 
 type ChatMediaScope = {
@@ -102,7 +102,7 @@ export function ChatAttachment({ message, transfer, onChanged, open, expired, up
     {upload ? <div className="media-tile" data-fit-image={fitImage ? "" : undefined}
       style={fitImage ? thumbnailStyle(size) : undefined}><span className="media-tile-fallback">
       {mediaKind(file) === "video" ? <Video size={22} /> : <Image size={22} />}
-      <span>{file.name}</span></span><ChatUploadProgress upload={upload} /></div>
+      <span>{file.name}</span></span><UploadOverlay upload={upload} /></div>
       : <MediaTile key={file.id} message={message} open={open} fitImage={fitImage} size={size} />}
     {transfer && <AttachmentDownload file={file} transfer={transfer} onChanged={onChanged} hideSave />}
   </div>;

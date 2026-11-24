@@ -1,7 +1,7 @@
 import { FloatingField } from "./floating-field";
 import {
   ArrowDown, ArrowLeft, ArrowRight, Clock, Check, CheckCheck, ChevronLeft, ChevronRight, CircleAlert, Copy, Download, FolderOpen, Ghost, LockKeyhole,
-  LoaderCircle, LogOut, MessageCircle, MoreHorizontal, Paperclip, Pause, Play, Plus, QrCode, Radar, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, UserRoundPlus, UsersRound, X,
+  LoaderCircle, LogOut, MessageCircle, MoreHorizontal, Paperclip, Play, Plus, QrCode, Radar, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, Upload, UserRoundPlus, UsersRound, X,
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
@@ -567,7 +567,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
           const deliveryEnded = message === lastMessage && mine && !message?.recalled && !message?.pending && !file
             && message?.expires_at !== undefined && message.expires_at <= now && !receiptLabel;
           const receiptStatus = message && message.seq === sent ? receiptLabel : undefined;
-          async function changeTransfer(action: "pause" | "resume" | "discard") {
+          async function changeTransfer(action: "resume" | "discard") {
             if (!transfer) return;
             try { await api.transferAction(action, transfer); changed(); }
             catch (error) { setRecallError(errorMessage(error)); }
@@ -576,13 +576,16 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
             const copy = selection || text;
             return [
               ...(transfer ? [
-                ...(transfer.status === "queued" || transfer.status === "running" ? [
-                  { label: t("Pause", "暂停"), icon: <Pause size={15} />, action: () => void changeTransfer("pause") },
-                ] : [
-                  ...(transfer.status === "expired" ? [] : [{ label: transfer.status === "failed" ? actionLabels.retry : t("Resume", "继续"),
-                    icon: <Play size={15} />, action: () => void changeTransfer("resume") }]),
-                  { label: t("Discard transfer", "丢弃传输"), icon: <Trash2 size={15} />, action: () => void changeTransfer("discard") },
-                ]),
+                ...(transfer.status === "failed" || transfer.status === "paused" ? [{
+                  label: t("Upload", "上传"),
+                  icon: <Upload size={15} />,
+                  action: () => void changeTransfer("resume"),
+                }] : []),
+                ...(transfer.status !== "complete" ? [{
+                  label: t("Delete", "删除"),
+                  icon: <Trash2 size={15} />,
+                  action: () => void changeTransfer("discard"),
+                }] : []),
               ] : []),
               ...(file && !transfer && !expiredFile && (!download || download.status === "complete") ? [{ label: ios
                 ? download?.status === "complete" ? t("Share", "分享") : t("Download", "下载") : actionLabels.save, icon: <Download size={15} />,
@@ -721,21 +724,23 @@ function MessageDelivery({ pending, upload, receipt, ended, retry }: {
     || upload?.status === "running" || upload?.status === "complete";
   const failed = !!error || pending?.blocked || upload?.status === "failed" || upload?.status === "expired";
   const status = failed ? error || t("Could not send", "发送失败")
-    : upload?.status === "paused" ? t("Paused", "已暂停")
+    : upload?.status === "paused" ? t("Waiting to upload", "待上传")
       : upload?.status === "complete" ? t("Updating chat", "正在更新聊天")
-      : upload?.status === "running" ? t("Uploading", "上传中") + " "
-        + Math.floor(upload.received * 100 / Math.max(1, upload.attachment.size)) + "%"
-        : busy ? t("Queued", "排队中") : ended ? t("Online delivery window ended", "在线投递已到期") : receipt;
+      : upload?.status === "running" ? t("Uploading", "上传中")
+        : upload?.status === "queued" ? t("Queued", "排队中")
+          : busy ? t("Queued", "排队中") : ended ? t("Online delivery window ended", "在线投递已到期") : receipt;
+  const retryLabel = upload ? t("Upload", "上传") : actionLabels.retry;
   return <div className="message-delivery">
     <span className="sr-only" role="status">{status}</span>
     {retry ? <button type="button" className={"message-delivery-action" + (failed ? " danger" : "")}
-      title={status} aria-label={(failed ? actionLabels.retry : t("Resume", "继续")) + ": " + status} onClick={retry}>
-      {failed ? <CircleAlert size={16} aria-hidden /> : <Play size={16} aria-hidden />}
+      title={status} aria-label={retryLabel + ": " + status} onClick={retry}>
+      {failed ? <CircleAlert size={16} aria-hidden /> : <Upload size={16} aria-hidden />}
     </button> : status && <span className={failed ? "danger" : receipt ? "read-mark" : undefined}
       title={status} tabIndex={failed || ended ? 0 : undefined} aria-label={status} role="img">
       {failed || ended ? <CircleAlert size={16} aria-hidden />
-        : busy ? <span className="message-delivery-ring preview-spinner" aria-hidden />
-          : receipt === "Read" ? <CheckCheck size={16} aria-hidden /> : <Check size={16} aria-hidden />}
+        : upload?.status === "queued" ? <Clock size={15} aria-hidden />
+          : busy ? <span className="message-delivery-ring preview-spinner" aria-hidden />
+            : receipt === "Read" ? <CheckCheck size={16} aria-hidden /> : <Check size={16} aria-hidden />}
     </span>}
   </div>;
 }
