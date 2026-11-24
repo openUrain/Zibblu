@@ -120,7 +120,7 @@ async fn maintain_lobby(app: &AppHandle, client: &Client) {
             credential = Some(next);
         }
         let directory = if desktop.private.lock().await.is_none() {
-            client.directory().await.ok()
+            client.membership_directory().await.ok()
         } else {
             None
         };
