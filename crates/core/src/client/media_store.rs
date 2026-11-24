@@ -618,9 +618,12 @@ impl Client {
         let blocked: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM recall_tombstones WHERE message_seq = ?1)
                  OR EXISTS(SELECT 1 FROM hidden_messages WHERE seq = ?1)
+                 OR EXISTS(SELECT 1 FROM local_deleted_messages WHERE seq = ?1)
+                 OR EXISTS(SELECT 1 FROM local_suppressed_sends WHERE kind = 'upload' AND id = ?2)
                  OR EXISTS(SELECT 1 FROM inbox WHERE seq = ?1 AND json_extract(payload, '$.recalled') = 1)",
         )
         .bind(desc.message_seq)
+        .bind(desc.attachment_id.map(|id| id.to_string()))
         .fetch_one(&mut *tx)
         .await?;
         ensure!(!blocked, "This attachment is no longer available");
@@ -879,9 +882,10 @@ impl Client {
         attachment_id: Option<Uuid>,
         variant: MediaVariant,
     ) -> Result<()> {
-        sqlx::query(
+        let inserted = sqlx::query(
             "INSERT INTO media_refs (file_id, ref_kind, ref_id, conversation_id, attachment_id, variant, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
+             WHERE ?2 <> 'download' OR NOT EXISTS (SELECT 1 FROM cancelled_downloads WHERE id = ?3)
              ON CONFLICT (ref_kind, ref_id, variant) DO UPDATE SET file_id = excluded.file_id",
         )
         .bind(file_id)
@@ -893,6 +897,7 @@ impl Client {
         .bind(unix_millis())
         .execute(&self.db)
         .await?;
+        ensure!(inserted.rows_affected() != 0, "This download was cancelled");
         Ok(())
     }
 
@@ -913,24 +918,49 @@ impl Client {
             .await;
     }
 
+    pub(super) async fn recover_media_reclaims(&self) -> Result<()> {
+        let paths: Vec<String> = sqlx::query_scalar("SELECT rel_path FROM media_reclaims")
+            .fetch_all(&self.db).await?;
+        self.remove_rel_paths(paths).await;
+        Ok(())
+    }
+
     pub(super) async fn remove_rel_paths(&self, rel_paths: Vec<String>) {
-        let device = self.device_id.to_string();
         for rel in rel_paths {
             let _lock = self.media_locks[lock_slot(&rel)].lock().await;
-            let still_indexed: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM media_files WHERE device_id = ?1 AND rel_path = ?2)
-                     OR EXISTS(SELECT 1 FROM public_cache_files WHERE device_id = ?1 AND rel_path = ?2)",
-            )
-            .bind(&device)
-            .bind(&rel)
-            .fetch_one(&self.db)
-            .await
-            .unwrap_or(true);
-            if still_indexed {
+            let Ok(mut tx) = self.db.begin_with("BEGIN IMMEDIATE").await else { continue };
+            let indexed: Result<bool, _> = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM media_files WHERE rel_path = ?1)
+                     OR EXISTS(SELECT 1 FROM public_cache_files WHERE rel_path = ?1)",
+            ).bind(&rel).fetch_one(&mut *tx).await;
+            if matches!(indexed, Ok(true)) {
+                // A replacement may be released again concurrently; clear this old intent in the same transaction.
+                if sqlx::query("DELETE FROM media_reclaims WHERE rel_path = ?")
+                    .bind(&rel).execute(&mut *tx).await.is_ok()
+                {
+                    let _ = tx.commit().await;
+                }
                 continue;
             }
-            if let Ok(path) = self.resolve_device_media_path(&rel) {
-                let _ = tokio::fs::remove_file(path).await;
+            if tx.commit().await.is_err() { continue; }
+            let completed = match indexed {
+                Ok(false) => {
+                    let path = rel.strip_prefix("media/").and_then(|rest| rest.split_once('/'))
+                        .and_then(|(device, _)| Uuid::parse_str(device).ok()
+                            .and_then(|_| safe_rel_path(self.profile_dir(), &rel, &format!("media/{device}/")).ok()));
+                    match path {
+                        Some(path) => match tokio::fs::remove_file(path).await {
+                            Ok(()) => true,
+                            Err(error) => error.kind() == io::ErrorKind::NotFound,
+                        },
+                        None => false,
+                    }
+                }
+                _ => false,
+            };
+            if completed {
+                let _ = sqlx::query("DELETE FROM media_reclaims WHERE rel_path = ?")
+                    .bind(&rel).execute(&self.db).await;
             }
         }
     }
@@ -1103,6 +1133,7 @@ impl Client {
         let mut report = ConsistencyReport::default();
         let device = self.device_id.to_string();
 
+        self.recover_media_reclaims().await?;
         // 1. Reclaim any DB media_files rows that have 0 references (e.g. crash after unref).
         {
             let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
@@ -1319,6 +1350,13 @@ impl Client {
             .await
             .unwrap_or(true);
             if indexed_now {
+                continue;
+            }
+            let reclaim: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM media_reclaims WHERE rel_path = ?)")
+                .bind(&rel_str).fetch_one(&self.db).await?;
+            if reclaim {
+                drop(_lock);
+                self.remove_rel_paths(vec![rel_str]).await;
                 continue;
             }
             let qroot = quarantine_root.clone();
@@ -2173,6 +2211,8 @@ pub(super) async fn release_media_refs_in_tx(
             .fetch_optional(&mut *db)
             .await?
         {
+            sqlx::query("INSERT OR IGNORE INTO media_reclaims (rel_path) VALUES (?)")
+                .bind(&rel_path).execute(&mut *db).await?;
             removed_paths.push(rel_path);
         }
     }
@@ -2261,6 +2301,91 @@ mod tests {
         .execute(&client.db)
         .await?;
         Ok(message)
+    }
+
+    #[tokio::test]
+    async fn local_deletion_preserves_unreceived_sequence_gaps_after_restart() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let user = User { id: Uuid::new_v4(), handle: "gap".into() };
+        let device_id = Uuid::new_v4();
+        let cursor = Uuid::new_v4();
+        let session = || DeviceSession { user: user.clone(), device_id, cursor };
+        let api = || Api::new("http://127.0.0.1:7841");
+        let client = Client::open(root.path(), api()?, session(), false).await?;
+        let chat = Uuid::new_v4();
+        setup_directory(&client, &[(chat, Some(0))]).await?;
+        let first = insert_attachment_message(&client, 101, chat, "first.txt", b"first", None).await?;
+        let third = insert_attachment_message(&client, 103, chat, "third.txt", b"third", None).await?;
+        let mut missing = first.clone();
+        missing.seq = 102;
+        missing.attachment.as_mut().unwrap().id = Uuid::new_v4();
+        client.clear_received_history(chat).await?;
+        assert!(client.messages(chat, None).await?.items.is_empty());
+        let legacy = insert_attachment_message(&client, 104, chat, "legacy.txt", b"legacy", None).await?;
+        sqlx::query("INSERT INTO hidden_messages (seq, attachment_id) VALUES (?,?)")
+            .bind(legacy.seq).bind(legacy.attachment.as_ref().unwrap().id.to_string())
+            .execute(&client.db).await?;
+        client.close().await;
+        drop(client);
+        let client = Client::open(root.path(), api()?, session(), false).await?;
+        let mut tx = client.db.begin_with("BEGIN IMMEDIATE").await?;
+        assert!(!super::super::local_sync::persist_message(&mut tx, first).await?);
+        assert!(!super::super::local_sync::persist_message(&mut tx, third).await?);
+        assert!(!super::super::local_sync::persist_message(&mut tx, legacy).await?);
+        assert!(super::super::local_sync::persist_message(&mut tx, missing).await?);
+        tx.commit().await?;
+        let items = client.messages(chat, None).await?.items;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].seq, 102);
+        client.hide_message(chat, 102).await?;
+        client.hide_message(chat, 102).await?;
+        assert!(client.messages(chat, None).await?.items.is_empty());
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM local_deleted_messages")
+            .fetch_one(&client.db).await?;
+        assert_eq!(count, 4);
+        let legacy_count: i64 = sqlx::query_scalar("SELECT count(*) FROM hidden_messages")
+            .fetch_one(&client.db).await?;
+        assert_eq!(legacy_count, 0);
+        client.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn local_deletion_recovers_committed_media_reclaim_on_restart() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let user = User { id: Uuid::new_v4(), handle: "reclaim".into() };
+        let device_id = Uuid::new_v4();
+        let cursor = Uuid::new_v4();
+        let session = || DeviceSession { user: user.clone(), device_id, cursor };
+        let api = || Api::new("http://127.0.0.1:7841");
+        let client = Client::open(root.path(), api()?, session(), false).await?;
+        let chat = Uuid::new_v4();
+        setup_directory(&client, &[(chat, Some(0))]).await?;
+        let bytes = sample_png(96, 96, 5);
+        let msg = insert_attachment_message(&client, 101, chat, "reclaim.png", &bytes, None).await?;
+        let file = msg.attachment.as_ref().unwrap();
+        let sha = sha256_hex(&bytes);
+        client.remember_image_variant(chat, msg.seq, Some(file.id), &sha, false, "image/png", &bytes).await?;
+        let path = client.media_root().join("conversations").join(chat.to_string()).join("images").join(format!("orig_{sha}.png"));
+        assert!(path.is_file());
+        let mut tx = client.db.begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query("INSERT INTO local_deleted_messages (seq, conversation_id, attachment_id) VALUES (?,?,?)")
+            .bind(msg.seq).bind(chat.to_string()).bind(file.id.to_string()).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM inbox WHERE seq = ?").bind(msg.seq).execute(&mut *tx).await?;
+        let paths = release_media_refs_in_tx(&mut tx, "message", &msg.seq.to_string()).await?;
+        assert_eq!(paths.len(), 1);
+        tx.commit().await?;
+        // Simulate termination between the committed deletion and physical unlink.
+        assert!(path.is_file());
+        client.close().await;
+        drop(client);
+        let client = Client::open(root.path(), api()?, session(), false).await?;
+        assert!(!path.exists());
+        let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM media_reclaims").fetch_one(&client.db).await?;
+        assert_eq!(pending, 0);
+        assert!(client.messages(chat, None).await?.items.is_empty());
+        client.close().await;
+        Ok(())
     }
 
     #[cfg(windows)]

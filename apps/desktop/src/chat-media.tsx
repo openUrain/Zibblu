@@ -157,6 +157,10 @@ export function MediaViewer({ message, conversation, revision, recalled, hidden,
   const current = neighbors?.seq === message.seq ? neighbors : undefined;
 
   useEffect(() => {
+    if (unavailable) close();
+  }, [unavailable, close]);
+
+  useEffect(() => {
     if (unavailable) return;
     let active = true;
     const find = async (oldest_first: boolean) => (await readAttachmentPage(

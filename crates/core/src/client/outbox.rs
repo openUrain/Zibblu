@@ -111,11 +111,16 @@ impl Client {
             );
             return Ok(());
         }
+        let suppressed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM local_suppressed_sends WHERE kind = 'text' AND id = ?)")
+            .bind(&nonce_key).fetch_one(&mut *tx).await?;
+        ensure!(!suppressed, "This message ID is already in use");
         let inserted: Option<i64> = sqlx::query_scalar(
             "INSERT INTO outbox (nonce, conversation_id, work) VALUES (?,?,?) ON CONFLICT(nonce) DO NOTHING RETURNING id",
         ).bind(&nonce_key).bind(&chat).bind(&serialized).fetch_optional(&mut *tx).await?;
         if let Some(id) = inserted {
             if let Some(conversation_id) = conversation {
+                sqlx::query("DELETE FROM local_deleted_chats WHERE conversation_id = ?")
+                    .bind(conversation_id.to_string()).execute(&mut *tx).await?;
                 let (text, created_at, reply_to, ai_provider) = match work {
                     Work::Text(input) => (input.text, unix_millis(), input.reply_to, None),
                     Work::Ai(input) => (input.text, input.created_at, None, Some(input.provider)),
@@ -319,13 +324,29 @@ impl Client {
                         });
                     }
                     let draft = draft.as_ref().map(serde_json::to_string).transpose()?;
-                    sqlx::query(
-                        "UPDATE outbox SET draft = ?, blocked = ?, next_attempt = ?, attempts = attempts + 1 WHERE nonce = ?",
-                    ).bind(&draft).bind(blocked)
-                        .bind(next_attempt)
-                        .bind(&item.nonce).execute(&self.db).await?;
-                    if item.draft != draft {
+                    let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
+                    let suppressed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM local_suppressed_sends WHERE kind = 'text' AND id = ?)")
+                        .bind(&item.nonce).fetch_one(&mut *tx).await?;
+                    if suppressed && blocked {
+                        let removed = sqlx::query("DELETE FROM outbox WHERE nonce = ?")
+                            .bind(&item.nonce).execute(&mut *tx).await?.rows_affected();
+                        if removed != 0 {
+                            sqlx::query("INSERT OR IGNORE INTO send_failure_notices (kind, id) VALUES ('text', ?)")
+                                .bind(&item.nonce).execute(&mut *tx).await?;
+                        }
+                    } else {
+                        sqlx::query(
+                            "UPDATE outbox SET draft = ?, blocked = ?, next_attempt = ?, attempts = attempts + 1 WHERE nonce = ?",
+                        ).bind(&draft).bind(blocked)
+                            .bind(next_attempt)
+                            .bind(&item.nonce).execute(&mut *tx).await?;
+                    }
+                    tx.commit().await?;
+                    if item.draft != draft || suppressed && blocked {
                         self.history_changed();
+                    }
+                    if suppressed && blocked {
+                        continue;
                     }
                     if !blocked {
                         break;

@@ -93,6 +93,14 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [failure, setFailure] = useState(session.notice ?? "");
   const [syncProblem, setSyncProblem] = useState("");
+  const [sendFailures, setSendFailures] = useState<number[]>([]);
+  const nextFailure = useRef(0);
+  const visibleFailure = sendFailures[0];
+  useEffect(() => {
+    if (visibleFailure === undefined) return;
+    const timer = window.setTimeout(() => setSendFailures(queue => queue.slice(1)), 5000);
+    return () => window.clearTimeout(timer);
+  }, [visibleFailure]);
   const [newChat, setNewChat] = useState(false);
   const [newContact, setNewContact] = useState(false);
   const [sendingChats, setSendingChats] = useState<ReadonlySet<string>>(new Set());
@@ -283,7 +291,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     setDirectory(previous => mergeDirectory(previous, update.directory));
     const offset = update.server_now - Date.now();
     setClockOffset(previous => Math.abs(previous - offset) < 250 ? previous : offset);
-    setRecalled(previous => previous.size === update.recalled.length ? previous : new Set(update.recalled));
+    setRecalled(previous => previous.size === update.recalled.length && update.recalled.every(seq => previous.has(seq)) ? previous : new Set(update.recalled));
+    setHidden(previous => update.deleted.every(seq => previous.has(seq)) ? previous : new Set([...previous, ...update.deleted]));
     setRevision(update.revision);
     setLatestAiSeq(update.latest_ai_seq);
   }, []);
@@ -368,6 +377,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       try {
         const active = await api.transfers();
         if (!closed) setTransfers(active);
+        const notices = await api.takeSendFailureNotices();
+        if (!closed && notices) {
+          const received = Array.from({ length: notices }, () => nextFailure.current++);
+          setSendFailures(queue => [...queue, ...received]);
+        }
       } catch (error) {
         if (!closed) setFailure(errorMessage(error));
       }
@@ -509,6 +523,21 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     await refreshLocal();
   }
 
+  async function removeHistory(conversation: string, entire: boolean) {
+    if (entire) await api.deleteConversation(conversation);
+    else await api.clearHistory(conversation);
+    historyCache.discard(conversation);
+    setDraft(conversation, previous => entire ? { text: "" } : { ...previous, quote: undefined, nonce: undefined });
+    if (entire) {
+      setAiReplies(previous => previous.filter(reply => reply.conversation !== conversation));
+      setSelected(previous => previous === conversation ? undefined : previous);
+      setChatPage(undefined);
+      setMobileChat(false);
+    }
+    await refreshLocal();
+    void changed();
+  }
+
   async function pickAttachments(conversation: string, kind: "file" | "folder") {
     setFailure("");
     try {
@@ -643,6 +672,9 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
         <button className="icon-button" aria-label="Dismiss error" onClick={() => setFailure("")}><X size={17} /></button>
       </div>}
       {syncProblem && <div className="workspace-error" role="alert">{syncProblem}</div>}
+      {visibleFailure !== undefined && <div key={visibleFailure} className="send-failure-toast" role="alert">
+        {t("A message from deleted history could not be sent.", "已删除聊天记录中的一条消息发送失败。")}
+      </div>}
       {ios && !connected && <div className="mobile-connection" role="status">{connection}</div>}
       <div className={"workspace-content" + (splitProfile ? " ipad-profile-layout" : "")
         + (desktopContacts ? " contacts-layout" : "")
@@ -667,7 +699,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             visibleOnNarrow={mobileChat}
             requested={chatPage?.id === active.id ? chatPage : undefined}
             latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset}
-            hidden={hidden} hide={seq => hide(active.id, seq)} readReceipts={directory.read_receipts && connected && !profile && !quickProfile}
+            hidden={hidden} hide={seq => hide(active.id, seq)} removeHistory={entire => removeHistory(active.id, entire)} readReceipts={directory.read_receipts && connected && !profile && !quickProfile}
             draft={drafts[active.id] ?? { text: "" }} setDraft={change => setDraft(active.id, change)}
             sending={sendingChats.has(active.id)} beginSending={() => beginSending(active.id)} endSending={() => endSending(active.id)}
             transfers={transfers} changed={changed} refresh={refresh} back={() => setMobileChat(false)}

@@ -437,6 +437,8 @@ fn serialize_directory_map<S: serde::Serializer, V: Serialize>(
 pub struct SyncPage {
     pub directory: Directory,
     pub events: Vec<SyncEvent>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub own_attachment_keys: std::collections::HashMap<i64, Uuid>,
     pub server_time: i64,
     pub page_id: Uuid,
     pub has_more: bool,

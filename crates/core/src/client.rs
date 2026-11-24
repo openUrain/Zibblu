@@ -110,6 +110,7 @@ pub struct Page {
 pub struct SyncUpdate {
     pub directory: Directory,
     pub recalled: Vec<i64>,
+    pub deleted: Vec<i64>,
     pub server_now: i64,
     pub last_seq: i64,
     pub revision: i64,
@@ -240,6 +241,8 @@ impl Client {
         client
             .migrate_legacy_media_if_needed(previous_device_id)
             .await?;
+        client.recover_media_reclaims().await?;
+        client.migrate_hidden_history().await?;
         client.restore_upload_times().await?;
         Ok(client)
     }
@@ -319,9 +322,13 @@ impl Client {
                 ")), 'created_at', coalesce(json_extract(t.payload, '$.created_at'), 0),
                           'attachment', json_extract(t.payload, '$.attachment')),
                           coalesce(json_extract(t.payload, '$.created_at'), 0), -t.rowid
-                   FROM transfers t WHERE t.direction = 'upload' AND json_extract(t.payload, '$.status') <> 'complete'
+                   FROM transfers t WHERE json_extract(t.payload, '$.status') <> 'complete'
                      AND NOT EXISTS (SELECT 1 FROM inbox i WHERE i.attachment_id = t.id)
                      AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h.attachment_id = t.id)
+                     AND ((t.direction = 'upload'
+                        AND NOT EXISTS (SELECT 1 FROM local_suppressed_sends s WHERE s.kind = 'upload' AND s.id = t.id)
+                        AND NOT EXISTS (SELECT 1 FROM local_deleted_messages d WHERE d.attachment_id = t.id))
+                       OR (t.direction = 'download' AND EXISTS (SELECT 1 FROM local_deleted_messages d WHERE d.attachment_id = t.id)))
                    UNION ALL
                    SELECT -t.rowid, i.conversation_id, i.attachment_id, json_set(i.payload, '$.seq', -t.rowid),
                           json_extract(i.payload, '$.created_at'), -t.rowid
@@ -671,34 +678,15 @@ impl Client {
     }
 
     pub async fn hide_message(&self, conversation: Uuid, seq: i64) -> Result<()> {
-        let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
-        let found = sqlx::query(
-            "INSERT OR IGNORE INTO hidden_messages (seq, attachment_id)
-             SELECT seq, attachment_id FROM inbox WHERE seq = ? AND conversation_id = ?",
-        )
-        .bind(seq)
-        .bind(conversation.to_string())
-        .execute(&mut *tx)
-        .await?;
-        if found.rows_affected() == 0 {
-            let hidden: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM hidden_messages h JOIN inbox i USING(seq) WHERE h.seq = ? AND i.conversation_id = ?)")
-                .bind(seq).bind(conversation.to_string()).fetch_one(&mut *tx).await?;
-            ensure!(hidden, "This message is unavailable");
-        }
-        let removed_paths =
-            media_store::release_media_refs_in_tx(&mut tx, "message", &seq.to_string()).await?;
-        sqlx::query("DELETE FROM local_files WHERE message_seq = ?")
-            .bind(seq)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM media_previews WHERE message_seq = ?")
-            .bind(seq)
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
-        self.remove_rel_paths(removed_paths).await;
-        self.history_changed();
-        Ok(())
+        self.delete_received_history(conversation, Some(seq), false).await
+    }
+
+    pub async fn clear_received_history(&self, conversation: Uuid) -> Result<()> {
+        self.delete_received_history(conversation, None, false).await
+    }
+
+    pub async fn delete_conversation(&self, conversation: Uuid) -> Result<()> {
+        self.delete_received_history(conversation, None, true).await
     }
 
     pub async fn quoted_message(&self, conversation: Uuid, seq: i64) -> Result<Option<Message>> {
@@ -722,6 +710,22 @@ impl Client {
     }
 
     pub async fn create_conversation(&self, request: ConversationRequest) -> Result<Uuid> {
+        self.ensure_open()?;
+        if let ConversationRequest::Direct { contact_id } = &request {
+            let directory = self.membership_directory().await?;
+            if directory.contacts.iter().any(|user| user.id == *contact_id)
+                && let Some(chat) = directory.conversations.iter().find(|chat| chat.title.is_none()
+                    && chat.members.iter().any(|user| user.id == *contact_id)
+                    && chat.members.iter().any(|user| user.id == self.user.id))
+            {
+                let reopened = sqlx::query("DELETE FROM local_deleted_chats WHERE conversation_id = ?")
+                    .bind(chat.id.to_string()).execute(&self.db).await?.rows_affected();
+                if reopened != 0 {
+                    self.history_changed();
+                    return Ok(chat.id);
+                }
+            }
+        }
         let result: ConversationCreated = self
             .api
             .json(
@@ -730,6 +734,9 @@ impl Client {
                     .json(&request),
             )
             .await?;
+        sqlx::query("DELETE FROM local_deleted_chats WHERE conversation_id = ?")
+            .bind(result.id.to_string()).execute(&self.db).await?;
+        self.history_changed();
         Ok(result.id)
     }
 

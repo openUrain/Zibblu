@@ -15,6 +15,25 @@ use uuid::Uuid;
 use zibblu_core::{Attachment, Client, Direction, FileFilter, Message, Transfer};
 
 pub(crate) const LABEL: &str = "image-viewer";
+
+pub(crate) fn close_deleted(app: &tauri::AppHandle, state: &Desktop, conversation: Uuid, seq: Option<i64>, include_drafts: bool) {
+    #[cfg(windows)]
+    {
+        let mut scope = state.image_scope.write().expect("image scope");
+        let close = scope.as_ref().is_some_and(|selection| selection.conversation == conversation
+            && (!selection.draft || include_drafts)
+            && seq.is_none_or(|seq| selection.seq == seq));
+        if close {
+            scope.take();
+            drop(scope);
+            if let Some(viewer) = app.get_webview_window(LABEL) {
+                let _ = viewer.close();
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (app, state, conversation, seq, include_drafts);
+}
 #[cfg(any(windows, test))]
 // Full-size controls, group and column gaps, and 12px of clearance beside each caption area.
 const MIN_VIEWER_WIDTH: f64 = 8.0 * 36.0 + 4.0 * 8.0 + 2.0 * (3.0 * 44.0 + 12.0);

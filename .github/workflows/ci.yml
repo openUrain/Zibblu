@@ -43,6 +43,9 @@ jobs:
       - name: Test video range parser
         run: cargo test --locked -p zibblu-online --lib media::tests
 
+      - name: Test local deletion sequence gaps
+        run: cargo test --locked -p zibblu-core --features client --lib local_deletion_
+
       - name: Test real messaging and file transfer
         env:
           ZIBBLU_TEST_DATABASE_URL: postgres://zibblu:ci_test_password@localhost:5432/zibblu_test

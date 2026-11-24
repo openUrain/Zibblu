@@ -29,6 +29,10 @@ export class ChatHistoryCache {
     if (this.pages.size > maxConversations) this.pages.delete(this.pages.keys().next().value!);
   }
 
+  discard(conversation: string) {
+    this.pages.delete(conversation);
+  }
+
   retain(conversations: ReadonlySet<string>) {
     for (const id of this.pages.keys()) {
       if (!conversations.has(id)) this.pages.delete(id);

@@ -81,7 +81,7 @@ export type PrivateMessage = { seq: number; sender: User; text: string; created_
 export type PrivateCode = { room: string; host: string; addresses: string[]; secret: string; expires_at: number };
 type PrivateView = PrivateSummary & { connection: string; messages: PrivateMessage[] };
 export type SyncUpdate = {
-  directory: Directory; recalled: number[]; server_now: number; revision: number; latest_ai_seq: number;
+  directory: Directory; recalled: number[]; deleted: number[]; server_now: number; revision: number; latest_ai_seq: number;
 };
 
 export const api = {
@@ -121,6 +121,10 @@ export const api = {
     invoke<MessageReceipt | null>("read_update", { conversation, update: { through, sent: sent === undefined ? [] : [sent], viewed } }),
   setReadReceipts: (enabled: boolean) => invoke<void>("set_read_receipts", { enabled }),
   hideMessage: (conversation: string, seq: number) => invoke<void>("hide_message", { conversation, seq }),
+  hidePendingUpload: (conversation: string, id: string) => invoke<void>("hide_pending_upload", { conversation, id }),
+  clearHistory: (conversation: string) => invoke<void>("clear_history", { conversation }),
+  deleteConversation: (conversation: string) => invoke<void>("delete_conversation", { conversation }),
+  takeSendFailureNotices: () => invoke<number>("take_send_failure_notices"),
   quotedMessage: (conversation: string, seq: number) => invoke<Message | null>("quoted_message", { conversation, seq }),
   create: (request: ConversationRequest) => invoke<string>("create_conversation", { request }),
   send: (conversation: string, text: string, nonce: string, replyTo?: number) =>
