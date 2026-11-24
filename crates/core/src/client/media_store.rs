@@ -2348,6 +2348,44 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn local_deletion_recovers_committed_media_reclaim_on_restart() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let user = User { id: Uuid::new_v4(), handle: "reclaim".into() };
+        let device_id = Uuid::new_v4();
+        let cursor = Uuid::new_v4();
+        let session = || DeviceSession { user: user.clone(), device_id, cursor };
+        let api = || Api::new("http://127.0.0.1:7841");
+        let client = Client::open(root.path(), api()?, session(), false).await?;
+        let chat = Uuid::new_v4();
+        setup_directory(&client, &[(chat, Some(0))]).await?;
+        let bytes = sample_png(96, 96, 5);
+        let msg = insert_attachment_message(&client, 101, chat, "reclaim.png", &bytes, None).await?;
+        let file = msg.attachment.as_ref().unwrap();
+        let sha = sha256_hex(&bytes);
+        client.remember_image_variant(chat, msg.seq, Some(file.id), &sha, false, "image/png", &bytes).await?;
+        let path = client.media_root().join("conversations").join(chat.to_string()).join("images").join(format!("orig_{sha}.png"));
+        assert!(path.is_file());
+        let mut tx = client.db.begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query("INSERT INTO local_deleted_messages (seq, conversation_id, attachment_id) VALUES (?,?,?)")
+            .bind(msg.seq).bind(chat.to_string()).bind(file.id.to_string()).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM inbox WHERE seq = ?").bind(msg.seq).execute(&mut *tx).await?;
+        let paths = release_media_refs_in_tx(&mut tx, "message", &msg.seq.to_string()).await?;
+        assert_eq!(paths.len(), 1);
+        tx.commit().await?;
+        // Simulate termination between the committed deletion and physical unlink.
+        assert!(path.is_file());
+        client.close().await;
+        drop(client);
+        let client = Client::open(root.path(), api()?, session(), false).await?;
+        assert!(!path.exists());
+        let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM media_reclaims").fetch_one(&client.db).await?;
+        assert_eq!(pending, 0);
+        assert!(client.messages(chat, None).await?.items.is_empty());
+        client.close().await;
+        Ok(())
+    }
+
     #[cfg(windows)]
     fn windows_file_info(path: &Path) -> Result<(u32, u64, u32)> {
         use std::os::windows::io::AsRawHandle;
