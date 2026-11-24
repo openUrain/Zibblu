@@ -599,6 +599,13 @@ async fn apply_recall(
     files: &mut Vec<String>,
     media_paths: &mut Vec<String>,
 ) -> Result<()> {
+    let attachment_id: Option<String> = sqlx::query_scalar(
+        "SELECT attachment_id FROM inbox WHERE seq = ?1 AND attachment_id IS NOT NULL
+         UNION SELECT attachment_id FROM local_deleted_messages WHERE seq = ?1 AND attachment_id IS NOT NULL",
+    ).bind(recall.message_seq).fetch_optional(&mut *db).await?;
+    if let Some(id) = attachment_id {
+        media_paths.extend(media_store::release_media_refs_in_tx(&mut *db, "download", &id).await?);
+    }
     media_paths.extend(
         media_store::release_media_refs_in_tx(&mut *db, "message", &recall.message_seq.to_string())
             .await?,
