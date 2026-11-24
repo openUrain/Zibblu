@@ -287,6 +287,60 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>, viewer: bool
                 bytes
             })?);
     }
+    if let Some(draft_id) = path.strip_prefix("draft_") {
+        ensure!(!viewer, "Draft previews belong to the main window");
+        let id = Uuid::parse_str(draft_id)?;
+        let drafts = &app.state::<Desktop>().drafts;
+        if let Ok((_, mime, size)) = drafts.preview_video_info(&client, id).await {
+            let response = preview_headers(mime).header(header::ACCEPT_RANGES, "bytes");
+            if *request.method() == Method::HEAD {
+                return Ok(response
+                    .header(header::CONTENT_LENGTH, size)
+                    .body(Vec::new())?);
+            }
+            let range = request.headers().get(header::RANGE);
+            let (start, end) = if let Some(value) = range {
+                match value
+                    .to_str()
+                    .ok()
+                    .and_then(|value| preview_range(value, size))
+                {
+                    Some(range) => range,
+                    None => {
+                        return Ok(response
+                            .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                            .header(header::CONTENT_RANGE, format!("bytes */{size}"))
+                            .body(Vec::new())?);
+                    }
+                }
+            } else {
+                (0, size.saturating_sub(1))
+            };
+            let (mime, size, start, end, body) = drafts
+                .read_video_range(&client, id, start, end)
+                .await?;
+            ensure!(app.state::<Desktop>().is_current(&client).await, "The session has ended");
+            return Ok(preview_headers(mime)
+                .status(StatusCode::PARTIAL_CONTENT)
+                .header(header::ACCEPT_RANGES, "bytes")
+                .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{size}"))
+                .header(header::CONTENT_LENGTH, body.len())
+                .body(body)?);
+        }
+        let query = request.uri().query().and_then(|query| query.split('&').next());
+        let (mime, bytes) = drafts
+            .preview_image(&client, id, query == Some("thumbnail"))
+            .await?;
+        ensure!(app.state::<Desktop>().is_current(&client).await, "The session has ended");
+        return Ok(preview_headers(&mime)
+            .header(header::ACCEPT_RANGES, "none")
+            .header(header::CONTENT_LENGTH, bytes.len())
+            .body(if *request.method() == Method::HEAD {
+                Vec::new()
+            } else {
+                bytes
+            })?);
+    }
     let id = Uuid::parse_str(path)?;
     if viewer {
         let scoped = crate::image_viewer::authorize(&app.state::<Desktop>(), id).await?;

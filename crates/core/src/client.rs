@@ -10,6 +10,7 @@ mod transfer;
 pub use ai_context::AiScope;
 pub use profile_cache::CachedProfile;
 pub use preview_cache::IMAGE_THUMBNAIL;
+pub use staging::{FileIdentity, SourceChangedError, SourceSnapshot, capture_source_snapshot};
 pub use transfer::{Direction, Transfer, TransferStatus};
 
 use crate::protocol::*;

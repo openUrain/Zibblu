@@ -36,7 +36,21 @@ export type Message = {
   local_file?: boolean;
   preview_size?: ImageSize;
 };
-export type Draft = { text: string; quote?: Message; image?: File; nonce?: string };
+export type DraftAttachment = {
+  id: string;
+  name: string;
+  kind: "file" | "folder";
+  size: number;
+  media_kind?: "image" | "video";
+  can_preview: boolean;
+  error?: string;
+};
+export type AddDraftsResult = {
+  added: DraftAttachment[];
+  skipped_duplicates: number;
+  errors: string[];
+};
+export type Draft = { text: string; quote?: Message; attachments?: DraftAttachment[]; nonce?: string };
 export type Page = { items: Message[]; has_more: boolean };
 export type Transfer = {
   attachment: Attachment; conversation_id: string; direction: "upload" | "download";
@@ -136,6 +150,17 @@ export const api = {
   offerClipboardFiles: () => invoke<DropOffer | null>("offer_clipboard_files"),
   cancelAttachmentOffer: (ticket: string) => invoke<void>("cancel_attachment_offer", { ticket }),
   share: (conversation: string, source: ShareSource) => invoke<void>("share", { conversation, source }),
+  addClipboardFiles: (conversation: string) => invoke<AddDraftsResult | null>("add_clipboard_files", { conversation }),
+  addDroppedFiles: (conversation: string, ticket: string) => invoke<AddDraftsResult>("add_dropped_files", { conversation, ticket }),
+  pickDraftAttachments: (conversation: string, kind: "file" | "folder") =>
+    invoke<AddDraftsResult | null>("pick_draft_attachments", { conversation, kind }),
+  addPastedImageDraft: (conversation: string, bytes: ArrayBuffer) =>
+    invoke<DraftAttachment>("add_pasted_image_draft", bytes, { headers: { "zibblu-conversation": conversation } }),
+  removeDraftAttachment: (id: string) => invoke<void>("remove_draft_attachment", { id }),
+  enqueueDraftAttachment: (conversation: string, id: string) =>
+    invoke<Transfer>("enqueue_draft_attachment", { conversation, id }),
+  draftMediaUrl: (id: string, variant?: "thumbnail") =>
+    convertFileSrc("draft_" + id, "zibblu-media") + (variant ? "?" + variant : ""),
   checkPastedImage: (bytes: ArrayBuffer) => invoke<string>("check_pasted_image", bytes),
   readClipboardImage: () => invoke<ArrayBuffer | number[]>("read_clipboard_image")
     .then(bytes => Array.isArray(bytes) ? new Uint8Array(bytes).buffer : bytes),
@@ -158,6 +183,10 @@ export function fileExpired(message: Message, now = Date.now()): boolean {
 
 export function isExpired(error: unknown): boolean {
   return typeof error === "object" && error !== null && "expired" in error && error.expired === true;
+}
+
+export function isSourceChanged(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "source_changed";
 }
 
 export function errorMessage(error: unknown): string {

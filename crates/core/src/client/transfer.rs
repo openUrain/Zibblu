@@ -199,9 +199,44 @@ impl Client {
         self.start_upload(conversation, attachment).await
     }
 
+    pub async fn queue_upload_verified(
+        self: &Arc<Self>,
+        conversation: Uuid,
+        upload_id: Uuid,
+        source: PathBuf,
+        expected: staging::SourceSnapshot,
+    ) -> Result<Transfer> {
+        let _prepare = self.prepare_gate.lock().await;
+        self.ensure_open()?;
+        if let Some(existing) = self.job((upload_id, Direction::Upload)).await? {
+            ensure!(
+                existing.transfer.conversation_id == conversation,
+                "This attachment belongs to another conversation"
+            );
+            return Ok(existing.transfer);
+        }
+        self.check_upload(conversation).await?;
+        let target = self.spool((upload_id, Direction::Upload));
+        let attachment = tokio::task::spawn_blocking(move || {
+            staging::stage_verified(&source, &expected, &target, upload_id)
+        })
+        .await??;
+        self.start_upload(conversation, attachment).await
+    }
+
     pub async fn queue_pasted_image(
         self: &Arc<Self>,
         conversation: Uuid,
+        bytes: Vec<u8>,
+    ) -> Result<Transfer> {
+        self.queue_pasted_image_with_id(conversation, Uuid::new_v4(), bytes)
+            .await
+    }
+
+    pub async fn queue_pasted_image_with_id(
+        self: &Arc<Self>,
+        conversation: Uuid,
+        upload_id: Uuid,
         bytes: Vec<u8>,
     ) -> Result<Transfer> {
         ensure!(
@@ -209,11 +244,18 @@ impl Client {
             "Pasted images can be up to 16 MiB"
         );
         let _prepare = self.prepare_gate.lock().await;
+        self.ensure_open()?;
+        if let Some(existing) = self.job((upload_id, Direction::Upload)).await? {
+            ensure!(
+                existing.transfer.conversation_id == conversation,
+                "This attachment belongs to another conversation"
+            );
+            return Ok(existing.transfer);
+        }
         self.check_upload(conversation).await?;
-        let id = Uuid::new_v4();
-        let spool = self.spool((id, Direction::Upload));
+        let spool = self.spool((upload_id, Direction::Upload));
         let attachment =
-            tokio::task::spawn_blocking(move || staging::stage_pasted(&bytes, &spool, id))
+            tokio::task::spawn_blocking(move || staging::stage_pasted(&bytes, &spool, upload_id))
                 .await??;
         self.start_upload(conversation, attachment).await
     }
@@ -1169,6 +1211,71 @@ mod tests {
         assert_eq!(after[1].created_at, 400);
         assert_eq!(client.files(filter(), Some(pending_cursor)).await?.items[0].seq, 10);
         assert_eq!(client.files(FileFilter { oldest_first: true, ..filter() }, Some(pending_cursor)).await?.items[0].seq, 11);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn verified_upload_blocks_changed_source_and_deduplicates_by_upload_id() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let files = tempfile::tempdir()?;
+        let source = files.path().join("doc.txt");
+        std::fs::write(&source, b"version-1")?;
+        let snapshot = staging::capture_source_snapshot(&source)?;
+
+        let session = DeviceSession {
+            user: User { id: Uuid::nil(), handle: "draft_tester".into() },
+            device_id: Uuid::nil(),
+            cursor: Uuid::nil(),
+        };
+        let client = Client::open(root.path(), Api::new("http://127.0.0.1:7841").unwrap(), session, false).await?;
+        let conversation = Uuid::new_v4();
+        let directory = crate::Directory {
+            contacts: Vec::new(),
+            conversations: vec![crate::Conversation {
+                id: conversation,
+                title: None,
+                members: vec![client.user.clone()],
+                activity_at: 1,
+                preview: None,
+                preview_seq: None,
+                latest_seq: 0,
+                unread: 0,
+                read_through: 0,
+                joined_after: None,
+            }],
+            pending_contacts: Vec::new(),
+            remarks: HashMap::new(),
+            names: HashMap::new(),
+            avatars: HashMap::new(),
+            read_receipts: false,
+        };
+        sqlx::query("INSERT INTO directory (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload")
+            .bind(serde_json::to_string(&directory)?)
+            .execute(&client.db)
+            .await?;
+
+        // Modify source before enqueue -> blocked with SourceChangedError and nothing queued.
+        std::fs::write(&source, b"version-2")?;
+        let blocked = client
+            .queue_upload_verified(conversation, Uuid::new_v4(), source.clone(), snapshot)
+            .await
+            .unwrap_err();
+        assert!(blocked.downcast_ref::<staging::SourceChangedError>().is_some());
+        assert!(client.transfers().await?.is_empty());
+
+        // Re-capture snapshot after modification -> queues once; second call with same upload_id is idempotent.
+        let fresh = staging::capture_source_snapshot(&source)?;
+        let upload_id = Uuid::new_v4();
+        let first = client
+            .queue_upload_verified(conversation, upload_id, source.clone(), fresh.clone())
+            .await?;
+        let second = client
+            .queue_upload_verified(conversation, upload_id, source, fresh)
+            .await?;
+        assert_eq!(first.attachment.id, upload_id);
+        assert_eq!(second.attachment.id, upload_id);
+        assert_eq!(client.transfers().await?.len(), 1);
+        client.close().await;
         Ok(())
     }
 }

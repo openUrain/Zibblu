@@ -1,6 +1,6 @@
 import { FloatingField } from "./floating-field";
 import {
-  ArrowDown, ArrowLeft, ArrowRight, Clock, Check, CheckCheck, ChevronRight, CircleAlert, Copy, Download, FolderOpen, Ghost, LockKeyhole,
+  ArrowDown, ArrowLeft, ArrowRight, Clock, Check, CheckCheck, ChevronLeft, ChevronRight, CircleAlert, Copy, Download, FolderOpen, Ghost, LockKeyhole,
   LoaderCircle, LogOut, MessageCircle, MoreHorizontal, Paperclip, Pause, Play, Plus, QrCode, Radar, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, UserRoundPlus, UsersRound, X,
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
@@ -8,12 +8,14 @@ import type { FormEvent, KeyboardEvent, ReactNode } from "react";
 import { ai } from "./ai-api";
 import type { AiReply, Assistant } from "./ai-api";
 import { AiRequest, AssistantMenu, ProviderLogo, ShareAiReply } from "./ai";
-import { api, errorMessage, fileExpired } from "./api";
-import type { Conversation, Draft, Message, MessageReceipt, Page, PrivateSummary, ShareSource, Transfer, User } from "./api";
+import { api, errorMessage, fileExpired, isSourceChanged } from "./api";
+import type { Conversation, Draft, DraftAttachment, Message, MessageReceipt, Page, PrivateSummary, Transfer, User } from "./api";
 import { canPreview, mediaKind, MAX_IMAGE_BYTES } from "./attachment-media";
 import { Avatar, Blank, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName, messageTimeLabel, startsTimeGroup, usePage } from "./common";
 import { copyText, useEditMenu, useMenu, useMenuAnchor, useRowMenu } from "./context-menu";
-import { FilesView, TransferList, useAttachmentSave } from "./files";
+import { deriveDraftPreview } from "./draft-preview";
+import { decimalSize, splitFileName } from "./file-labels";
+import { FileIcon, FilesView, TransferList, useAttachmentSave } from "./files";
 import { ChatAttachment, MediaHistory, MediaViewer } from "./chat-media";
 import { privatePhaseLabel, privateTitle } from "./private-chat";
 import { RichMessage } from "./rich-message";
@@ -28,8 +30,8 @@ import type { ChatHistoryCache } from "./chat-history-cache";
 
 type ChatPage = "details" | "search";
 
-export function ChatList({ chats, own, selected, open, newChat, addContact, rooms, activePrivate, openPrivate, createQr, scan, openNearby }: {
-  chats: Conversation[]; own: User; selected?: string; open: (id: string, page?: ChatPage) => void; newChat: () => void;
+export function ChatList({ chats, drafts, own, selected, open, newChat, addContact, rooms, activePrivate, openPrivate, createQr, scan, openNearby }: {
+  chats: Conversation[]; drafts: Record<string, Draft>; own: User; selected?: string; open: (id: string, page?: ChatPage) => void; newChat: () => void;
   addContact: () => void;
   rooms: PrivateSummary[]; activePrivate?: string; openPrivate: (id: string) => void; createQr: () => void;
   scan: () => void; openNearby: () => void;
@@ -67,6 +69,7 @@ export function ChatList({ chats, own, selected, open, newChat, addContact, room
       {filtered.map(chat => {
         const name = chatName(chat, own.id, remarks);
         const peer = chat.members.find(user => user.id !== own.id);
+        const draftPreview = paired === chat.id ? undefined : deriveDraftPreview(drafts[chat.id]);
         return <div className="conversation-entry" key={chat.id}><button type="button" className={"chat-row conversation-row" + (chat.id === selected ? " selected" : "")} {...menu([
           { label: t("Chat info", "聊天信息"), icon: <MoreHorizontal size={18} />, action: () => open(chat.id, "details") },
           { label: t("Search chat", "查找聊天内容"), icon: <Search size={18} />, action: () => open(chat.id, "search") },
@@ -74,7 +77,9 @@ export function ChatList({ chats, own, selected, open, newChat, addContact, room
           aria-current={chat.id === selected ? "true" : undefined} onClick={() => open(chat.id)}>
           {chat.title || !peer ? <Avatar name={name} group={!!chat.title} /> : <PersonAvatar user={peer} />}
           <span className="chat-row-text"><strong title={name}>{name}</strong><small>{paired === chat.id
-            ? t("Private chat", "私密聊天") : chat.preview ? conversationSummary(chat.preview) : t("New conversation", "新会话")}</small></span>
+            ? t("Private chat", "私密聊天")
+            : draftPreview ? <><span className="draft-prefix">{draftPreview.prefix}</span>{" "}{draftPreview.body}</>
+              : chat.preview ? conversationSummary(chat.preview) : t("New conversation", "新会话")}</small></span>
           <span className="chat-row-status"><time dateTime={new Date(chat.activity_at).toISOString()} title={dateTimeLabel(chat.activity_at)}>{messageTimeLabel(chat.activity_at)}</time>
             {chat.unread > 0 && <span className="unread-count">
               <span aria-hidden="true">{chat.unread > 99 ? "99+" : chat.unread}</span>
@@ -107,7 +112,10 @@ type ChatAssistants = {
   answered: (reply: AiReply) => void; dismiss: (id: string) => void;
 };
 
-type ChatDraft = { draft: Draft; setDraft: (change: (draft: Draft) => Draft) => void };
+type ChatDraft = {
+  draft: Draft; setDraft: (change: (draft: Draft) => Draft) => void;
+  sending: boolean; beginSending: () => boolean; endSending: () => void;
+};
 
 function DrawerAction({ icon, children, onClick, className = "", next = true, busy }: {
   icon: ReactNode; children: ReactNode; onClick: (button: HTMLButtonElement) => void; className?: string; next?: boolean; busy?: boolean;
@@ -119,10 +127,10 @@ function DrawerAction({ icon, children, onClick, className = "", next = true, bu
   </button>;
 }
 
-export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, back, share, pasteFiles, openPrivate, aiChat,
-  hidden, hide, readReceipts, draft, setDraft, profileOpen, visibleOnNarrow, requested, historyCache, privateRoom }: {
+export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, back, pickAttachments, pasteFiles, openPrivate, aiChat,
+  hidden, hide, readReceipts, draft, setDraft, sending, beginSending, endSending, profileOpen, visibleOnNarrow, requested, historyCache, privateRoom }: {
   chat: Conversation; own: User; server: string; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
-  refresh: () => Promise<void>; back: () => void; share: (source: ShareSource) => Promise<void>; pasteFiles: () => Promise<boolean>; openPrivate: () => void;
+  refresh: () => Promise<void>; back: () => void; pickAttachments: (kind: "file" | "folder") => Promise<void>; pasteFiles: () => Promise<boolean>; openPrivate: () => void;
   aiChat: ChatAssistants; hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean;
   profileOpen: boolean; visibleOnNarrow: boolean;
   requested?: { page: ChatPage };
@@ -272,8 +280,8 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
     <div className="chat-content">
       <div className="chat-messages" hidden={showFiles}>
         <ChatMessages chat={chat} own={own} revision={revision} latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset} transfers={transfers}
-          visible={!showFiles && !profileOpen} changed={changed} refresh={refresh} share={share} pasteFiles={pasteFiles} aiChat={aiChat} openMedia={openMedia}
-          {...{ hidden, hide, readReceipts, draft, setDraft, historyCache }} />
+          visible={!showFiles && !profileOpen} changed={changed} refresh={refresh} pickAttachments={pickAttachments} pasteFiles={pasteFiles} aiChat={aiChat} openMedia={openMedia}
+          {...{ hidden, hide, readReceipts, draft, setDraft, sending, beginSending, endSending, historyCache }} />
       </div>
       {showFiles && <FilesView conversation={chat.id} transfers={transfers} revision={revision} recalled={recalled} hidden={hidden} onChanged={changed} />}
       {(windows || detailsVisible) && <Dialog mobilePage title={details} className="conversation-drawer"
@@ -374,10 +382,10 @@ function SearchResults({ conversation, search, revision, latestAiSeq, recalled, 
   </div>;
 }
 
-function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset, transfers, visible, changed, refresh, share, pasteFiles, aiChat,
-  hidden, hide, readReceipts, draft, setDraft, openMedia, historyCache }: {
+function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset, transfers, visible, changed, refresh, pickAttachments, pasteFiles, aiChat,
+  hidden, hide, readReceipts, draft, setDraft, sending, beginSending, endSending, openMedia, historyCache }: {
   chat: Conversation; own: User; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
-  refresh: () => Promise<void>; share: (source: ShareSource) => Promise<void>; pasteFiles: () => Promise<boolean>; aiChat: ChatAssistants;
+  refresh: () => Promise<void>; pickAttachments: (kind: "file" | "folder") => Promise<void>; pasteFiles: () => Promise<boolean>; aiChat: ChatAssistants;
   hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean; visible: boolean;
   historyCache: ChatHistoryCache;
   openMedia: (message: Message) => void;
@@ -692,8 +700,9 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
     {!windows && pending.length > 0 && <section className="composer-transfers" aria-label="Pending uploads">
       <TransferList transfers={pending} onChanged={changed} inChat />
     </section>}
-    <Composer conversation={chat.id} refresh={refresh} share={share} pasteFiles={pasteFiles} changed={changed} aiChat={aiChat}
+    <Composer conversation={chat.id} refresh={refresh} pickAttachments={pickAttachments} pasteFiles={pasteFiles} changed={changed} aiChat={aiChat}
       page={page} loading={loading} older={older} draft={draft} setDraft={setDraft}
+      sending={sending} beginSending={beginSending} endSending={endSending}
       quoteUnavailable={!!draft.quote && (recalled.has(draft.quote.seq) || hidden.has(draft.quote.seq))} />
     {sharingReply && <ShareAiReply key={sharingReply.id} reply={sharingReply}
       members={chat.members.filter(user => user.id !== own.id)} close={() => setSharingReply(undefined)} published={async () => {
@@ -752,8 +761,8 @@ function syncComposerScrollEdges(editor: HTMLTextAreaElement) {
   editor.toggleAttribute("data-clipped-bottom", scrollHeight - clientHeight - scrollTop > 1);
 }
 
-function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, page, loading, older, draft: saved, setDraft, quoteUnavailable }: {
-  conversation: string; refresh: () => Promise<void>; share: (source: ShareSource) => Promise<void>; pasteFiles: () => Promise<boolean>; changed: () => void;
+function Composer({ conversation, refresh, pickAttachments, pasteFiles, changed, aiChat, page, loading, older, draft: saved, setDraft, sending, beginSending, endSending, quoteUnavailable }: {
+  conversation: string; refresh: () => Promise<void>; pickAttachments: (kind: "file" | "folder") => Promise<void>; pasteFiles: () => Promise<boolean>; changed: () => void;
   aiChat: ChatAssistants; page?: Page; loading: boolean; older: () => Promise<void>; quoteUnavailable: boolean;
 } & ChatDraft) {
   const { remarks } = useContext(People);
@@ -762,8 +771,8 @@ function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, p
   const toolsAnchor = useMenuAnchor();
   const draft = saved.text;
   const quote = quoteUnavailable ? undefined : saved.quote;
-  const pastedImage = saved.image;
-  const [imageUrl, setImageUrl] = useState<string>();
+  const attachments = saved.attachments ?? [];
+  const [previewId, setPreviewId] = useState<string>();
   const [view, setView] = useState<string>();
   const [menu, setMenu] = useState(false);
   const [menuIndex, setMenuIndex] = useState(0);
@@ -813,67 +822,97 @@ function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, p
     if (view && request) void ai.cancel(view, request.id).catch(() => {});
     setRequest(undefined);
   }
-  const [sending, setSending] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [checkingImage, setCheckingImage] = useState(false);
   const [failure, setFailure] = useState("");
-  useLayoutEffect(() => {
-    const url = pastedImage ? URL.createObjectURL(pastedImage) : undefined;
-    setImageUrl(url);
-    return () => { if (url) URL.revokeObjectURL(url); };
-  }, [pastedImage]);
   const maxTextKiB = assistant ? 8 : 64;
   const oversized = new TextEncoder().encode(draft.trim()).length > maxTextKiB * 1024;
+  const previewItem = previewId ? attachments.find(item => item.id === previewId) : undefined;
+
+  function removeAttachment(id: string) {
+    if (sending) return;
+    setDraft(previous => ({
+      ...previous,
+      attachments: previous.attachments?.filter(item => item.id !== id),
+    }));
+    if (previewId === id) setPreviewId(undefined);
+    void api.removeDraftAttachment(id).catch(() => {});
+  }
 
   async function send(event: FormEvent) {
     event.preventDefault();
     const text = draft.trim();
-    if (oversized || sending || checkingImage || request || ambiguous || quoteUnavailable || (!text && !pastedImage)) return;
-    if (pastedImage && !assistant) {
-      setSending(true);
-      setFailure("");
-      try {
-        await api.pasteImage(conversation, await pastedImage.arrayBuffer());
-        setDraft(previous => previous.image === pastedImage ? { ...previous, image: undefined } : previous);
-        changed();
-      } catch (error) {
-        setFailure(errorMessage(error));
-        return;
-      } finally { setSending(false); }
-      if (!text) return;
-    }
+    const pendingAttachments = attachments;
+    if (oversized || sending || checkingImage || request || ambiguous || quoteUnavailable || (!text && pendingAttachments.length === 0)) return;
     if (assistant) {
-      if (pastedImage) {
-        setFailure("Send or remove the pasted image before asking the assistant.");
+      if (pendingAttachments.length > 0) {
+        setFailure(t("Send or remove staged attachments before asking the assistant.", "请先发送或移除草稿附件，再向 AI 提问。"));
         return;
       }
       if (!prompt || !view) return;
+      if (!beginSending()) return;
       const id = crypto.randomUUID();
-      setSending(true);
       setMenu(false);
       setFailure("");
       try {
         await ai.begin(view, id);
         setRequest({ id, assistant, prompt, text });
       } catch (error) { setFailure(errorMessage(error)); }
-      finally { setSending(false); }
+      finally { endSending(); }
       return;
     }
-    const nonce = saved.nonce ?? crypto.randomUUID();
-    setDraft(previous => ({ ...previous, nonce }));
-    setSending(true);
+    if (!beginSending()) return;
     setFailure("");
+    const target = conversation;
+    let textFailed = false;
+    let anyAttachmentQueued = false;
     try {
-      await api.send(conversation, text, nonce, quote?.seq);
-      setDraft(previous => previous.nonce === nonce ? { ...previous, text: "", quote: undefined, nonce: undefined } : previous);
-      void refresh();
-    } catch (error) { setFailure(errorMessage(error)); }
-    finally { setSending(false); }
+      if (text) {
+        const nonce = saved.nonce ?? crypto.randomUUID();
+        setDraft(previous => ({ ...previous, nonce }));
+        try {
+          await api.send(target, text, nonce, quote?.seq);
+          setDraft(previous => previous.nonce === nonce
+            ? { ...previous, text: "", quote: undefined, nonce: undefined } : previous);
+          void refresh();
+        } catch (error) {
+          textFailed = true;
+          setFailure(errorMessage(error));
+        }
+      }
+      if (!textFailed && pendingAttachments.length > 0) {
+        for (const item of pendingAttachments) {
+          try {
+            await api.enqueueDraftAttachment(target, item.id);
+            anyAttachmentQueued = true;
+            setDraft(previous => ({
+              ...previous,
+              attachments: previous.attachments?.filter(entry => entry.id !== item.id),
+            }));
+          } catch (error) {
+            const reason = isSourceChanged(error)
+              ? t("File changed. Remove and add it again.", "文件已发生变化，请移除后重新添加")
+              : errorMessage(error);
+            setDraft(previous => ({
+              ...previous,
+              attachments: previous.attachments?.map(entry => entry.id === item.id ? { ...entry, error: reason } : entry),
+            }));
+          }
+        }
+        if (anyAttachmentQueued) {
+          changed();
+          void refresh();
+        }
+      }
+    } finally {
+      endSending();
+    }
   }
 
   async function pick(kind: "file" | "folder") {
+    if (preparing || sending) return;
     setPreparing(true);
-    try { await share({ kind }); }
+    try { await pickAttachments(kind); }
     finally { setPreparing(false); }
   }
 
@@ -882,11 +921,11 @@ function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, p
     setCheckingImage(true);
     try {
       if (file.size > MAX_IMAGE_BYTES) {
-        setFailure("Pasted images can be up to 16 MiB.");
+        setFailure(t("Pasted images can be up to 16 MiB.", "粘贴的图片不能超过 16 MiB。"));
         return;
       }
-      const type = await api.checkPastedImage(await file.arrayBuffer());
-      setDraft(previous => ({ ...previous, image: new File([file], file.name, { type }) }));
+      const added = await api.addPastedImageDraft(conversation, await file.arrayBuffer());
+      setDraft(previous => ({ ...previous, attachments: [...(previous.attachments ?? []), added] }));
     } catch (error) { setFailure(errorMessage(error)); }
     finally { setCheckingImage(false); }
   }
@@ -909,7 +948,8 @@ function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, p
         setFailure(t("There’s nothing to paste from the clipboard.", "剪贴板里没有可粘贴的内容。"));
         return;
       }
-      setDraft(previous => ({ ...previous, image: new File([bytes], "clipboard.png", { type: "image/png" }) }));
+      const added = await api.addPastedImageDraft(conversation, bytes);
+      setDraft(previous => ({ ...previous, attachments: [...(previous.attachments ?? []), added] }));
     } catch (error) { setFailure(errorMessage(error)); }
     finally { setCheckingImage(false); }
   }
@@ -924,12 +964,16 @@ function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, p
       {menu && <AssistantMenu id={menuId} assistants={suggestions} active={menuIndex}
         choose={choose} settings={aiChat.settings} />}
       <div className="composer-box">
+        {attachments.length > 0 && <div className="composer-drafts" role="list" aria-label={t("Attachment drafts", "附件草稿")}>
+          {attachments.map(item => <DraftAttachmentCard key={item.id} item={item} disabled={sending}
+            onPreview={() => setPreviewId(item.id)} onRemove={() => removeAttachment(item.id)} />)}
+        </div>}
         <div className={"composer-input" + (assistant ? " ai-composer" : "")}>
           {!assistant && <button className="icon-button composer-plus" type="button" title={t("Message tools", "消息工具")}
             aria-label={t("Message tools", "消息工具")} aria-haspopup="menu" aria-expanded={toolsAnchor?.classList.contains("composer-plus") ?? false}
             onClick={event => openTools(event.currentTarget, [
-              { label: t("Attach a file", "附件"), icon: <Paperclip size={18} />, disabled: preparing, action: () => void pick("file") },
-              ...(!ios ? [{ label: t("Attach a folder", "文件夹"), icon: <FolderOpen size={18} />, disabled: preparing, action: () => void pick("folder") }] : []),
+              { label: t("Attach a file", "附件"), icon: <Paperclip size={18} />, disabled: preparing || sending, action: () => void pick("file") },
+              ...(!ios ? [{ label: t("Attach a folder", "文件夹"), icon: <FolderOpen size={18} />, disabled: preparing || sending, action: () => void pick("folder") }] : []),
             ])}><Plus size={20} /></button>}
           <FloatingField multiline ref={textarea} id={menuId + "-message"} label={assistant ? t("AI prompt", "AI 提示词") : t("Message", "消息")}
             className="composer-text"
@@ -983,7 +1027,7 @@ function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, p
               }
             }} />
           <button className="button primary send-button" type="submit"
-            disabled={(!draft.trim() && !pastedImage) || ambiguous || quoteUnavailable || oversized || sending || checkingImage || (!!assistant && (!view || !prompt))}
+            disabled={(!draft.trim() && attachments.length === 0) || ambiguous || quoteUnavailable || oversized || sending || checkingImage || (!!assistant && (!view || !prompt))}
             aria-label={assistant ? "Choose AI context" : sending ? "Sending message" : "Send message"}>
             {assistant ? <>Choose context <ArrowRight size={16} /></>
               : <span>{sending ? t("Sending…", "发送中…") : t("Send", "发送")}</span>}
@@ -995,15 +1039,12 @@ function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, p
           <button className="icon-button" type="button" aria-label="Remove quote" disabled={sending}
             onClick={() => setDraft(previous => ({ ...previous, quote: undefined, nonce: undefined }))}><X size={15} /></button>
         </div>}
-        {imageUrl && <div className="pasted-image">
-          <img src={imageUrl} alt="Pasted image ready to send" />
-          <button className="icon-button" type="button" disabled={sending || checkingImage} aria-label="Remove pasted image"
-            onClick={() => setDraft(previous => ({ ...previous, image: undefined }))}><X size={16} /></button>
-        </div>}
-        {preparing && <span className="drop-hint" role="status">Preparing attachment…</span>}
-        {checkingImage && <span className="drop-hint" role="status">Checking image…</span>}
+        {preparing && <span className="drop-hint" role="status">{t("Preparing attachment…", "正在准备附件…")}</span>}
+        {checkingImage && <span className="drop-hint" role="status">{t("Checking image…", "正在检查图片…")}</span>}
       </div>
     </form>
+    {previewItem && <DraftPreviewDialog item={previewItem} items={attachments}
+      onSelect={setPreviewId} close={() => setPreviewId(undefined)} />}
     {view && request && <AiRequest view={view} draft={request.id} assistant={request.assistant} prompt={request.prompt}
       messages={page?.items ?? []} hasMore={page?.has_more ?? false} loading={loading} older={older} conversation={conversation}
       close={closeRequest} answered={reply => {
@@ -1012,4 +1053,100 @@ function Composer({ conversation, refresh, share, pasteFiles, changed, aiChat, p
         closeRequest();
       }} />}
   </>;
+}
+
+function DraftAttachmentCard({ item, disabled, onPreview, onRemove }: {
+  item: DraftAttachment; disabled: boolean; onPreview: () => void; onRemove: () => void;
+}) {
+  const [thumbFailed, setThumbFailed] = useState(false);
+  const [stem, extension] = splitFileName(item.name);
+  const imageThumb = item.media_kind === "image" && item.can_preview && !thumbFailed;
+  const videoThumb = item.media_kind === "video" && item.can_preview && !thumbFailed;
+  const iconFile = { id: item.id, name: item.name, kind: item.kind, size: item.size, sha256: "" };
+  const subtitle = item.kind === "folder" ? t("Folder", "文件夹") : decimalSize(item.size);
+  return <div className={"draft-card" + (item.error ? " draft-card-invalid" : "")} role="listitem">
+    <button type="button" className="draft-card-main" onClick={onPreview} title={item.error ? `${item.name}\n${item.error}` : item.name}
+      aria-label={t("Preview attachment", "预览附件") + " " + item.name}>
+      <span className="draft-card-thumb" aria-hidden="true">
+        {imageThumb ? <img src={api.draftMediaUrl(item.id, "thumbnail")} alt="" onError={() => setThumbFailed(true)} />
+          : videoThumb ? <>
+            <video src={api.draftMediaUrl(item.id) + "#t=0.1"} muted playsInline preload="metadata" onError={() => setThumbFailed(true)} />
+            <span className="draft-video-badge"><Play size={12} fill="currentColor" /></span>
+          </>
+            : <FileIcon file={iconFile} />}
+      </span>
+      <span className="draft-card-info">
+        <span className="file-name draft-card-name" dir="ltr">
+          <strong dir="auto">{stem}</strong>{extension && <strong>{extension}</strong>}
+        </span>
+        {item.error
+          ? <small className="draft-card-error" role="alert"><CircleAlert size={12} aria-hidden="true" /><span>{item.error}</span></small>
+          : <small className="draft-card-meta">{subtitle}</small>}
+      </span>
+    </button>
+    <button type="button" className="icon-button draft-card-remove" disabled={disabled}
+      aria-label={t("Remove attachment", "移除附件") + " " + item.name} title={t("Remove", "移除")}
+      onClick={onRemove}><X size={14} /></button>
+  </div>;
+}
+
+function DraftPreviewDialog({ item, items, onSelect, close }: {
+  item: DraftAttachment; items: DraftAttachment[]; onSelect: (id: string) => void; close: () => void;
+}) {
+  const index = items.findIndex(entry => entry.id === item.id);
+  const previous = index > 0 ? items[index - 1] : undefined;
+  const next = index >= 0 && index < items.length - 1 ? items[index + 1] : undefined;
+  const [zoom, setZoom] = useState(100);
+  const [failed, setFailed] = useState(false);
+  const isImage = item.media_kind === "image" && item.can_preview;
+  const isVideo = item.media_kind === "video" && item.can_preview;
+  const iconFile = { id: item.id, name: item.name, kind: item.kind, size: item.size, sha256: "" };
+  const ext = splitFileName(item.name)[1].slice(1).toUpperCase();
+  const typeLabel = item.kind === "folder" ? t("Folder (will be zipped on send)", "文件夹（发送时自动打包为 ZIP）")
+    : ext ? `${ext} ${t("file", "文件")}` : t("File", "普通文件");
+
+  useEffect(() => {
+    setZoom(100);
+    setFailed(false);
+  }, [item.id]);
+
+  return <Dialog title={t("Attachment preview", "附件预览")} className={isImage || isVideo ? "media-viewer" : "draft-file-preview"} close={close}
+    onKeyDown={event => {
+      if (event.defaultPrevented || (event.target instanceof Element && event.target.closest("video, input, .media-viewer-stage"))) return;
+      const target = event.key === "ArrowLeft" ? previous : event.key === "ArrowRight" ? next : undefined;
+      if (target) { event.preventDefault(); onSelect(target.id); }
+    }}>
+    {item.error && <p className="inline-error" role="alert">{item.error}</p>}
+    {isImage || isVideo ? <>
+      <div className="media-viewer-stage" data-ready={!failed ? "" : undefined}
+        tabIndex={zoom > 100 ? 0 : undefined} aria-label={zoom > 100 ? "Pan zoomed image" : undefined}>
+        {failed ? <div className="media-viewer-placeholder">
+          <p role="status">{t("Local preview is unavailable.", "无法加载本地预览。")}</p>
+        </div> : isVideo ? <video key={item.id} src={api.draftMediaUrl(item.id)} controls controlsList="nodownload noremoteplayback"
+          playsInline preload="metadata" disablePictureInPicture aria-label={item.name} onError={() => setFailed(true)} />
+          : <div className="media-viewer-image" style={{ width: zoom + "%", height: zoom + "%" }}>
+            <img key={item.id} src={api.draftMediaUrl(item.id)} alt={item.name} onError={() => setFailed(true)} />
+          </div>}
+      </div>
+      {isImage && !failed && <label className="media-zoom">{t("Zoom", "缩放")}
+        <input type="range" min={100} max={300} step={25} value={zoom} onChange={event => setZoom(Number(event.target.value))} />
+        <span>{zoom}%</span>
+      </label>}
+    </> : <div className="draft-file-meta-card">
+      <FileIcon file={iconFile} />
+      <div className="draft-file-meta-body">
+        <strong title={item.name}>{item.name}</strong>
+        <p className="muted">{typeLabel} · {decimalSize(item.size)}</p>
+      </div>
+    </div>}
+    <div className="media-viewer-footer">
+      <strong title={item.name}>{item.name}</strong>
+      {items.length > 1 && <div className="media-nav">
+        <button className="icon-button" type="button" title={t("Previous", "上一个")} aria-label={t("Previous", "上一个")}
+          disabled={!previous} onClick={() => { if (previous) onSelect(previous.id); }}><ChevronLeft size={20} /></button>
+        <button className="icon-button" type="button" title={t("Next", "下一个")} aria-label={t("Next", "下一个")}
+          disabled={!next} onClick={() => { if (next) onSelect(next.id); }}><ChevronRight size={20} /></button>
+      </div>}
+    </div>
+  </Dialog>;
 }

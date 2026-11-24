@@ -1,4 +1,5 @@
 mod ai;
+mod attachment_drafts;
 mod clipboard;
 mod commands;
 #[cfg(windows)]
@@ -124,11 +125,14 @@ pub fn run() {
                 return;
             };
             let state = window.state::<Desktop>();
-            if paths.len() != 1 {
+            if paths.is_empty() || paths.len() > attachment_drafts::MAX_DRAFT_ATTACHMENTS {
                 let _ = window.emit_to(
                     "main",
                     "attachment-drop-error",
-                    "Drop one file or folder at a time.",
+                    format!(
+                        "Drop up to {} files or folders at a time.",
+                        attachment_drafts::MAX_DRAFT_ATTACHMENTS
+                    ),
                 );
                 return;
             }
@@ -211,6 +215,12 @@ pub fn run() {
             commands::offer_clipboard_files,
             commands::cancel_attachment_offer,
             commands::share,
+            attachment_drafts::add_clipboard_files,
+            attachment_drafts::add_dropped_files,
+            attachment_drafts::pick_draft_attachments,
+            attachment_drafts::add_pasted_image_draft,
+            attachment_drafts::remove_draft_attachment,
+            attachment_drafts::enqueue_draft_attachment,
             commands::save_attachment,
             commands::open_saved_attachment,
             image_viewer::open_image_viewer,
