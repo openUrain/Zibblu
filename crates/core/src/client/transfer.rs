@@ -124,6 +124,34 @@ impl Job {
 }
 
 impl Client {
+    pub async fn hide_pending_upload(&self, conversation: Uuid, id: Uuid) -> Result<()> {
+        self.ensure_open()?;
+        let prepare = self.prepare_gate.lock().await;
+        let workers = self.workers.lock().await;
+        let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
+        let chat = conversation.to_string();
+        let published: Option<i64> = sqlx::query_scalar("SELECT seq FROM inbox WHERE attachment_id = ? AND conversation_id = ?")
+            .bind(id.to_string()).bind(&chat).fetch_optional(&mut *tx).await?;
+        if let Some(seq) = published {
+            tx.commit().await?;
+            drop(workers);
+            drop(prepare);
+            return self.hide_message(conversation, seq).await;
+        }
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM transfers WHERE id = ? AND direction = 'upload'
+            AND json_extract(payload, '$.conversation_id') = ? AND json_extract(payload, '$.status') <> 'complete')")
+            .bind(id.to_string()).bind(&chat).fetch_one(&mut *tx).await?;
+        ensure!(exists, "This upload is unavailable");
+        sqlx::query("INSERT OR IGNORE INTO local_suppressed_sends (kind, id, conversation_id) VALUES ('upload', ?, ?)")
+            .bind(id.to_string()).bind(&chat).execute(&mut *tx).await?;
+        sqlx::query("UPDATE transfers SET payload = json_set(payload, '$.status', 'queued', '$.retry_at', 0)
+            WHERE id = ? AND direction = 'upload' AND json_extract(payload, '$.status') IN ('paused','failed','expired')")
+            .bind(id.to_string()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        self.history_changed();
+        Ok(())
+    }
+
     pub(super) async fn delete_received_history(&self, conversation: Uuid, seq: Option<i64>, delete_chat: bool) -> Result<()> {
         self.ensure_open()?;
         ensure!(seq != Some(0), "This message is unavailable");
@@ -532,6 +560,7 @@ impl Client {
     ) -> Result<Transfer> {
         let _prepare = self.prepare_gate.lock().await;
         self.ensure_open()?;
+        ensure!(!self.is_suppressed_upload(upload_id).await?, "This upload was deleted locally");
         if let Some(existing) = self.job((upload_id, Direction::Upload)).await? {
             ensure!(
                 existing.transfer.conversation_id == conversation,
@@ -569,6 +598,7 @@ impl Client {
         );
         let _prepare = self.prepare_gate.lock().await;
         self.ensure_open()?;
+        ensure!(!self.is_suppressed_upload(upload_id).await?, "This upload was deleted locally");
         if let Some(existing) = self.job((upload_id, Direction::Upload)).await? {
             ensure!(
                 existing.transfer.conversation_id == conversation,
@@ -1069,6 +1099,7 @@ impl Client {
     pub async fn staged_image(&self, id: Uuid) -> Result<std::fs::File> {
         self.ensure_open()?;
         let key = (id, Direction::Upload);
+        ensure!(!self.is_suppressed_upload(id).await?, "This upload was deleted locally");
         let job = self.job(key).await?.context("This upload is unavailable")?;
         let file = job.transfer.attachment;
         ensure!(file.size <= MAX_PASTED_IMAGE_BYTES as u64
@@ -1105,7 +1136,7 @@ impl Client {
         job.transfer.received = progress.received;
         self.store_job(job).await?;
         let spool = self.spool(job.key());
-        if !progress.complete {
+        if !progress.complete && progress.received < attachment.size {
             let mut source = fs::File::open(&spool)
                 .await
                 .context("The staged file is unavailable. Share it again.")?;
