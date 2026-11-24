@@ -1120,7 +1120,7 @@ button.profile-row:hover { background: var(--hover); }
 html:has(body.windows .shell) { background: transparent; }
 .windows {
   --shell-inset: 4px;
-  --shell-content-shadow: 0 5px 15px rgb(0 0 0 / 0.10);
+  --shell-content-shadow: 0 1px 3px rgb(0 0 0 / 0.10);
   --search-inline: 12px;
   --search-block: 8px;
   --edge-fade: 8px;
