@@ -28,6 +28,10 @@ use uuid::Uuid;
 const MAX_PENDING: i64 = 8;
 const MAX_RUNNING: usize = 2;
 
+#[derive(Debug, thiserror::Error)]
+#[error("The staged attachment is missing or incomplete")]
+struct MissingStagedUpload;
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
@@ -1024,7 +1028,8 @@ impl Client {
                         }
                     };
                     definitive_failure = matches!(job.transfer.status, TransferStatus::Failed | TransferStatus::Expired)
-                        && matches!(error.downcast_ref::<OnlineError>(), Some(OnlineError::Rejected { .. }));
+                        && (matches!(error.downcast_ref::<OnlineError>(), Some(OnlineError::Rejected { .. }))
+                            || error.is::<MissingStagedUpload>());
                     job.retry_at = unix_millis() + 2_000;
                 }
             }
@@ -1171,9 +1176,14 @@ impl Client {
         self.store_job(job).await?;
         let spool = self.spool(job.key());
         if !progress.complete && progress.received < attachment.size {
-            let mut source = fs::File::open(&spool)
-                .await
-                .context("The staged file is unavailable. Share it again.")?;
+            // The server has confirmed this ID is not yet published and still needs bytes.
+            let mut source = fs::File::open(&spool).await.map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    anyhow::Error::new(MissingStagedUpload)
+                } else {
+                    anyhow::Error::new(error).context("The staged file is unavailable. Share it again.")
+                }
+            })?;
             source.seek(SeekFrom::Start(progress.received)).await?;
             while job.transfer.received < attachment.size {
                 if stop.load(Ordering::Relaxed) {
@@ -1182,10 +1192,13 @@ impl Client {
                 let offset = job.transfer.received;
                 let len = (attachment.size - offset).min(CHUNK_SIZE);
                 let mut bytes = vec![0; len as usize];
-                source
-                    .read_exact(&mut bytes)
-                    .await
-                    .context("Could not read the staged attachment")?;
+                source.read_exact(&mut bytes).await.map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                        anyhow::Error::new(MissingStagedUpload)
+                    } else {
+                        anyhow::Error::new(error).context("Could not read the staged attachment")
+                    }
+                })?;
                 let progress: UploadProgress = self
                     .api
                     .json(
