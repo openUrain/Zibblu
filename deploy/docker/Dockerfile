@@ -8,7 +8,7 @@ RUN cargo build --locked --release -p zibblu-online
 
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg util-linux \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /src/target/release/zibblu-online /usr/local/bin/zibblu-online
 USER 65532:65532

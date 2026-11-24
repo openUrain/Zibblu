@@ -58,11 +58,13 @@ M1 使用 Argon2id 保存密码摘要。服务端保存七天会话令牌和安�
 
 每次附件分块、预览和内容 ACK 检查当前会话、账号、成员、历史截止点和撤回状态。上传修改由所有者发起并复核发送权限。文件或目录归档上限 256 MiB。服务按账号预留最多 2 GiB 和 256 个传输，全服务上限 16 GiB 和 4,096 个传输。超过配置的期限后停止服务对应载荷；可选自动清理释放数据库空间与上传配额。默认关闭自动清理，生产期限和开关须单独审批。
 
+服务端视频封面和压缩预览使用原附件 UUID 与资源类型寻址，继承 `m1_visible_messages` 的账号受众、成员状态及加入截止点，并检查会话设备认证、撤回和有效期。范围流每个分块重新核验；已经传出的字节无法撤回，失权后停止后续读取。衍生物的字节数计入原有配额，随源附件外键级联回收。原片及其 SHA-256 不因转码、失败或衍生物清理改变。视频处理仅在 Linux 在线服务中运行，以容器签名和 ffprobe 检测可支持视频流，使用格式和协议白名单、受限临时文件、单任务及子进程 CPU/内存/文件大小/超时限制。转码器不继承数据库环境变量；保持 FFmpeg 系统包安全更新。
+
 Windows 和 iOS 的普通聊天预览只访问当前认证资料。接收的会话目录附带本账号的历史截止点，缺少该字段时仍走原有在线预览。临时预览读写复核最近同步的成员状态、截止点、附件有效期、撤回和本机隐藏状态。离线期间其他设备的权限变化在下次成功同步时生效。
 
 SQLite 落盘后才发送元数据 ACK。完整保存并校验长度和 SHA-256 后，设备才提交独立的文件内容 ACK。未授权请求统一按不可见处理，授权用户可收到过期回应。内容响应使用 `Cache-Control: private, no-store`。服务端清理只结束数据的在线可用性，WAL、数据库备份、快照和代理需执行各自的留存与访问控制。
 
-Local attachment paths come from a native picker, an explicitly confirmed drop, or a confirmed Windows File Explorer paste. The native app holds the path list behind a single-use ticket and reads files under the current OS account when the user confirms. Pasted images supply bounded image bytes, without a path. Media previews use the same authenticated chunk access as downloads. Image previews check SHA-256 and serve a content type derived from the validated bytes with `nosniff`. Image decoding is limited by input size, dimensions and decoded pixels. Animations are limited to 240 frames and 64 million canvas pixels in total. The app does not extract received archives.
+Local attachment paths come from a native picker, an explicitly confirmed drop, or a confirmed Windows File Explorer paste. The native app holds the path list behind a single-use ticket and reads files under the current OS account when the user confirms. Pasted images supply bounded image bytes, without a path. Client-side previews of original attachments use the same authenticated chunk access as downloads. Image previews check SHA-256 and serve a content type derived from the validated bytes with `nosniff`. Image decoding is limited by input size, dimensions and decoded pixels. Animations are limited to 240 frames and 64 million canvas pixels in total. The app does not extract received archives.
 
 Windows 附件仅对原生保存对话框确认的现有普通文件授权覆盖。发布前复核目标的文件标识、大小与最后写入时间，再以同目录已经校验 SHA-256 并同步的暂存文件执行一次替换。新路径维持禁止覆盖。权限不足、文件锁或空间不足等失败会保留原件，并提供重试入口。替换成功后才记录保存完成。
 

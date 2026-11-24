@@ -37,10 +37,47 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install video processing runtime
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg util-linux
+
+      - name: Test video range parser
+        run: cargo test --locked -p zibblu-online --lib media::tests
+
       - name: Test real messaging and file transfer
         env:
           ZIBBLU_TEST_DATABASE_URL: postgres://zibblu:ci_test_password@localhost:5432/zibblu_test
-        run: cargo test --locked -p zibblu-online --test m1
+        run: cargo test --locked -p zibblu-online --test m1 -- --skip video_derivatives_and_retention
+
+      - name: Test real video derivatives in isolation
+        env:
+          ZIBBLU_TEST_DATABASE_URL: postgres://zibblu:ci_test_password@localhost:5432/zibblu_test
+        run: cargo test --locked -p zibblu-online --test m1 video_derivatives_and_retention -- --nocapture
+
+  online-container:
+    name: Online Docker runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build online service
+        run: docker build -f deploy/docker/Dockerfile -t zibblu-online-ci .
+      - name: Verify media executables and real encoders as the service user
+        run: |
+          docker run --rm --tmpfs /tmp:rw,size=320m,mode=1777 -w /tmp --entrypoint /bin/sh zibblu-online-ci -ec '
+            ffmpeg -version
+            ffprobe -version
+            ffmpeg -nostdin -v error -f lavfi -i testsrc2=size=640x360:rate=30 -f lavfi -i sine=frequency=440:sample_rate=48000 -t 2 -c:v libx264 -threads 2 -crf 10 -c:a aac -f mp4 input
+            sha256sum input > original.sha256
+            prlimit --as=2147483648 --cpu=90 --fsize=16384 -- ffprobe -v error -max_alloc 134217728 -protocol_whitelist file -format_whitelist mov,matroska,webm,avi -max_streams 32 -probesize 8388608 -analyzeduration 5000000 -select_streams V:0 -show_entries stream=width,height:format=duration -of json input > probe.json
+            prlimit --as=2147483648 --cpu=90 --fsize=524288 -- ffmpeg -nostdin -v error -max_alloc 134217728 -protocol_whitelist file -format_whitelist mov,matroska,webm,avi -max_streams 32 -probesize 8388608 -analyzeduration 5000000 -threads 2 -max_pixels 8294400 -i input -map 0:V:0 -an -sn -dn -filter_threads 1 -vf scale=320:180 -frames:v 1 -q:v 4 -threads 2 -f image2 cover.jpg
+            prlimit --as=2147483648 --cpu=90 --fsize=33554432 -- ffmpeg -nostdin -v error -max_alloc 134217728 -protocol_whitelist file -format_whitelist mov,matroska,webm,avi -max_streams 32 -probesize 8388608 -analyzeduration 5000000 -threads 2 -max_pixels 8294400 -i input -map 0:V:0 -map "0:a:0?" -sn -dn -map_metadata -1 -map_chapters -1 -filter_threads 1 -vf scale=640:360,fps=30 -c:v libx264 -pix_fmt yuv420p -preset fast -crf 25 -threads 2 -c:a aac -b:a 96k -ac 2 -movflags +faststart -t 600 -f mp4 preview.mp4
+            sha256sum -c original.sha256
+            test -s cover.jpg
+            test -s preview.mp4
+            ffmpeg -nostdin -v error -ss 1 -i preview.mp4 -frames:v 1 -f null -
+            wc -c input cover.jpg preview.mp4
+            sha256sum cover.jpg preview.mp4
+          '
 
   desktop-rust:
     name: Tauri Rust (Windows)

@@ -44,6 +44,10 @@ Small, durable decisions only. Add a dated entry when an actual choice changes; 
 
 此决定**取代早期 2026-11-14 问卷中作为默认审美处方的 Apple/iMessage 等表述**，也取代跨文件复制维护的泛用 UI 规则；不废除 D-012—D-017 中明确的产品/平台行为及安全承诺（Lavender 品牌、各平台微信交互基线、正常/私密聊天主题与文件媒体分界、权限、无障碍、已经批准的组件）。`creative` 仍需 Owner 对所改区域明确授权。现行契约见 [DESIGN_SYSTEM](DESIGN_SYSTEM.md)，来源和安装见 [SKILLS](SKILLS.md)。
 
+## D-020 · 在线视频衍生资源
+
+普通聊天视频的原片保留独立下载及校验语义。封面、压缩预览是原片的有期限独立资源，由现有在线服务异步处理，不引入额外消息或队列服务。衍生资源继承原附件授权与回收期限；预览不比原片小或生成失败时保留原片下载。使用增量表和原有 PostgreSQL 分块存储、配额与 feed 锁，兼容旧客户端。客户端播放及缓存使用现有授权接口，见 [ARCHITECTURE](ARCHITECTURE.md#视频衍生资源)。
+
 ## Open decisions
 
 1. Online-message encryption protocol and key lifecycle; do not claim E2EE until implemented.

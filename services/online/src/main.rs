@@ -28,6 +28,17 @@ async fn main() -> anyhow::Result<()> {
     let retention = zibblu_online::retention::Retention::from_env()?;
     let app = zibblu_online::router_with_retention(db.clone(), retention).await?;
     let listener = tokio::net::TcpListener::bind(address).await?;
+    let media_db = db.clone();
+    tokio::spawn(async move {
+        loop {
+            match zibblu_online::media::process_one(&media_db).await {
+                Ok(true) => continue,
+                Ok(false) => {},
+                Err(_) => eprintln!("Video resource batch failed; it will be retried."),
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
     if let Some(interval) = retention.sweep_interval {
         tokio::spawn(async move {
             loop {

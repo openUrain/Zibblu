@@ -4,6 +4,7 @@ mod devices;
 mod files;
 mod group_invites;
 mod lan_credentials;
+pub mod media;
 mod profiles;
 pub mod retention;
 mod sync;
@@ -92,6 +93,8 @@ pub async fn router_with_retention(
         .route("/v1/files/{id}/complete", post(files::complete))
         .route("/v2/files/{id}/download", post(files::start_download))
         .route("/v2/files/{id}/ack", post(files::ack_content))
+        .route("/v2/files/{id}/media", get(media::metadata))
+        .route("/v2/files/{id}/media/{kind}", get(media::read))
         .layer(DefaultBodyLimit::max(64 * 1024));
     let text_publish = Router::new()
         .route("/v1/conversations/{id}/messages", post(chats::send))

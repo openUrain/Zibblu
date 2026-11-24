@@ -724,3 +724,318 @@ async fn expiry_reclaims_payloads_and_keeps_verified_local_files() -> Result<()>
     task.abort();
     Ok(())
 }
+
+
+// Real FFmpeg + authenticated HTTP + disposable PostgreSQL; CI installs the Linux tools.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn video_derivatives_and_retention() -> Result<()> {
+    let db = test_db().await?;
+    let retention = Retention { file_secs: Some(604800), ..Retention::default() };
+    let app = zibblu_online::router_with_retention(db.clone(), retention).await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let server = format!("http://{}", listener.local_addr()?);
+    let server_task = tokio::spawn(async move { axum::serve(listener, app).await });
+    let first = tempfile::tempdir()?;
+    let second = tempfile::tempdir()?;
+    let third = tempfile::tempdir()?;
+    let suffix = &Uuid::new_v4().simple().to_string()[..10];
+    let password = "video-derivatives-fixture";
+    let alice = sign_in(first.path(), &server, &format!("video_a_{suffix}"), password, true).await?;
+    let bob = sign_in(second.path(), &server, &format!("video_b_{suffix}"), password, true).await?;
+    let outsider = sign_in(third.path(), &server, &format!("video_c_{suffix}"), password, true).await?;
+    let chat = direct(&alice, &bob).await?;
+    alice.sync().await?;
+    bob.sync().await?;
+    let source = first.path().join("sample.mp4");
+    ensure!(Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "4", "-c:v", "libx264",
+            "-threads", "2", "-crf", "10", "-c:a", "aac"])
+        .arg(&source).status()?.success(), "FFmpeg fixture generation failed");
+    let original = std::fs::read(&source)?;
+    let digest = format!("{:x}", Sha256::digest(&original));
+    let http = reqwest::Client::builder().no_proxy().build()?;
+    let upload = alice.queue_upload(chat, source.clone()).await?;
+    let id = upload.attachment.id;
+    wait_transfer(&alice, id, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
+    bob.sync().await?;
+    let seq = bob.attachment(id).await?.seq;
+    assert_eq!(upload.attachment.sha256, digest);
+    let media = format!("{server}/v2/files/{id}/media");
+    let preview_url = format!("{media}/preview");
+    let cover_url = format!("{media}/cover");
+    let get = |url: &str| http.get(url).bearer_auth(bob.session_token());
+    let pending: serde_json::Value = get(&media).send().await?.error_for_status()?.json().await?;
+    assert_eq!(pending["preview"]["status"], "pending");
+    assert_eq!(get(&preview_url).send().await?.status(), 409);
+    assert_eq!(http.get(&media).send().await?.status(), 401);
+    assert_eq!(http.get(&preview_url).send().await?.status(), 401);
+    assert_eq!(get(&format!("{media}/original")).send().await?.status(), 404);
+    for url in [&media, &cover_url, &preview_url] {
+        assert_eq!(http.get(url).bearer_auth(outsider.session_token()).send().await?.status(), 404);
+    }
+    assert!(zibblu_online::media::process_one(&db).await?);
+    let ready: serde_json::Value = get(&media).send().await?.error_for_status()?.json().await?;
+    assert_eq!(ready["cover"]["status"], "ready");
+    assert_eq!(ready["preview"]["status"], "ready");
+    assert_ne!(ready["cover"]["id"], ready["preview"]["id"]);
+    assert_eq!(ready["cover"]["mime"], "image/jpeg");
+    assert_eq!(ready["preview"]["mime"], "video/mp4");
+    let cover = get(&cover_url).send().await?.error_for_status()?.bytes().await?;
+    assert!(cover.starts_with(&[0xff, 0xd8, 0xff]));
+    assert_eq!(ready["cover"]["size"].as_u64(), Some(cover.len() as u64));
+    assert_eq!(ready["cover"]["sha256"], format!("{:x}", Sha256::digest(&cover)));
+    let response = get(&preview_url).send().await?.error_for_status()?;
+    assert_eq!(response.headers()["content-type"], "video/mp4");
+    assert_eq!(response.headers()["accept-ranges"], "bytes");
+    assert_eq!(response.headers()["cache-control"], "private, no-store");
+    let preview = response.bytes().await?;
+    assert!(!preview.is_empty() && preview.len() < original.len());
+    assert_eq!(ready["preview"]["size"].as_u64(), Some(preview.len() as u64));
+    assert_eq!(ready["preview"]["sha256"], format!("{:x}", Sha256::digest(&preview)));
+    let preview_path = second.path().join("preview.mp4");
+    std::fs::write(&preview_path, &preview)?;
+    ensure!(Command::new("ffmpeg").args(["-nostdin", "-v", "error", "-ss", "2", "-i"])
+        .arg(&preview_path).args(["-frames:v", "1", "-f", "null", "-"]).status()?.success());
+    let head = http.head(&preview_url).bearer_auth(bob.session_token()).send().await?;
+    assert_eq!(head.status(), 200);
+    assert_eq!(head.headers()["content-length"].to_str()?.parse::<usize>()?, preview.len());
+    assert!(head.bytes().await?.is_empty());
+    let start = if preview.len() > CHUNK_SIZE as usize + 40 {
+        CHUNK_SIZE as usize - 17
+    } else { preview.len() / 2 };
+    let end = (start + 53).min(preview.len() - 1);
+    let partial = get(&preview_url).header("Range", format!("bytes={start}-{end}")).send().await?;
+    assert_eq!(partial.status(), 206);
+    assert_eq!(partial.headers()["content-range"].to_str()?, format!("bytes {start}-{end}/{}", preview.len()));
+    assert_eq!(partial.headers()["content-length"].to_str()?.parse::<usize>()?, end - start + 1);
+    assert_eq!(&partial.bytes().await?[..], &preview[start..=end]);
+    let tail = get(&preview_url).header("Range", "bytes=-31").send().await?;
+    assert_eq!(tail.status(), 206);
+    assert_eq!(&tail.bytes().await?[..], &preview[preview.len() - 31..]);
+    let invalid = get(&preview_url).header("Range", format!("bytes={}-", preview.len())).send().await?;
+    assert_eq!(invalid.status(), 416);
+    assert_eq!(invalid.headers()["content-range"].to_str()?, format!("bytes */{}", preview.len()));
+    let mut downloaded = Vec::new();
+    for offset in (0..original.len()).step_by(CHUNK_SIZE as usize) {
+        let data = get(&format!("{server}/v1/files/{id}/chunks/{offset}")).send().await?.error_for_status()?.bytes().await?;
+        downloaded.extend_from_slice(&data);
+    }
+    assert_eq!(downloaded, original);
+    assert_eq!(format!("{:x}", Sha256::digest(&downloaded)), digest);
+    println!("video original={} sha256={digest}; cover={} sha256={:x}; preview={} sha256={:x}; Range {start}-{end} verified",
+        original.len(), cover.len(), Sha256::digest(&cover), preview.len(), Sha256::digest(&preview));
+
+    // Reconstructing the router must not reset ready resources or their identities.
+    let _reopened = zibblu_online::router_with_retention(db.clone(), retention).await?;
+    assert!(!zibblu_online::media::process_one(&db).await?);
+    assert_eq!(get(&media).send().await?.error_for_status()?.json::<serde_json::Value>().await?, ready);
+    http.delete(format!("{server}/v1/conversations/{chat}/messages/{seq}"))
+        .bearer_auth(alice.session_token()).send().await?.error_for_status()?;
+    for url in [&media, &cover_url, &preview_url] {
+        assert_eq!(get(url).send().await?.status(), 404);
+    }
+    zibblu_online::retention::sweep(&db).await?;
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM video_resource_chunks WHERE attachment_id=$1")
+        .bind(id).fetch_one(&db).await?, 0);
+
+    // A malformed MP4 signature is not accepted as real video, but still publishes as an original.
+    let invalid_bytes = b"\0\0\0\x18ftypisomjunk";
+    let invalid_path = first.path().join("broken.mp4");
+    std::fs::write(&invalid_path, invalid_bytes)?;
+    let bad = alice.queue_upload(chat, invalid_path).await?.attachment.id;
+    wait_transfer(&alice, bad, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
+    assert!(zibblu_online::media::process_one(&db).await?);
+    let bad_url = format!("{server}/v2/files/{bad}/media");
+    let bad_meta: serde_json::Value = get(&bad_url).send().await?.error_for_status()?.json().await?;
+    assert_eq!(bad_meta["preview"]["status"], "unsupported");
+    assert_eq!(get(&format!("{bad_url}/preview")).send().await?.status(), 415);
+    assert_eq!(&get(&format!("{server}/v1/files/{bad}/chunks/0")).send().await?.error_for_status()?.bytes().await?[..], invalid_bytes);
+
+    // A highly compressed, valid tiny MP4 still gets a cover, not a larger preview.
+    let tiny_path = first.path().join("tiny.mp4");
+    ensure!(Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=64x64:r=1",
+            "-t", "1", "-c:v", "libx264", "-threads", "2", "-crf", "35"])
+        .arg(&tiny_path).status()?.success());
+    let tiny_bytes = std::fs::read(&tiny_path)?;
+    let tiny = alice.queue_upload(chat, tiny_path).await?.attachment.id;
+    wait_transfer(&alice, tiny, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
+    assert!(zibblu_online::media::process_one(&db).await?);
+    let tiny_url = format!("{server}/v2/files/{tiny}/media");
+    let tiny_meta: serde_json::Value = get(&tiny_url).send().await?.error_for_status()?.json().await?;
+    assert_eq!(tiny_meta["cover"]["status"], "ready");
+    assert_eq!(tiny_meta["preview"]["status"], "not_smaller");
+    assert!(tiny_meta["preview"]["size"].is_null());
+    assert_eq!(&get(&format!("{server}/v1/files/{tiny}/chunks/0")).send().await?.error_for_status()?.bytes().await?[..], tiny_bytes.as_slice());
+
+    // Reserve the remaining original byte quota through the real upload endpoint.
+    // The background job can finish processing but cannot reserve extra persistent bytes.
+    let limited = alice.queue_upload(chat, source.clone()).await?.attachment.id;
+    wait_transfer(&alice, limited, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
+    let used: i64 = sqlx::query_scalar(
+        "SELECT (coalesce((SELECT sum(size) FROM attachments WHERE owner_id=$1),0)
+          + coalesce((SELECT sum(r.size) FROM video_resources r JOIN attachments a ON a.id=r.attachment_id
+                     WHERE a.owner_id=$1 AND r.status='ready'),0))::BIGINT",
+    ).bind(alice.user.id).fetch_one(&db).await?;
+    let mut remaining = (2_i64 * 1024 * 1024 * 1024 - used) as u64;
+    let mut reservations = Vec::new();
+    while remaining > 0 {
+        let size = remaining.min(256 * CHUNK_SIZE);
+        let reservation = Attachment {
+            id: Uuid::new_v4(), name: "reservation.bin".into(), kind: AttachmentKind::File,
+            size, sha256: "0".repeat(64),
+        };
+        http.post(format!("{server}/v1/conversations/{chat}/uploads"))
+            .bearer_auth(alice.session_token()).json(&reservation).send().await?.error_for_status()?;
+        reservations.push(reservation.id);
+        remaining -= size;
+    }
+    assert!(zibblu_online::media::process_one(&db).await?);
+    let limited_url = format!("{server}/v2/files/{limited}/media");
+    let limited_meta: serde_json::Value = get(&limited_url).send().await?.error_for_status()?.json().await?;
+    assert_eq!(limited_meta["cover"]["status"], "quota");
+    assert_eq!(limited_meta["preview"]["status"], "quota");
+    assert_eq!(get(&format!("{limited_url}/preview")).send().await?.status(), 507);
+    assert_eq!(&get(&format!("{server}/v1/files/{limited}/chunks/0")).send().await?.error_for_status()?.bytes().await?[..], &original[..CHUNK_SIZE as usize]);
+    for reservation in reservations {
+        http.delete(format!("{server}/v1/files/{reservation}"))
+            .bearer_auth(alice.session_token()).send().await?.error_for_status()?;
+    }
+
+    // Kill the actual service process after FFmpeg, before the derivative commit.
+    // A fresh binary instance must resume the pending job without changing original bytes.
+    let restart_id = alice.queue_upload(chat, source.clone()).await?.attachment.id;
+    wait_transfer(&alice, restart_id, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
+    let restart_url = format!("{server}/v2/files/{restart_id}/media");
+    let mut restart_fence = db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(1001)").execute(&mut *restart_fence).await?;
+    let spawn_service = || -> Result<tokio::process::Child> {
+        Ok(tokio::process::Command::new(env!("CARGO_BIN_EXE_zibblu-online"))
+            .env("DATABASE_URL", std::env::var("ZIBBLU_TEST_DATABASE_URL")?)
+            .env("ZIBBLU_BIND", "127.0.0.1:0")
+            .env("ZIBBLU_FILE_TTL_SECONDS", "604800")
+            .env_remove("ZIBBLU_CONTAINER")
+            .env_remove("ZIBBLU_CLEANUP_INTERVAL_SECONDS")
+            .env("TMPDIR", first.path())
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+            .kill_on_drop(true).spawn()?)
+    };
+    let mut child = spawn_service()?;
+    wait_for_media_commit(&mut restart_fence).await?;
+    child.kill().await?;
+    restart_fence.commit().await?;
+    let pending_after_kill: serde_json::Value = get(&restart_url).send().await?.error_for_status()?.json().await?;
+    assert_eq!(pending_after_kill["preview"]["status"], "pending");
+    let mut restarted = spawn_service()?;
+    let restarted_meta = tokio::time::timeout(Duration::from_secs(180), async {
+        loop {
+            let metadata: serde_json::Value = get(&restart_url).send().await?.error_for_status()?.json().await?;
+            if metadata["preview"]["status"] != "pending" { return Ok::<_, anyhow::Error>(metadata); }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }).await??;
+    assert_eq!(restarted_meta["preview"]["status"], "ready");
+    restarted.kill().await?;
+    assert_eq!(get(&restart_url).send().await?.error_for_status()?.json::<serde_json::Value>().await?, restarted_meta);
+
+    // Group membership revocation immediately removes access to both derivatives.
+    alice.add_contact(outsider.user.id).await?;
+    outsider.respond_contact(alice.user.id, true).await?;
+    let group = alice.create_conversation(ConversationRequest::Group {
+        title: format!("video group {suffix}"), contact_ids: vec![bob.user.id, outsider.user.id],
+    }).await?;
+    alice.sync().await?;
+    bob.sync().await?;
+    outsider.sync().await?;
+    let group_id = alice.queue_upload(group, source.clone()).await?.attachment.id;
+    wait_transfer(&alice, group_id, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
+    assert!(zibblu_online::media::process_one(&db).await?);
+    let group_url = format!("{server}/v2/files/{group_id}/media");
+    let group_meta: serde_json::Value = get(&group_url).send().await?.error_for_status()?.json().await?;
+    assert_eq!(group_meta["preview"]["status"], "ready");
+    assert_eq!(get(&format!("{group_url}/preview")).header("Range", "bytes=0-31").send().await?.status(), 206);
+    http.delete(format!("{server}/v1/conversations/{group}/membership"))
+        .bearer_auth(bob.session_token()).send().await?.error_for_status()?;
+    for url in [&group_url, &format!("{group_url}/cover"), &format!("{group_url}/preview")] {
+        assert_eq!(get(url).send().await?.status(), 404);
+    }
+    assert_eq!(http.get(&group_url).bearer_auth(alice.session_token()).send().await?.status(), 200);
+    assert_eq!(http.get(format!("{server}/v1/files/{group_id}/chunks/0"))
+        .bearer_auth(alice.session_token()).send().await?.status(), 200);
+
+    // Queue a real recall transaction ahead of a completed transcode. The original
+    // feed lock serializes the recall and derivative publication.
+    let recalled = alice.queue_upload(chat, source.clone()).await?.attachment.id;
+    wait_transfer(&alice, recalled, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
+    bob.sync().await?;
+    let recalled_seq = bob.attachment(recalled).await?.seq;
+    let recalled_url = format!("{server}/v2/files/{recalled}/media");
+    let mut recall_fence = db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(1001)").execute(&mut *recall_fence).await?;
+    let recall_request = http.delete(format!("{server}/v1/conversations/{chat}/messages/{recalled_seq}"))
+        .bearer_auth(alice.session_token());
+    let recall_task = tokio::spawn(async move { recall_request.send().await });
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND objid=1001 AND NOT granted)"
+            ).fetch_one(&mut *recall_fence).await?;
+            if waiting { break; }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    }).await??;
+    let worker_db = db.clone();
+    let recall_worker = tokio::spawn(async move { zibblu_online::media::process_one(&worker_db).await });
+    wait_for_media_commit(&mut recall_fence).await?;
+    recall_fence.commit().await?;
+    recall_task.await??.error_for_status()?;
+    assert!(recall_worker.await??);
+    assert_eq!(get(&recalled_url).send().await?.status(), 404);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM video_resource_chunks WHERE attachment_id=$1")
+        .bind(recalled).fetch_one(&db).await?, 0);
+
+    // Hold the real feed lock until the worker finishes FFmpeg and attempts to commit.
+    // Expire the source in that transaction; late generated output must not become ready.
+    let late = alice.queue_upload(chat, source).await?.attachment.id;
+    wait_transfer(&alice, late, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
+    let late_url = format!("{server}/v2/files/{late}/media");
+    let mut fence = db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(1001)").execute(&mut *fence).await?;
+    let worker_db = db.clone();
+    let worker = tokio::spawn(async move { zibblu_online::media::process_one(&worker_db).await });
+    wait_for_media_commit(&mut fence).await?;
+    sqlx::query("UPDATE messages SET expires_at=clock_timestamp()-interval '1 second' WHERE attachment_id=$1")
+        .bind(late).execute(&mut *fence).await?;
+    sqlx::query("UPDATE attachments SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1")
+        .bind(late).execute(&mut *fence).await?;
+    fence.commit().await?;
+    assert!(worker.await??);
+    assert_eq!(get(&late_url).send().await?.status(), 410);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM video_resource_chunks WHERE attachment_id=$1")
+        .bind(late).fetch_one(&db).await?, 0);
+    zibblu_online::retention::sweep(&db).await?;
+    assert_eq!(get(&late_url).send().await?.status(), 410);
+    assert_eq!(get(&bad_url).send().await?.status(), 200);
+    server_task.abort();
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn wait_for_media_commit(fence: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(180), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks held JOIN pg_locks waiting ON waiting.pid=held.pid
+                 WHERE held.locktype='advisory' AND held.objid=1002 AND held.granted
+                 AND waiting.locktype='advisory' AND waiting.objid=1001 AND NOT waiting.granted)",
+            ).fetch_one(&mut **fence).await?;
+            if waiting { break; }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    }).await??;
+    Ok(())
+}
