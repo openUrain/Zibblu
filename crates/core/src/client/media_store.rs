@@ -926,12 +926,22 @@ impl Client {
     pub(super) async fn remove_rel_paths(&self, rel_paths: Vec<String>) {
         for rel in rel_paths {
             let _lock = self.media_locks[lock_slot(&rel)].lock().await;
+            let Ok(mut tx) = self.db.begin_with("BEGIN IMMEDIATE").await else { continue };
             let indexed: Result<bool, _> = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM media_files WHERE rel_path = ?1)
                      OR EXISTS(SELECT 1 FROM public_cache_files WHERE rel_path = ?1)",
-            ).bind(&rel).fetch_one(&self.db).await;
+            ).bind(&rel).fetch_one(&mut *tx).await;
+            if matches!(indexed, Ok(true)) {
+                // A replacement may be released again concurrently; clear this old intent in the same transaction.
+                if sqlx::query("DELETE FROM media_reclaims WHERE rel_path = ?")
+                    .bind(&rel).execute(&mut *tx).await.is_ok()
+                {
+                    let _ = tx.commit().await;
+                }
+                continue;
+            }
+            if tx.commit().await.is_err() { continue; }
             let completed = match indexed {
-                Ok(true) => true,
                 Ok(false) => {
                     let path = rel.strip_prefix("media/").and_then(|rest| rest.split_once('/'))
                         .and_then(|(device, _)| Uuid::parse_str(device).ok()
@@ -944,7 +954,7 @@ impl Client {
                         None => false,
                     }
                 }
-                Err(_) => false,
+                _ => false,
             };
             if completed {
                 let _ = sqlx::query("DELETE FROM media_reclaims WHERE rel_path = ?")
