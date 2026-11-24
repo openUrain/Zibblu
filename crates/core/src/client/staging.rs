@@ -626,6 +626,45 @@ pub(super) fn stage(source: &Path, spool: &Path, id: Uuid) -> Result<Attachment>
     })
 }
 
+pub(super) fn stage_file_with_name(
+    source: &Path,
+    custom_name: &str,
+    spool: &Path,
+    id: Uuid,
+) -> Result<Attachment> {
+    let metadata = fs::symlink_metadata(source).context("Could not read the selected item")?;
+    ensure!(
+        !is_link(&metadata) && metadata.is_file(),
+        "Choose a regular file that is not a link"
+    );
+    ensure!(
+        safe_filename(custom_name),
+        "The attachment needs a Windows-compatible filename"
+    );
+    let mut snapshot =
+        NamedTempFile::new_in(spool.parent().context("Missing transfer directory")?)?;
+    copy_bounded(
+        File::open(source)?,
+        snapshot.as_file_mut(),
+        MAX_ATTACHMENT_SIZE,
+    )?;
+    snapshot.as_file().sync_all()?;
+    let size = snapshot.as_file().metadata()?.len();
+    ensure!(
+        size > 0 && size <= MAX_ATTACHMENT_SIZE,
+        "Attachments must be between 1 byte and 256 MiB"
+    );
+    let sha256 = hash_copy(snapshot.reopen()?, io::sink())?;
+    snapshot.persist_noclobber(spool)?;
+    Ok(Attachment {
+        id,
+        name: custom_name.to_owned(),
+        kind: AttachmentKind::File,
+        size,
+        sha256,
+    })
+}
+
 pub(super) fn stage_pasted(bytes: &[u8], spool: &Path, id: Uuid) -> Result<Attachment> {
     let extension = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         "png"

@@ -101,6 +101,12 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     const timer = window.setTimeout(() => setSendFailures(queue => queue.slice(1)), 5000);
     return () => window.clearTimeout(timer);
   }, [visibleFailure]);
+  const [viewerSentNotice, setViewerSentNotice] = useState("");
+  useEffect(() => {
+    if (!viewerSentNotice) return;
+    const timer = window.setTimeout(() => setViewerSentNotice(""), 4000);
+    return () => window.clearTimeout(timer);
+  }, [viewerSentNotice]);
   const [newChat, setNewChat] = useState(false);
   const [newContact, setNewContact] = useState(false);
   const [sendingChats, setSendingChats] = useState<ReadonlySet<string>>(new Set());
@@ -112,8 +118,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     return (id: string, seq: number) => {
       const cutoff = conversations.get(id);
       if (cutoff === undefined || recalled.has(seq) || hidden.has(seq)) return;
-      if (cutoff === null) return "online";
-      if (seq > cutoff) return "cached";
+      if (cutoff === null || seq > cutoff) return "cached" as const;
     };
   }, [directory.conversations, recalled, hidden]);
 
@@ -335,6 +340,23 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   useEffect(() => {
     const updated = listen("message-outbox-changed", () => void refreshLocal());
     return () => { void updated.then(unlisten => unlisten()); };
+  }, [refreshLocal]);
+
+  useEffect(() => {
+    const sent = listen<{ sent: number; queued: number }>("viewer-media-sent", event => {
+      void refreshLocal();
+      void api.transfers().then(setTransfers).catch(() => {});
+      const { sent: sentCount, queued: queuedCount } = event.payload;
+      const total = sentCount + queuedCount;
+      if (total > 0) {
+        setViewerSentNotice(
+          sentCount > 0 && queuedCount === 0
+            ? t(`Sent to ${sentCount} chat${sentCount > 1 ? "s" : ""}`, `已发送到 ${sentCount} 个会话`)
+            : t(`Added to send queue (${total} chat${total > 1 ? "s" : ""})`, `已加入发送队列（${total} 个会话）`),
+        );
+      }
+    });
+    return () => { void sent.then(unlisten => unlisten()); };
   }, [refreshLocal]);
 
   const changed = useCallback(() => {
@@ -674,6 +696,9 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       {syncProblem && <div className="workspace-error" role="alert">{syncProblem}</div>}
       {visibleFailure !== undefined && <div key={visibleFailure} className="send-failure-toast" role="alert">
         {t("A message from deleted history could not be sent.", "已删除聊天记录中的一条消息发送失败。")}
+      </div>}
+      {viewerSentNotice && <div className="viewer-sent-toast" role="status">
+        {viewerSentNotice}
       </div>}
       {ios && !connected && <div className="mobile-connection" role="status">{connection}</div>}
       <div className={"workspace-content" + (splitProfile ? " ipad-profile-layout" : "")

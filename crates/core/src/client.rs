@@ -11,14 +11,15 @@ mod transfer;
 pub use ai_context::AiScope;
 pub use media_store::{
     CacheCleanupReport, ConsistencyReport, MediaDescriptor, MediaVariant, PublicResourceKind,
+    TempFileGuard,
 };
 pub use profile_cache::CachedProfile;
-pub use preview_cache::IMAGE_THUMBNAIL;
+pub use preview_cache::{IMAGE_THUMBNAIL, VideoStreamChunk, VideoStreamInfo};
 pub use staging::{
     FileIdentity, FolderEntrySnapshot, SourceChangedError, SourceSnapshot,
     capture_source_snapshot, open_verified_local_file, verify_file_sample, verify_open_handle,
 };
-pub use transfer::{Direction, Transfer, TransferStatus};
+pub use transfer::{Direction, OriginalDownloadStatus, Transfer, TransferStatus, ViewerForwardItem};
 
 use crate::protocol::*;
 use anyhow::{Context, Result, bail, ensure};
@@ -88,6 +89,7 @@ pub struct Client {
     media_root: PathBuf,
     active_tmp: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     media_locks: [Mutex<()>; 16],
+    video_stream_locks: [Mutex<()>; 16],
     history_revision: AtomicI64,
     device_re_registered: bool,
     sync_gate: Mutex<()>,
@@ -95,6 +97,7 @@ pub struct Client {
     outbox_gate: Mutex<()>,
     prepare_gate: Mutex<()>,
     workers: Mutex<HashMap<JobKey, Active>>,
+    original_video_jobs: Mutex<HashMap<Uuid, transfer::OriginalVideoJob>>,
     closed: AtomicBool,
     server_clock_offset: AtomicI64,
     _profile_lock: File,
@@ -227,6 +230,7 @@ impl Client {
             media_root,
             active_tmp: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             media_locks: std::array::from_fn(|_| Mutex::new(())),
+            video_stream_locks: std::array::from_fn(|_| Mutex::new(())),
             history_revision: AtomicI64::new(1),
             device_re_registered,
             _profile_lock: lock,
@@ -235,6 +239,7 @@ impl Client {
             outbox_gate: Mutex::new(()),
             prepare_gate: Mutex::new(()),
             workers: Mutex::new(HashMap::new()),
+            original_video_jobs: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
             server_clock_offset: AtomicI64::new(0),
         });

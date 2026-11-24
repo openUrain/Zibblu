@@ -1,0 +1,217 @@
+.image-annotation-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.image-annotator {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 20;
+}
+
+.image-annotator-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.image-annotator-canvas[data-tool="select"] {
+  cursor: default;
+}
+
+.image-annotator-canvas[data-tool="handle"] {
+  cursor: pointer;
+}
+
+.image-annotator-canvas[data-tool="text"] {
+  cursor: text;
+}
+
+.image-annotator-canvas[data-tool="eraser"] {
+  cursor: cell;
+}
+
+.image-annotator-canvas[data-panning] {
+  pointer-events: none;
+  cursor: grab;
+}
+
+.image-annotator-text-input {
+  position: absolute;
+  z-index: 30;
+  transform-origin: 0 0;
+  width: auto;
+  min-height: 28px;
+  max-width: min(384px, 70vw);
+  margin: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  font-weight: 600;
+  resize: none;
+  overflow: hidden;
+  white-space: pre;
+  outline: none;
+  box-shadow: var(--shadow);
+}
+
+.image-annotator-toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 30;
+  pointer-events: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+  padding: 4px 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.annotator-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.annotator-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--line);
+  flex: none;
+}
+
+.annotator-tool-btn,
+.annotator-size-btn,
+.annotator-swatch-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px;
+  transition: background 100ms ease, color 100ms ease;
+}
+
+.annotator-tool-btn {
+  width: 32px;
+  height: 32px;
+}
+
+.annotator-size-btn {
+  width: 28px;
+  height: 28px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.annotator-swatch-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 9999px;
+}
+
+.annotator-tool-btn:hover:not(:disabled),
+.annotator-size-btn:hover:not(:disabled),
+.annotator-swatch-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.annotator-tool-btn[aria-pressed="true"],
+.annotator-size-btn[aria-pressed="true"] {
+  background: var(--tint);
+  color: var(--accent);
+}
+
+.annotator-tool-btn:focus-visible,
+.annotator-size-btn:focus-visible,
+.annotator-swatch-btn:focus-visible,
+.annotator-exit-btn:focus-visible,
+.annotator-done-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+  .annotator-tool-btn:focus-visible,
+  .annotator-size-btn:focus-visible,
+  .annotator-swatch-btn:focus-visible,
+  .annotator-exit-btn:focus-visible,
+  .annotator-done-btn:focus-visible {
+    outline-color: Highlight;
+  }
+}
+
+.annotator-swatch-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  border: 1px solid rgba(0, 0, 0, 0.16);
+}
+
+.annotator-swatch-btn[aria-pressed="true"] .annotator-swatch-dot {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.annotator-stroke-dot {
+  display: block;
+  border-radius: 9999px;
+  background: currentColor;
+}
+
+.annotator-stroke-thin {
+  width: 4px;
+  height: 4px;
+}
+
+.annotator-stroke-medium {
+  width: 8px;
+  height: 8px;
+}
+
+.annotator-stroke-thick {
+  width: 12px;
+  height: 12px;
+}
+
+.annotator-actions {
+  gap: 8px;
+}
+
+.annotator-exit-btn,
+.annotator-done-btn {
+  min-height: 28px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .annotator-tool-btn,
+  .annotator-size-btn,
+  .annotator-swatch-btn {
+    transition: none;
+  }
+}

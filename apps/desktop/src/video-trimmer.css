@@ -1,0 +1,335 @@
+.video-trimmer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px 16px;
+  background: #181620;
+  color: #f7f6fb;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.video-trimmer-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.video-trimmer-controls,
+.video-trimmer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.video-trimmer-icon-btn {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  color: #e6e4f0;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.video-trimmer-icon-btn:hover:not(:disabled) {
+  background: rgba(167, 139, 250, 0.2);
+  color: #ffffff;
+}
+
+.video-trimmer-times {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 12px;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+}
+
+.video-trimmer-time-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.video-trimmer-time-label {
+  color: #a19fb2;
+}
+
+.video-trimmer-time-value {
+  color: #f7f6fb;
+  font-weight: 600;
+  min-width: 7ch;
+}
+
+.video-trimmer-time-duration .video-trimmer-time-value {
+  color: #a78bfa;
+}
+
+.video-trimmer-cancel-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #f7f6fb;
+}
+
+.video-trimmer-cancel-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+
+.video-trimmer-track-shell {
+  padding-inline: 12px;
+  border-radius: 6px;
+  background: #100f16;
+  user-select: none;
+  touch-action: none;
+  cursor: pointer;
+}
+
+.video-trimmer-track {
+  position: relative;
+  height: 48px;
+}
+
+.video-trimmer-thumbs {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.video-trimmer-thumbs > img {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.video-trimmer-track-empty {
+  width: 100%;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.video-trimmer-mask {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(12, 10, 18, 0.65);
+  pointer-events: none;
+}
+
+.video-trimmer-mask-left {
+  left: 0;
+}
+
+.video-trimmer-mask-right {
+  right: 0;
+}
+
+.video-trimmer-selection {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-top: 2px solid var(--primary);
+  border-bottom: 2px solid var(--primary);
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.video-trimmer-handle {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 12px;
+  display: grid;
+  place-items: center;
+  background: var(--primary);
+  cursor: ew-resize;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.video-trimmer-handle:hover,
+.video-trimmer-handle:focus-visible {
+  background: #a78bfa;
+}
+
+.video-trimmer-handle:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 1px;
+  z-index: 4;
+}
+
+.video-trimmer-handle-start {
+  left: -12px;
+  border-radius: 6px 0 0 6px;
+}
+
+.video-trimmer-handle-end {
+  right: -12px;
+  border-radius: 0 6px 6px 0;
+}
+
+.video-trimmer-handle-grip {
+  width: 2px;
+  height: 16px;
+  border-radius: 9999px;
+  background: #ffffff;
+}
+
+.video-trimmer-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-50%);
+  background: #ffffff;
+  pointer-events: auto;
+  cursor: ew-resize;
+  z-index: 3;
+}
+
+.video-trimmer-playhead::before {
+  content: "";
+  position: absolute;
+  inset: 0 -6px;
+}
+
+.video-trimmer-playhead-head {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  transform: translate(-50%, -2px);
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid var(--primary);
+}
+
+/* Bottom export progress bar inside video viewer */
+.video-export-bar {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 8px 16px;
+  background: rgba(24, 22, 32, 0.94);
+  color: #f7f6fb;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  z-index: 20;
+}
+
+.video-export-bar[data-status="failed"] {
+  border-top-color: rgba(255, 155, 170, 0.35);
+}
+
+.video-export-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.video-export-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  color: #a78bfa;
+}
+
+.video-export-bar[data-status="complete"] .video-export-icon {
+  color: #87ddbd;
+}
+
+.video-export-bar[data-status="failed"] .video-export-icon,
+.video-export-bar[data-status="failed"] .video-export-status-text {
+  color: #ff9baa;
+}
+
+.video-export-status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-export-percent {
+  flex: none;
+  min-width: 4ch;
+  text-align: right;
+  font-weight: 600;
+  color: #e6e4f0;
+}
+
+.video-export-track {
+  flex: 1 1 140px;
+  max-width: 240px;
+  height: 4px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+}
+
+.video-export-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 150ms ease-out;
+}
+
+.video-export-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.video-export-cancel,
+.video-export-continue {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #f7f6fb;
+}
+
+.video-export-cancel:hover:not(:disabled),
+.video-export-continue:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+}
+
+.video-export-confirm-cancel {
+  background: var(--danger);
+  color: #ffffff;
+}
+
+.video-export-confirm-cancel:hover:not(:disabled) {
+  background: #a32219;
+  color: #ffffff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .video-export-fill {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .video-trimmer-handle:focus-visible,
+  .video-trimmer-icon-btn:focus-visible {
+    outline: 2px solid Highlight;
+  }
+  .video-export-fill {
+    background: Highlight;
+  }
+}

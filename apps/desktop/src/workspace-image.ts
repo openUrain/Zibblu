@@ -12,14 +12,31 @@ export function thumbnailKey(message: Message, file: Attachment) {
   return `thumbnail/${message.conversation_id}/${message.seq}/${file.id}/${file.sha256}`;
 }
 
-export function useWorkspaceImage(key: string | undefined, id: string, version?: string, expires = Infinity, retry = 0, visible = true) {
+export function videoCoverKey(message: Message, file: Attachment) {
+  return `video-cover/${message.conversation_id}/${message.seq}/${file.id}/${file.sha256}`;
+}
+
+export function useWorkspaceImage(
+  key: string | undefined,
+  id: string,
+  version?: string,
+  expires = Infinity,
+  retry = 0,
+  visible = true,
+  readBytes?: () => Promise<ArrayBuffer>,
+) {
   const cache = useContext(WorkspaceImages)?.cache;
   const [result, setResult] = useState<{ key: string; retry: number; failed: boolean }>();
   const [, setElapsed] = useState(0);
   useEffect(() => {
     if (!key || !cache || !visible || expires <= Date.now()) return;
     let current = true;
-    const entry = cache.acquire(key, expires, () => api.previewImageBytes(id, version));
+    const loader = readBytes ?? (() => api.previewImageBytes(id, version));
+    const entry = cache.acquire(key, expires, async () => {
+      const bytes = await loader();
+      if (!bytes.byteLength) throw new Error("Empty image preview");
+      return bytes;
+    });
     void entry.ready.then(url => {
       if (current && url) setResult({ key, retry, failed: false });
     }).catch(() => {

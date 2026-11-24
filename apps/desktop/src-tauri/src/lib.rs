@@ -12,6 +12,7 @@ mod media;
 mod private_runtime;
 mod remote_image;
 mod saved_session;
+mod video_edit;
 #[cfg(windows)]
 mod windows_shell;
 
@@ -44,7 +45,25 @@ fn restrict_viewer(
 ) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
     move |invoke| {
         if invoke.message.webview().label() == image_viewer::LABEL
-            && !matches!(invoke.message.command(), "image_viewer_selection" | "image_viewer_step" | "copy_viewer_image" | "save_attachment")
+            && !matches!(
+                invoke.message.command(),
+                "image_viewer_selection"
+                    | "image_viewer_step"
+                    | "copy_viewer_image"
+                    | "save_attachment"
+                    | "viewer_download_original_video"
+                    | "viewer_cancel_original_video"
+                    | "viewer_video_probe"
+                    | "viewer_video_thumbnails"
+                    | "viewer_start_video_export"
+                    | "viewer_video_export_status"
+                    | "viewer_cancel_video_export"
+                    | "viewer_forward_targets"
+                    | "viewer_resolve_direct_target"
+                    | "viewer_send_unedited"
+                    | "viewer_send_annotated_image"
+                    | "viewer_send_trimmed_video"
+            )
         {
             invoke.resolver.reject("This command is unavailable in the image viewer");
             return true;
@@ -168,6 +187,7 @@ pub fn run() {
             media::pick_image,
             media::set_profile_image,
             media::preview_image_bytes,
+            media::preview_video_cover_bytes,
             remote_image::open_message_link,
             remote_image::preview_message_image,
             remote_image::cancel_message_image,
@@ -232,6 +252,18 @@ pub fn run() {
             image_viewer::image_viewer_selection,
             image_viewer::image_viewer_step,
             image_viewer::copy_viewer_image,
+            image_viewer::viewer_download_original_video,
+            image_viewer::viewer_cancel_original_video,
+            image_viewer::viewer_video_probe,
+            image_viewer::viewer_video_thumbnails,
+            image_viewer::viewer_start_video_export,
+            image_viewer::viewer_video_export_status,
+            image_viewer::viewer_cancel_video_export,
+            image_viewer::viewer_forward_targets,
+            image_viewer::viewer_resolve_direct_target,
+            image_viewer::viewer_send_unedited,
+            image_viewer::viewer_send_annotated_image,
+            image_viewer::viewer_send_trimmed_video,
             commands::transfers,
             commands::pause_transfer,
             commands::resume_transfer,

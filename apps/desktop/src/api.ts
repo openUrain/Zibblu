@@ -1,5 +1,6 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { AiProvider } from "./ai-api";
+import type { VideoExportProgress, VideoProbeInfo } from "./media-viewer-types";
 
 export type User = { id: string; handle: string };
 export type Session = { user: User; server: string; notice?: string };
@@ -57,6 +58,46 @@ export type Transfer = {
   status: "running" | "queued" | "paused" | "failed" | "expired" | "complete"; received: number; error: string | null;
   sharer: User | null;
   created_at?: number;
+};
+export type OriginalDownloadStatus = {
+  attachment_id: string;
+  status: "downloading" | "verifying" | "complete" | "failed" | "cancelled";
+  received: number;
+  total: number;
+  error?: string;
+};
+export type ViewerVideoState = {
+  has_local_original: boolean;
+  has_local_preview: boolean;
+  has_local_cover: boolean;
+  original_size: number;
+  original_download?: OriginalDownloadStatus;
+};
+export type ViewerSelection = {
+  conversation_id: string;
+  seq: number;
+  file: Attachment;
+  media_kind: "image" | "video";
+  previous: boolean;
+  next: boolean;
+  download?: Transfer;
+  video?: ViewerVideoState;
+  draft?: boolean;
+};
+export type ForwardTarget = {
+  conversation_id: string;
+  attachment_id: string;
+};
+export type ViewerForwardItem = {
+  target: ForwardTarget;
+  status: "sent" | "queued" | "failed";
+  error?: string | null;
+  cache_error?: string | null;
+};
+export type ViewerForwardTargets = {
+  own_id: string;
+  current_conversation_id: string;
+  directory: Directory;
 };
 export type FileFilter = {
   conversation_id?: string; sender_id?: string; kind?: Attachment["kind"]; name?: string; oldest_first: boolean;
@@ -116,6 +157,7 @@ export const api = {
   scanIosQr: () => invoke<string | null>("ios_scan_qr"),
   profileImageUrl: (id: string, version: string) => convertFileSrc(`profile_${id}_${version}`, "zibblu-media"),
   previewImageBytes: (id: string, profileVersion?: string) => invoke<ArrayBuffer>("preview_image_bytes", { id, profileVersion }),
+  previewVideoCoverBytes: (id: string) => invoke<ArrayBuffer>("preview_video_cover_bytes", { id }),
   uploadImageSize: (id: string) => invoke<ImageSize>("upload_image_size", { id }),
   readUpdate: (conversation: string, through?: number, sent?: number, viewed?: number) =>
     invoke<MessageReceipt | null>("read_update", { conversation, update: { through, sent: sent === undefined ? [] : [sent], viewed } }),
@@ -170,10 +212,55 @@ export const api = {
     .then(bytes => Array.isArray(bytes) ? new Uint8Array(bytes).buffer : bytes),
   pasteImage: (conversation: string, bytes: ArrayBuffer) =>
     invoke<Transfer>("paste_image", bytes, { headers: { "zibblu-conversation": conversation } }),
-  mediaUrl: (id: string, variant?: "thumbnail" | "cached-thumbnail") =>
+  mediaUrl: (id: string, variant?: "thumbnail" | "cached-thumbnail" | "video-cover" | "video-stream" | "video-original") =>
     convertFileSrc(id, "zibblu-media") + (variant ? "?" + variant : ""),
   openImage: (id: string) => invoke<void>("open_image_viewer", { id }),
   openDraftImage: (id: string) => invoke<void>("open_draft_image_viewer", { id }),
+  viewerDownloadOriginalVideo: (id: string) => invoke<OriginalDownloadStatus>("viewer_download_original_video", { id }),
+  viewerCancelOriginalVideo: (id: string) => invoke<void>("viewer_cancel_original_video", { id }),
+  viewerVideoProbe: (id: string) => invoke<VideoProbeInfo>("viewer_video_probe", { id }),
+  viewerVideoThumbnails: (id: string, count?: number) => invoke<string[]>("viewer_video_thumbnails", { id, count }),
+  viewerStartVideoExport: (id: string, startSec: number, endSec: number, durationSec: number) =>
+    invoke<VideoExportProgress>("viewer_start_video_export", { id, startSec, endSec, durationSec }),
+  viewerVideoExportStatus: (exportId: string) =>
+    invoke<VideoExportProgress | null>("viewer_video_export_status", { exportId }),
+  viewerCancelVideoExport: (exportId: string) =>
+    invoke<VideoExportProgress | null>("viewer_cancel_video_export", { exportId }),
+  viewerForwardTargets: () => invoke<ViewerForwardTargets>("viewer_forward_targets"),
+  viewerResolveDirectTarget: (contactId: string) =>
+    invoke<string>("viewer_resolve_direct_target", { contactId }),
+  viewerSendUnedited: (sourceId: string, batchId: string, targets: ForwardTarget[]) =>
+    invoke<ViewerForwardItem[]>("viewer_send_unedited", { sourceId, batchId, targets }),
+  viewerSendAnnotatedImage: (
+    sourceId: string,
+    batchId: string,
+    targets: ForwardTarget[],
+    fileName: string,
+    bytes: Uint8Array,
+  ) => {
+    const metaBytes = new TextEncoder().encode(JSON.stringify({ sourceId, batchId, targets, fileName }));
+    let binary = "";
+    for (let i = 0; i < metaBytes.length; i += 0x8000) {
+      binary += String.fromCharCode(...metaBytes.subarray(i, i + 0x8000));
+    }
+    return invoke<ViewerForwardItem[]>("viewer_send_annotated_image", new Uint8Array(bytes), {
+      headers: { "zibblu-forward-meta": btoa(binary) },
+    });
+  },
+  viewerSendTrimmedVideo: (
+    sourceId: string,
+    exportId: string,
+    batchId: string,
+    targets: ForwardTarget[],
+    fileName: string,
+  ) =>
+    invoke<ViewerForwardItem[]>("viewer_send_trimmed_video", {
+      sourceId,
+      exportId,
+      batchId,
+      targets,
+      fileName,
+    }),
   save: (id: string) => invoke<Transfer | null>("save_attachment", { id }),
   openSaved: (id: string) => invoke<boolean>("open_saved_attachment", { id }),
   transfers: () => invoke<Transfer[]>("transfers"),

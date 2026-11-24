@@ -171,7 +171,7 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
   function openMedia(message: Message) {
     setMediaError("");
     const file = message.attachment;
-    if (windows && file && mediaKind(file) === "image" && canPreview(file)) {
+    if (windows && file && mediaKind(file) && canPreview(file)) {
       setMedia(undefined);
       setSearchOpen(false);
       void api.openImage(file.id).catch(error => setMediaError(errorMessage(error)));

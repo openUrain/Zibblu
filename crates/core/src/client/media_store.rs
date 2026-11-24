@@ -181,6 +181,29 @@ impl Drop for ActiveTempGuard<'_> {
     }
 }
 
+pub struct TempFileGuard {
+    active: Arc<std::sync::Mutex<HashSet<String>>>,
+    name: String,
+}
+
+impl TempFileGuard {
+    pub(super) fn track(
+        active: Arc<std::sync::Mutex<HashSet<String>>>,
+        name: String,
+    ) -> Self {
+        active.lock().expect("active temp files").insert(name.clone());
+        Self { active, name }
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.active.lock() {
+            guard.remove(&self.name);
+        }
+    }
+}
+
 pub(super) fn is_valid_sha256(value: &str) -> bool {
     value.len() == 64
         && value
@@ -342,7 +365,7 @@ fn safe_rel_path(profile: &Path, rel: &str, required_prefix: &str) -> Result<Pat
     Ok(fs_path(&profile.join(path)))
 }
 
-fn lock_slot(seed: &str) -> usize {
+pub(super) fn lock_slot(seed: &str) -> usize {
     let mut acc: usize = 5381;
     for byte in seed.bytes() {
         acc = acc.wrapping_mul(33).wrapping_add(usize::from(byte));
@@ -383,6 +406,10 @@ fn move_to_quarantine(source: &Path, quarantine_root: &Path, bucket: &str, relat
 impl Client {
     pub fn media_root(&self) -> &Path {
         &self.media_root
+    }
+
+    pub fn track_temp_prefix(&self, prefix: impl Into<String>) -> TempFileGuard {
+        TempFileGuard::track(Arc::clone(&self.active_tmp), prefix.into())
     }
 
     pub fn device_id(&self) -> Uuid {
@@ -909,6 +936,95 @@ impl Client {
         Ok(())
     }
 
+    pub(super) fn partial_video_preview_rel_path(&self, conversation_id: Uuid, content_key: &str) -> String {
+        format!(
+            "media/{}/conversations/{conversation_id}/video_previews/partial_{content_key}.part",
+            self.device_id
+        )
+    }
+
+    pub async fn has_verified_media(
+        &self,
+        conversation_id: Uuid,
+        message_seq: i64,
+        attachment_id: Option<Uuid>,
+        variant: MediaVariant,
+        content_key: &str,
+        verify_full_hash: bool,
+    ) -> Result<bool> {
+        Ok(self
+            .verified_media_path(
+                conversation_id,
+                message_seq,
+                attachment_id,
+                variant,
+                content_key,
+                verify_full_hash,
+            )
+            .await?
+            .is_some())
+    }
+
+    pub async fn release_video_preview_after_original(
+        &self,
+        conversation_id: Uuid,
+        content_key: &str,
+    ) -> Result<()> {
+        self.ensure_open()?;
+        let device = self.device_id.to_string();
+        let conv = conversation_id.to_string();
+        let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
+        let mut paths = Vec::new();
+        let preview_ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM media_files
+             WHERE device_id = ?1 AND conversation_id = ?2 AND variant = 'video_preview' AND content_key = ?3",
+        )
+        .bind(&device)
+        .bind(&conv)
+        .bind(content_key)
+        .fetch_all(&mut *tx)
+        .await?;
+        for file_id in preview_ids {
+            sqlx::query("DELETE FROM media_refs WHERE file_id = ?1")
+                .bind(file_id)
+                .execute(&mut *tx)
+                .await?;
+            if let Some(rel) = sqlx::query_scalar::<_, String>(
+                "DELETE FROM media_files WHERE id = ?1 RETURNING rel_path",
+            )
+            .bind(file_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            {
+                sqlx::query("INSERT OR IGNORE INTO media_reclaims (rel_path) VALUES (?)")
+                    .bind(&rel)
+                    .execute(&mut *tx)
+                    .await?;
+                paths.push(rel);
+            }
+        }
+        let partial_paths: Vec<String> = sqlx::query_scalar(
+            "DELETE FROM video_preview_partials
+             WHERE device_id = ?1 AND conversation_id = ?2 AND content_key = ?3
+             RETURNING rel_path",
+        )
+        .bind(&device)
+        .bind(&conv)
+        .bind(content_key)
+        .fetch_all(&mut *tx)
+        .await?;
+        for rel in partial_paths {
+            sqlx::query("INSERT OR IGNORE INTO media_reclaims (rel_path) VALUES (?)")
+                .bind(&rel)
+                .execute(&mut *tx)
+                .await?;
+            paths.push(rel);
+        }
+        tx.commit().await?;
+        self.remove_rel_paths(paths).await;
+        Ok(())
+    }
+
     pub(super) async fn mark_media_status(&self, file_id: i64, status: &str) {
         let _ = sqlx::query("UPDATE media_files SET status = ?1, updated_at = ?2 WHERE id = ?3")
             .bind(status)
@@ -931,7 +1047,8 @@ impl Client {
             let Ok(mut tx) = self.db.begin_with("BEGIN IMMEDIATE").await else { continue };
             let indexed: Result<bool, _> = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM media_files WHERE rel_path = ?1)
-                     OR EXISTS(SELECT 1 FROM public_cache_files WHERE rel_path = ?1)",
+                     OR EXISTS(SELECT 1 FROM public_cache_files WHERE rel_path = ?1)
+                     OR EXISTS(SELECT 1 FROM video_preview_partials WHERE rel_path = ?1)",
             ).bind(&rel).fetch_one(&mut *tx).await;
             if matches!(indexed, Ok(true)) {
                 // A replacement may be released again concurrently; clear this old intent in the same transaction.
@@ -1216,7 +1333,9 @@ impl Client {
 
         // Also include non-available rows in indexed_paths so we don't quarantine known-corrupt rows mid-repair.
         let non_available: Vec<String> = sqlx::query_scalar(
-            "SELECT rel_path FROM media_files WHERE device_id = ?1 AND status <> 'available'",
+            "SELECT rel_path FROM media_files WHERE device_id = ?1 AND status <> 'available'
+             UNION ALL
+             SELECT rel_path FROM video_preview_partials WHERE device_id = ?1",
         )
         .bind(&device)
         .fetch_all(&self.db)
@@ -1342,7 +1461,8 @@ impl Client {
             self.ensure_open()?;
             let _lock = self.media_locks[lock_slot(&rel_str)].lock().await;
             let indexed_now: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM media_files WHERE device_id = ?1 AND rel_path = ?2)",
+                "SELECT EXISTS(SELECT 1 FROM media_files WHERE device_id = ?1 AND rel_path = ?2)
+                     OR EXISTS(SELECT 1 FROM video_preview_partials WHERE device_id = ?1 AND rel_path = ?2)",
             )
             .bind(&device)
             .bind(&rel_str)
@@ -2217,6 +2337,39 @@ pub(super) async fn release_media_refs_in_tx(
         }
     }
     Ok(removed_paths)
+}
+
+pub(super) async fn cleanup_unreferenced_video_partials_in_tx(
+    db: &mut SqliteConnection,
+    conversation_id: &str,
+    media_paths: &mut Vec<String>,
+) -> Result<()> {
+    let stale: Vec<(String, String)> = sqlx::query_as(
+        "SELECT content_key, rel_path FROM video_preview_partials p
+         WHERE p.conversation_id = ?1
+           AND NOT EXISTS (
+               SELECT 1 FROM preview_eligible e
+               WHERE e.conversation_id = p.conversation_id AND e.sha256 = p.content_key
+           )",
+    )
+    .bind(conversation_id)
+    .fetch_all(&mut *db)
+    .await?;
+    for (content_key, rel_path) in stale {
+        sqlx::query(
+            "DELETE FROM video_preview_partials WHERE conversation_id = ?1 AND content_key = ?2",
+        )
+        .bind(conversation_id)
+        .bind(&content_key)
+        .execute(&mut *db)
+        .await?;
+        sqlx::query("INSERT OR IGNORE INTO media_reclaims (rel_path) VALUES (?)")
+            .bind(&rel_path)
+            .execute(&mut *db)
+            .await?;
+        media_paths.push(rel_path);
+    }
+    Ok(())
 }
 
 

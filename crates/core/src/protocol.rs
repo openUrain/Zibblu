@@ -508,3 +508,21 @@ pub struct ForwardUploadProgress {
     pub id: Uuid,
     pub progress: UploadProgress,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoResourceMeta {
+    pub id: String,
+    pub status: String,
+    pub mime: String,
+    #[serde(default)]
+    pub size: Option<u64>,
+    #[serde(default)]
+    pub sha256: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoMediaMetadata {
+    pub attachment_id: Uuid,
+    pub cover: VideoResourceMeta,
+    pub preview: VideoResourceMeta,
+}
