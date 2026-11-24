@@ -46,7 +46,7 @@ The desktop resolves and verifies the destination before each hop, pins the veri
 
 ## Ordinary chats and files
 
-临时投递、设备游标与回收见 [M1 Local-First RFC](ARCHITECTURE.md#m1-local-first-rfc)。
+临时投递、设备游标与回收见 [M1 Local-First RFC](ARCHITECTURE.md#m1-local-first-rfc)。普通历史删除仅修改本设备 SQLite 和应用管理的会话缓存；不会发送远端撤回或删除联系人/群关系。持久墓碑只保留消息/任务身份，不保存已删除正文；独立 outbox 只保留完成待发任务所需的内容，终态后回收。
 
 - Authenticate users and secure transport; design eventual message E2EE with a standard, reviewed approach rather than inventing cryptography.
 - Bound file sizes/resources, validate transfers, apply integrity checks and avoid overwriting unrelated destination files.
