@@ -359,6 +359,20 @@ async fn generate(dir: &FsPath, original_size: i64) -> [&'static str; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn actual_process_limits() -> anyhow::Result<()> {
+        let scratch = tempfile::tempdir()?;
+        assert_eq!(run(scratch.path(), "sleep", &["5"], 1024, 1, Stdio::null()).await, Err("failed"));
+        let result = run(scratch.path(), "ffmpeg", &[
+            "-nostdin", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=128x128:rate=30",
+            "-frames:v", "1", "-pix_fmt", "yuv420p", "-threads", "1", "-f", "rawvideo", "capped.bin",
+        ], 1024, 10, Stdio::null()).await;
+        assert!(result.is_err());
+        assert!(std::fs::metadata(scratch.path().join("capped.bin"))?.len() <= 1024);
+        Ok(())
+    }
+
     #[test]
     fn ranges_and_signatures() {
         assert_eq!(range("bytes=3-8", 10), Some((3, 8)));

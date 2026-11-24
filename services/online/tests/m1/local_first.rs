@@ -798,7 +798,9 @@ async fn video_derivatives_and_retention() -> Result<()> {
     assert_eq!(head.status(), 200);
     assert_eq!(head.headers()["content-length"].to_str()?.parse::<usize>()?, preview.len());
     assert!(head.bytes().await?.is_empty());
-    let start = (CHUNK_SIZE as usize - 17).min(preview.len() / 2);
+    let start = if preview.len() > CHUNK_SIZE as usize + 40 {
+        CHUNK_SIZE as usize - 17
+    } else { preview.len() / 2 };
     let end = (start + 53).min(preview.len() - 1);
     let partial = get(&preview_url).header("Range", format!("bytes={start}-{end}")).send().await?;
     assert_eq!(partial.status(), 206);
@@ -847,6 +849,93 @@ async fn video_derivatives_and_retention() -> Result<()> {
     assert_eq!(get(&format!("{bad_url}/preview")).send().await?.status(), 415);
     assert_eq!(&get(&format!("{server}/v1/files/{bad}/chunks/0")).send().await?.error_for_status()?.bytes().await?[..], invalid_bytes);
 
+    // A highly compressed, valid tiny MP4 still gets a cover, not a larger preview.
+    let tiny_path = first.path().join("tiny.mp4");
+    ensure!(Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=64x64:r=1",
+            "-t", "1", "-c:v", "libx264", "-threads", "2", "-crf", "35"])
+        .arg(&tiny_path).status()?.success());
+    let tiny_bytes = std::fs::read(&tiny_path)?;
+    let tiny = alice.queue_upload(chat, tiny_path).await?.attachment.id;
+    wait_transfer(&alice, tiny, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
+    assert!(zibblu_online::media::process_one(&db).await?);
+    let tiny_url = format!("{server}/v2/files/{tiny}/media");
+    let tiny_meta: serde_json::Value = get(&tiny_url).send().await?.error_for_status()?.json().await?;
+    assert_eq!(tiny_meta["cover"]["status"], "ready");
+    assert_eq!(tiny_meta["preview"]["status"], "not_smaller");
+    assert!(tiny_meta["preview"]["size"].is_null());
+    assert_eq!(&get(&format!("{server}/v1/files/{tiny}/chunks/0")).send().await?.error_for_status()?.bytes().await?[..], tiny_bytes.as_slice());
+
+    // Reserve the remaining original byte quota through the real upload endpoint.
+    // The background job can finish processing but cannot reserve extra persistent bytes.
+    let limited = alice.queue_upload(chat, source.clone()).await?.attachment.id;
+    wait_transfer(&alice, limited, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
+    let used: i64 = sqlx::query_scalar(
+        "SELECT (coalesce((SELECT sum(size) FROM attachments WHERE owner_id=$1),0)
+          + coalesce((SELECT sum(r.size) FROM video_resources r JOIN attachments a ON a.id=r.attachment_id
+                     WHERE a.owner_id=$1 AND r.status='ready'),0))::BIGINT",
+    ).bind(alice.user.id).fetch_one(&db).await?;
+    let mut remaining = (2_i64 * 1024 * 1024 * 1024 - used) as u64;
+    let mut reservations = Vec::new();
+    while remaining > 0 {
+        let size = remaining.min(256 * CHUNK_SIZE);
+        let reservation = Attachment {
+            id: Uuid::new_v4(), name: "reservation.bin".into(), kind: AttachmentKind::File,
+            size, sha256: "0".repeat(64),
+        };
+        http.post(format!("{server}/v1/conversations/{chat}/uploads"))
+            .bearer_auth(alice.session_token()).json(&reservation).send().await?.error_for_status()?;
+        reservations.push(reservation.id);
+        remaining -= size;
+    }
+    assert!(zibblu_online::media::process_one(&db).await?);
+    let limited_url = format!("{server}/v2/files/{limited}/media");
+    let limited_meta: serde_json::Value = get(&limited_url).send().await?.error_for_status()?.json().await?;
+    assert_eq!(limited_meta["cover"]["status"], "quota");
+    assert_eq!(limited_meta["preview"]["status"], "quota");
+    assert_eq!(get(&format!("{limited_url}/preview")).send().await?.status(), 507);
+    assert_eq!(&get(&format!("{server}/v1/files/{limited}/chunks/0")).send().await?.error_for_status()?.bytes().await?[..], &original[..CHUNK_SIZE as usize]);
+    for reservation in reservations {
+        http.delete(format!("{server}/v1/files/{reservation}"))
+            .bearer_auth(alice.session_token()).send().await?.error_for_status()?;
+    }
+
+    // Kill the actual service process after FFmpeg, before the derivative commit.
+    // A fresh binary instance must resume the pending job without changing original bytes.
+    let restart_id = alice.queue_upload(chat, source.clone()).await?.attachment.id;
+    wait_transfer(&alice, restart_id, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
+    let restart_url = format!("{server}/v2/files/{restart_id}/media");
+    let mut restart_fence = db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(1001)").execute(&mut *restart_fence).await?;
+    let spawn_service = || -> Result<tokio::process::Child> {
+        Ok(tokio::process::Command::new(env!("CARGO_BIN_EXE_zibblu-online"))
+            .env("DATABASE_URL", std::env::var("ZIBBLU_TEST_DATABASE_URL")?)
+            .env("ZIBBLU_BIND", "127.0.0.1:0")
+            .env("ZIBBLU_FILE_TTL_SECONDS", "604800")
+            .env_remove("ZIBBLU_CONTAINER")
+            .env_remove("ZIBBLU_CLEANUP_INTERVAL_SECONDS")
+            .env("TMPDIR", first.path())
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+            .kill_on_drop(true).spawn()?)
+    };
+    let mut child = spawn_service()?;
+    wait_for_media_commit(&mut restart_fence).await?;
+    child.kill().await?;
+    restart_fence.commit().await?;
+    let pending_after_kill: serde_json::Value = get(&restart_url).send().await?.error_for_status()?.json().await?;
+    assert_eq!(pending_after_kill["preview"]["status"], "pending");
+    let mut restarted = spawn_service()?;
+    let restarted_meta = tokio::time::timeout(Duration::from_secs(180), async {
+        loop {
+            let metadata: serde_json::Value = get(&restart_url).send().await?.error_for_status()?.json().await?;
+            if metadata["preview"]["status"] != "pending" { return Ok::<_, anyhow::Error>(metadata); }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }).await??;
+    assert_eq!(restarted_meta["preview"]["status"], "ready");
+    restarted.kill().await?;
+    assert_eq!(get(&restart_url).send().await?.error_for_status()?.json::<serde_json::Value>().await?, restarted_meta);
+
     // Hold the real feed lock until the worker finishes FFmpeg and attempts to commit.
     // Expire the source in that transaction; late generated output must not become ready.
     let late = alice.queue_upload(chat, source).await?.attachment.id;
@@ -856,18 +945,7 @@ async fn video_derivatives_and_retention() -> Result<()> {
     sqlx::query("SELECT pg_advisory_xact_lock(1001)").execute(&mut *fence).await?;
     let worker_db = db.clone();
     let worker = tokio::spawn(async move { zibblu_online::media::process_one(&worker_db).await });
-    tokio::time::timeout(Duration::from_secs(180), async {
-        loop {
-            let waiting: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM pg_locks held JOIN pg_locks waiting ON waiting.pid=held.pid
-                 WHERE held.locktype='advisory' AND held.objid=1002 AND held.granted
-                 AND waiting.locktype='advisory' AND waiting.objid=1001 AND NOT waiting.granted)",
-            ).fetch_one(&mut *fence).await?;
-            if waiting { break; }
-            tokio::time::sleep(Duration::from_millis(30)).await;
-        }
-        Ok::<_, anyhow::Error>(())
-    }).await??;
+    wait_for_media_commit(&mut fence).await?;
     sqlx::query("UPDATE messages SET expires_at=clock_timestamp()-interval '1 second' WHERE attachment_id=$1")
         .bind(late).execute(&mut *fence).await?;
     sqlx::query("UPDATE attachments SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1")
@@ -881,5 +959,22 @@ async fn video_derivatives_and_retention() -> Result<()> {
     assert_eq!(get(&late_url).send().await?.status(), 410);
     assert_eq!(get(&bad_url).send().await?.status(), 200);
     server_task.abort();
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn wait_for_media_commit(fence: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(180), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks held JOIN pg_locks waiting ON waiting.pid=held.pid
+                 WHERE held.locktype='advisory' AND held.objid=1002 AND held.granted
+                 AND waiting.locktype='advisory' AND waiting.objid=1001 AND NOT waiting.granted)",
+            ).fetch_one(&mut **fence).await?;
+            if waiting { break; }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    }).await??;
     Ok(())
 }

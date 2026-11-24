@@ -46,7 +46,12 @@ jobs:
       - name: Test real messaging and file transfer
         env:
           ZIBBLU_TEST_DATABASE_URL: postgres://zibblu:ci_test_password@localhost:5432/zibblu_test
-        run: cargo test --locked -p zibblu-online --test m1
+        run: cargo test --locked -p zibblu-online --test m1 -- --skip video_derivatives_and_retention
+
+      - name: Test real video derivatives in isolation
+        env:
+          ZIBBLU_TEST_DATABASE_URL: postgres://zibblu:ci_test_password@localhost:5432/zibblu_test
+        run: cargo test --locked -p zibblu-online --test m1 video_derivatives_and_retention -- --nocapture
 
   online-container:
     name: Online Docker runtime
