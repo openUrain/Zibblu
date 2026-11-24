@@ -768,6 +768,8 @@ async fn video_derivatives_and_retention() -> Result<()> {
     assert_eq!(pending["preview"]["status"], "pending");
     assert_eq!(get(&preview_url).send().await?.status(), 409);
     assert_eq!(http.get(&media).send().await?.status(), 401);
+    assert_eq!(http.get(&preview_url).send().await?.status(), 401);
+    assert_eq!(get(&format!("{media}/original")).send().await?.status(), 404);
     for url in [&media, &cover_url, &preview_url] {
         assert_eq!(http.get(url).bearer_auth(outsider.session_token()).send().await?.status(), 404);
     }
@@ -935,6 +937,58 @@ async fn video_derivatives_and_retention() -> Result<()> {
     assert_eq!(restarted_meta["preview"]["status"], "ready");
     restarted.kill().await?;
     assert_eq!(get(&restart_url).send().await?.error_for_status()?.json::<serde_json::Value>().await?, restarted_meta);
+
+    // Group membership revocation immediately removes access to both derivatives.
+    let group = alice.create_conversation(ConversationRequest::Group {
+        title: format!("video group {suffix}"), contact_ids: vec![bob.user.id],
+    }).await?;
+    let group_id = alice.queue_upload(group, source.clone()).await?.attachment.id;
+    wait_transfer(&alice, group_id, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
+    assert!(zibblu_online::media::process_one(&db).await?);
+    let group_url = format!("{server}/v2/files/{group_id}/media");
+    let group_meta: serde_json::Value = get(&group_url).send().await?.error_for_status()?.json().await?;
+    assert_eq!(group_meta["preview"]["status"], "ready");
+    assert_eq!(get(&format!("{group_url}/preview")).header("Range", "bytes=0-31").send().await?.status(), 206);
+    http.delete(format!("{server}/v1/conversations/{group}/membership"))
+        .bearer_auth(bob.session_token()).send().await?.error_for_status()?;
+    for url in [&group_url, &format!("{group_url}/cover"), &format!("{group_url}/preview")] {
+        assert_eq!(get(url).send().await?.status(), 404);
+    }
+    assert_eq!(http.get(&group_url).bearer_auth(alice.session_token()).send().await?.status(), 200);
+    assert_eq!(http.get(format!("{server}/v1/files/{group_id}/chunks/0"))
+        .bearer_auth(alice.session_token()).send().await?.status(), 200);
+
+    // Queue a real recall transaction ahead of a completed transcode. The original
+    // feed lock serializes the recall and derivative publication.
+    let recalled = alice.queue_upload(chat, source.clone()).await?.attachment.id;
+    wait_transfer(&alice, recalled, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
+    bob.sync().await?;
+    let recalled_seq = bob.attachment(recalled).await?.seq;
+    let recalled_url = format!("{server}/v2/files/{recalled}/media");
+    let mut recall_fence = db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(1001)").execute(&mut *recall_fence).await?;
+    let recall_request = http.delete(format!("{server}/v1/conversations/{chat}/messages/{recalled_seq}"))
+        .bearer_auth(alice.session_token());
+    let recall_task = tokio::spawn(async move { recall_request.send().await });
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND objid=1001 AND NOT granted)"
+            ).fetch_one(&mut *recall_fence).await?;
+            if waiting { break; }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    }).await??;
+    let worker_db = db.clone();
+    let recall_worker = tokio::spawn(async move { zibblu_online::media::process_one(&worker_db).await });
+    wait_for_media_commit(&mut recall_fence).await?;
+    recall_fence.commit().await?;
+    recall_task.await??.error_for_status()?;
+    assert!(recall_worker.await??);
+    assert_eq!(get(&recalled_url).send().await?.status(), 404);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM video_resource_chunks WHERE attachment_id=$1")
+        .bind(recalled).fetch_one(&db).await?, 0);
 
     // Hold the real feed lock until the worker finishes FFmpeg and attempts to commit.
     // Expire the source in that transaction; late generated output must not become ready.
