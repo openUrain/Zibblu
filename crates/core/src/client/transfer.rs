@@ -18,7 +18,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tempfile::NamedTempFile;
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom},
@@ -203,32 +202,33 @@ impl Client {
         // also restore target caches after an earlier publication response was lost.
         let Ok(message) = self.attachment(source_id).await else { return Ok(results); };
         let Some(original) = message.attachment else { return Ok(results); };
-        if message.recalled || !message.local_file
-            || !self.ensure_message_authorized_for_cache(message.conversation_id, message.seq).await? {
+        if message.recalled || !message.local_file {
             return Ok(results);
         }
-        let cached = self.verified_media_path(
-            message.conversation_id, message.seq, Some(source_id),
-            MediaVariant::for_attachment(&original), &original.sha256, true,
-        ).await?;
-        let Some((_, path, _)) = cached.filter(|(_, _, size)| *size == original.size) else {
-            for item in &mut results {
-                if item.status == 410 {
-                    item.status = 422;
-                    item.error = Some("The local original failed verification.".into());
-                } else if item.publication.is_some() {
-                    item.cache_error = Some("The local original failed verification.".into());
-                }
+        // Use the media store's active-temp guard so cleanup skips the snapshot
+        // during forwarding, but can reclaim abandoned snapshots after a crash.
+        let prefix = format!("forward-{}-", Uuid::new_v4());
+        let _snapshot_guard = media_store::ActiveTempGuard::track(&self.active_tmp, prefix.clone());
+        let staged: Result<Option<tempfile::TempPath>> = async {
+            if !self.ensure_message_authorized_for_cache(message.conversation_id, message.seq).await? {
+                return Ok(None);
             }
-            return Ok(results);
-        };
-        // Snapshot the verified bytes outside the media tree so cache cleanup cannot
-        // remove the snapshot during an upload or a multi-target commit.
-        let expected = original.clone();
-        let destination = self.staging.join(format!("forward-{}.part", Uuid::new_v4()));
-        let staged = tokio::task::spawn_blocking(move || stage_publication(&path, &destination, &expected)).await?;
+            let cached = self.verified_media_path(
+                message.conversation_id, message.seq, Some(source_id),
+                MediaVariant::for_attachment(&original), &original.sha256, true,
+            ).await?;
+            let (_, path, _) = cached.filter(|(_, _, size)| *size == original.size)
+                .context("The local original failed verification.")?;
+            let expected = original.clone();
+            let destination = media_store::fs_path(&self.media_root().join("tmp").join("snapshot.part"));
+            let staged = tokio::task::spawn_blocking(move || {
+                stage_publication(&path, &destination, &expected, &prefix)
+            }).await??;
+            Ok(Some(staged))
+        }.await;
         let staged = match staged {
-            Ok(path) => path,
+            Ok(Some(path)) => path,
+            Ok(None) => return Ok(results),
             Err(error) => {
                 for item in &mut results {
                     if item.status == 410 {
@@ -1436,10 +1436,10 @@ fn verify_file(path: &std::path::Path, attachment: &Attachment) -> Result<()> {
     check_hash(path, attachment.size, &attachment.sha256)
 }
 
-fn stage_publication(source: &Path, destination: &Path, attachment: &Attachment) -> Result<tempfile::TempPath> {
+fn stage_publication(source: &Path, destination: &Path, attachment: &Attachment, prefix: &str) -> Result<tempfile::TempPath> {
     let parent = destination.parent().context("Choose a save folder")?;
     let input = open_verified_input(source, attachment.size)?;
-    let mut temp = NamedTempFile::new_in(parent).map_err(save_io_error)?;
+    let mut temp = tempfile::Builder::new().prefix(prefix).tempfile_in(parent).map_err(save_io_error)?;
     ensure!(
         staging::hash_copy(input, temp.as_file_mut()).map_err(|error| {
             error.downcast::<std::io::Error>().map_or_else(|error| error, save_io_error)
@@ -1461,7 +1461,7 @@ fn publish_download(
     if recovering && verify_file(destination, attachment).is_ok() {
         return Ok(true);
     }
-    let temp = stage_publication(source, destination, attachment)?;
+    let temp = stage_publication(source, destination, attachment, ".tmp")?;
     if stop.load(Ordering::Relaxed) {
         return Ok(false);
     }
