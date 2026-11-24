@@ -972,11 +972,17 @@ impl Client {
                 ).bind(key.0.to_string()).fetch_one(&client.db).await.unwrap_or(false);
                 let mut retired = false;
                 if key.1 == Direction::Upload && client.is_suppressed_upload(key.0).await.unwrap_or(false) && !complete {
-                    if definitive_failure {
+                    let confirmed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM local_deleted_messages WHERE attachment_id = ?)")
+                        .bind(key.0.to_string()).fetch_one(&client.db).await.unwrap_or(false);
+                    if definitive_failure || confirmed {
                         let finish = async {
                             let mut tx = client.db.begin_with("BEGIN IMMEDIATE").await?;
-                            sqlx::query("INSERT OR IGNORE INTO send_failure_notices (kind, id) VALUES ('upload', ?)")
-                                .bind(key.0.to_string()).execute(&mut *tx).await?;
+                            let confirmed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM local_deleted_messages WHERE attachment_id = ?)")
+                                .bind(key.0.to_string()).fetch_one(&mut *tx).await?;
+                            if !confirmed {
+                                sqlx::query("INSERT OR IGNORE INTO send_failure_notices (kind, id) VALUES ('upload', ?)")
+                                    .bind(key.0.to_string()).execute(&mut *tx).await?;
+                            }
                             sqlx::query("DELETE FROM transfers WHERE id = ? AND direction = 'upload'")
                                 .bind(key.0.to_string()).execute(&mut *tx).await?;
                             tx.commit().await?;
@@ -1027,6 +1033,16 @@ impl Client {
                     }
                     let job: Job = serde_json::from_str(&row)?;
                     if !workers.contains_key(&job.key()) {
+                        if job.transfer.direction == Direction::Upload && self.is_suppressed_upload(job.key().0).await? {
+                            let confirmed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM local_deleted_messages WHERE attachment_id = ?)")
+                                .bind(job.key().0.to_string()).fetch_one(&self.db).await?;
+                            if confirmed {
+                                sqlx::query("DELETE FROM transfers WHERE id = ? AND direction = 'upload'")
+                                    .bind(job.key().0.to_string()).execute(&self.db).await?;
+                                let _ = fs::remove_file(self.spool(job.key())).await;
+                                continue;
+                            }
+                        }
                         self.launch(job, &mut workers).await?;
                     }
                 }
