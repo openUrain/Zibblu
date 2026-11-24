@@ -1,25 +1,148 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="1200" height="320" role="img" aria-labelledby="title desc">
-<title id="title">Zibblu — Chat freely. Share privately.</title><desc id="desc">Lavender glass panels with conversation, file and lock symbols.</desc>
-<defs>
-<linearGradient id="bg" x2="1" y2="1"><stop stop-color="#171421"/><stop offset="1" stop-color="#42345e"/></linearGradient>
-<linearGradient id="glass" x2="1" y2="1"><stop stop-color="#fff" stop-opacity=".28"/><stop offset="1" stop-color="#d2baff" stop-opacity=".08"/></linearGradient>
-<filter id="shadow" x="-40%" y="-40%" width="180%" height="200%"><feDropShadow dx="0" dy="15" stdDeviation="18" flood-color="#0b0815" flood-opacity=".35"/></filter>
-</defs>
-<rect width="1200" height="320" rx="24" fill="url(#bg)"/>
-<circle cx="974" cy="150" r="122" fill="none" stroke="#bda4ec" stroke-opacity=".25"/>
-<circle cx="974" cy="150" r="146" fill="none" stroke="#bda4ec" stroke-opacity=".14"/>
-<g font-family="system-ui, -apple-system, Segoe UI, sans-serif">
-<text x="64" y="91" font-size="24" font-weight="600" fill="#d2baff">ZIBBLU</text>
-<text x="64" y="160" font-size="60" font-weight="700" fill="#fff" letter-spacing="-2">Chat freely.</text>
-<text x="64" y="226" font-size="60" font-weight="700" fill="#d2baff" letter-spacing="-2">Share privately.</text>
-</g>
-<g filter="url(#shadow)" stroke="#e2d3ff" stroke-opacity=".55">
-<rect x="768" y="48" width="240" height="160" rx="24" fill="url(#glass)"/>
-<rect x="928" y="112" width="192" height="152" rx="24" fill="url(#glass)"/>
-<rect x="792" y="186" width="104" height="88" rx="16" fill="#55436f"/>
-</g>
-<g fill="none" stroke="#f1eaff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
-<path d="M827 91h124a16 16 0 0 1 16 16v38a16 16 0 0 1-16 16h-85l-28 21v-21h-11a16 16 0 0 1-16-16v-38a16 16 0 0 1 16-16Z"/><path d="M843 116h84m-84 21h60"/>
-<path d="M970 157h43l12 16h50v53h-105Z"/>
-<rect x="819" y="225" width="50" height="32" rx="6"/><path d="M829 225v-10a15 15 0 0 1 30 0v10m-15 13v9"/>
-</g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" width="1200" height="360" role="img" aria-labelledby="z-title z-desc">
+  <title id="z-title">Zibblu — Chat freely. Share privately.</title>
+  <desc id="z-desc">Obsidian-plum and lavender glass banner for Zibblu featuring layered translucent cards for chat, resumable files, encrypted LAN sessions, and read-only AI.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#100c1a"/>
+      <stop offset="52%" stop-color="#1d1532"/>
+      <stop offset="100%" stop-color="#2c1f4d"/>
+    </linearGradient>
+    <radialGradient id="aura1" cx="76%" cy="32%" r="48%">
+      <stop offset="0%" stop-color="#9b72f2" stop-opacity="0.42"/>
+      <stop offset="55%" stop-color="#6744b4" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#100c1a" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="aura2" cx="18%" cy="88%" r="40%">
+      <stop offset="0%" stop-color="#6744b4" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="#100c1a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="accentText" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ede3ff"/>
+      <stop offset="55%" stop-color="#c4a7ff"/>
+      <stop offset="100%" stop-color="#9e78f2"/>
+    </linearGradient>
+    <linearGradient id="glassPane" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.20"/>
+      <stop offset="50%" stop-color="#d2baff" stop-opacity="0.09"/>
+      <stop offset="100%" stop-color="#7c56d6" stop-opacity="0.06"/>
+    </linearGradient>
+    <linearGradient id="glassDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#352859" stop-opacity="0.92"/>
+      <stop offset="100%" stop-color="#1a132c" stop-opacity="0.95"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.06"/>
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.06"/>
+    </linearGradient>
+    <linearGradient id="squircle" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7c56d6"/>
+      <stop offset="100%" stop-color="#5836a8"/>
+    </linearGradient>
+    <filter id="cardShadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="18" stdDeviation="16" flood-color="#07040f" flood-opacity="0.55"/>
+    </filter>
+    <filter id="softShadow" x="-25%" y="-25%" width="150%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#07040f" flood-opacity="0.42"/>
+    </filter>
+    <clipPath id="frameClip">
+      <rect x="1" y="1" width="1198" height="358" rx="24"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#frameClip)">
+    <!-- Canvas & Atmospheric Lighting -->
+    <rect width="1200" height="360" rx="24" fill="url(#bg)"/>
+    <ellipse cx="920" cy="128" rx="460" ry="260" fill="url(#aura1)">
+      <animate attributeName="cx" values="920;890;920" dur="14s" repeatCount="indefinite"/>
+    </ellipse>
+    <ellipse cx="210" cy="310" rx="340" ry="200" fill="url(#aura2)"/>
+
+    <!-- Optical Concentric Rings -->
+    <g fill="none" stroke="#c4a7ff">
+      <circle cx="932" cy="182" r="118" stroke-opacity="0.18" stroke-width="1"/>
+      <circle cx="932" cy="182" r="168" stroke-opacity="0.11" stroke-width="1" stroke-dasharray="5 8"/>
+      <circle cx="932" cy="182" r="222" stroke-opacity="0.07" stroke-width="1"/>
+    </g>
+
+    <!-- Left Editorial Identity -->
+    <g transform="translate(64, 52)">
+      <!-- Official Zibblu Mark Echo (Squircle + Overlapping Bubbles) -->
+      <rect width="46" height="46" rx="12" fill="url(#squircle)" stroke="#dfd0ff" stroke-opacity="0.35" stroke-width="1"/>
+      <ellipse cx="26.5" cy="26.5" rx="10.5" ry="8.5" fill="#cfc0f6"/>
+      <path d="M33 32l4 3.5-1.5-5.2z" fill="#cfc0f6"/>
+      <ellipse cx="20.5" cy="21" rx="11.5" ry="9.5" fill="#f7f4ff"/>
+      <path d="M13 28.5l-3.8 4.2 5.4-1.4z" fill="#f7f4ff"/>
+      <circle cx="16.5" cy="21" r="1.6" fill="#6744b4"/>
+      <circle cx="20.5" cy="21" r="1.6" fill="#6744b4"/>
+      <circle cx="24.5" cy="21" r="1.6" fill="#6744b4"/>
+
+      <!-- Pill Eyebrow -->
+      <g transform="translate(62, 7)">
+        <rect width="234" height="32" rx="16" fill="#ffffff" fill-opacity="0.08" stroke="#c4a7ff" stroke-opacity="0.28" stroke-width="1"/>
+        <circle cx="18" cy="16" r="4" fill="#c4a7ff"/>
+        <text x="32" y="20.5" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="12.5" font-weight="600" fill="#dfd0ff" letter-spacing="0.8">ZIBBLU · WINDOWS x64</text>
+      </g>
+    </g>
+
+    <g font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif">
+      <text x="64" y="178" font-size="60" font-weight="700" fill="#ffffff" letter-spacing="-2.4">Chat freely.</text>
+      <text x="64" y="242" font-size="60" font-weight="700" fill="url(#accentText)" letter-spacing="-2.4">Share privately.</text>
+      <text x="64" y="294" font-size="16" font-weight="500" fill="#cbc3dc">Local-first messaging, resumable files, direct LAN text rooms, and read-only AI you approve.</text>
+    </g>
+
+    <!-- Right Spatial Multi-Layer Glass Sculpture -->
+    <!-- Layer 1: Rear Frosted File Panel -->
+    <g filter="url(#softShadow)" transform="translate(944, 34)">
+      <rect width="212" height="148" rx="20" fill="url(#glassPane)" stroke="#e5d7ff" stroke-opacity="0.28" stroke-width="1"/>
+      <line x1="20" y1="1" x2="192" y2="1" stroke="url(#rim)" stroke-width="1.2"/>
+      <rect x="20" y="20" width="40" height="40" rx="12" fill="#ffffff" fill-opacity="0.12" stroke="#dfd0ff" stroke-opacity="0.3"/>
+      <g transform="translate(28, 28)" fill="none" stroke="#f0e8ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3.5 7.5a2 2 0 0 1 2-2h4.2l1.8 2.2h7a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-10Z" fill="#c4a7ff" fill-opacity="0.2"/>
+        <path d="M12 11.5v5m-2.5-2.5L12 16.5l2.5-2.5"/>
+      </g>
+      <text x="72" y="38" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" font-weight="600" fill="#ffffff">Resumable Files</text>
+      <text x="72" y="56" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#c5bcd8">SHA-256 verified</text>
+      <rect x="20" y="84" width="172" height="10" rx="5" fill="#ffffff" fill-opacity="0.10"/>
+      <rect x="20" y="84" width="128" height="10" rx="5" fill="#b492ff"/>
+      <rect x="20" y="108" width="116" height="8" rx="4" fill="#ffffff" fill-opacity="0.14"/>
+    </g>
+
+    <!-- Layer 2: Center Foreground Frosted Chat Panel -->
+    <g filter="url(#cardShadow)" transform="translate(696, 98)">
+      <rect width="268" height="168" rx="22" fill="url(#glassDark)" stroke="#dfd0ff" stroke-opacity="0.34" stroke-width="1.2"/>
+      <line x1="22" y1="1.2" x2="246" y2="1.2" stroke="url(#rim)" stroke-width="1.5"/>
+      <!-- Header Strip -->
+      <rect x="20" y="20" width="42" height="42" rx="12" fill="#7c56d6" fill-opacity="0.38" stroke="#dfd0ff" stroke-opacity="0.35"/>
+      <g transform="translate(29, 29)" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 11.5c0 4.14-3.58 7.5-8 7.5-1.15 0-2.25-.22-3.24-.63L4 20l1.16-3.48A7.22 7.22 0 0 1 4 11.5C4 7.36 7.58 4 12 4s8 3.36 8 7.5Z" fill="#dfd0ff" fill-opacity="0.22"/>
+        <path d="M8.5 11.5h7M8.5 14.5h4.2"/>
+      </g>
+      <text x="74" y="38" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="14" font-weight="700" fill="#ffffff">Everyday Chat</text>
+      <text x="74" y="56" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11.5" fill="#c8bfd9">Local-first SQLite profile</text>
+
+      <!-- Stylized Abstract Message Lines -->
+      <rect x="20" y="80" width="154" height="28" rx="10" fill="#ffffff" fill-opacity="0.09" stroke="#ffffff" stroke-opacity="0.10"/>
+      <rect x="32" y="91" width="110" height="6" rx="3" fill="#e5d9ff" fill-opacity="0.72"/>
+      <rect x="94" y="118" width="154" height="30" rx="10" fill="#7c56d6" fill-opacity="0.52" stroke="#dfd0ff" stroke-opacity="0.28"/>
+      <rect x="108" y="130" width="122" height="6" rx="3" fill="#ffffff" fill-opacity="0.88"/>
+    </g>
+
+    <!-- Layer 3: Foreground Bottom-Right Private LAN & AI Badge -->
+    <g filter="url(#cardShadow)" transform="translate(888, 224)">
+      <rect width="246" height="92" rx="18" fill="url(#glassPane)" stroke="#e5d7ff" stroke-opacity="0.40" stroke-width="1.2"/>
+      <line x1="18" y1="1.2" x2="228" y2="1.2" stroke="url(#rim)" stroke-width="1.4"/>
+      <!-- Lock Emblem -->
+      <rect x="18" y="22" width="48" height="48" rx="14" fill="#23193b" stroke="#c4a7ff" stroke-opacity="0.42"/>
+      <g transform="translate(30, 34)" fill="none" stroke="#e5d7ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="5" y="10.5" width="14" height="9.5" rx="2.5" fill="#c4a7ff" fill-opacity="0.24"/>
+        <path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3M12 14.2v2.4"/>
+      </g>
+      <text x="80" y="43" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13.5" font-weight="700" fill="#ffffff">Private LAN · Direct</text>
+      <text x="80" y="62" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11.5" fill="#dfd0ff">Encrypted · In-memory only</text>
+    </g>
+
+    <!-- Outer Hairline Specular Frame -->
+    <rect x="0.75" y="0.75" width="1198.5" height="358.5" rx="23.5" fill="none" stroke="#c4a7ff" stroke-opacity="0.26" stroke-width="1.5"/>
+  </g>
+</svg>

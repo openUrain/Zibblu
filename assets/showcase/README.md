@@ -1,6 +1,6 @@
 # Zibblu · 软件展示素材
 
-本目录用于集中管理 Zibblu 的**产品展示截图**。未来 README、openUrain 官网或 Zibblu 产品页优先引用本目录的截图，避免使用分散在 `docs/windows-feedback/` 的开发测试截图。
+本目录用于集中管理 Zibblu 的**真实产品展示截图**与 **GitHub README 专用品牌矢量图**。未来 README、openUrain 官网或 Zibblu 产品页优先引用本目录素材，避免使用分散在 `docs/windows-feedback/` 的开发测试截图。
 
 ## 素材清单
 
@@ -10,8 +10,11 @@
 | `02-desktop-chat.png` | Windows 常规双栏聊天 | 会话列表、Markdown 长消息和输入框 |
 | `03-private-lan.png` | Windows 局域网私密聊天 | LAN-only 会话入口与深色专属界面 |
 | `04-compact-chat.png` | Windows 窄窗口聊天 | 紧凑布局、Markdown 富文本、AI 提问入口 |
+| `brand-banner.svg` | README 顶部品牌横幅 | 深紫曜石与薰衣草紫多层玻璃品牌主视觉 |
+| `capabilities-strip.svg` / `capabilities-strip-zh.svg` | 中英文 README 核心能力条 | 四项核心能力（日常聊天、可靠文件、私密 LAN、只读 AI）玻璃图标模块 |
+| `architecture-flow.svg` | README 传输与隐私边界图 | 普通在线/自建中转、局域网加密直连与按次授权只读 AI 的通道隔离示意 |
 
-四张素材由 Owner 于 2026-11-23 提供，Owner 确认截图聊天内容均已脱敏，可以用于公开的产品展示。
+四张真实客户端 PNG 截图由 Owner 于 2026-11-23 提供，Owner 确认截图聊天内容均已脱敏，可以用于公开的产品展示。
 
 ## 使用约定
 
@@ -22,4 +25,4 @@
 - **清晰度**：保留原始 PNG；网页需要优化时可以另外生成 WebP/AVIF 派生图，不覆盖原始素材。
 - **文件命名**：按场景描述命名，避免设备账号名、私人用户昵称和日期作为主文件名；未来新增图片按场景分类，避免不断创建嵌套文件夹。
 
-> 本文件是素材目录索引。正式在 README / 官网上显示图片前，须确保对应 PNG 文件已提交到本目录。
+> 本文件是素材目录索引。正式在 README / 官网上显示图片前，须确保对应文件已提交到本目录。
