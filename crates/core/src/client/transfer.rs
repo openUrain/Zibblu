@@ -132,8 +132,9 @@ impl Client {
         let chat = conversation.to_string();
         let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
         let rows: Vec<(i64, Option<String>)> = sqlx::query_as(
-            "SELECT seq, attachment_id FROM inbox WHERE conversation_id = ?1
-                AND (?2 IS NULL OR seq = ?2)",
+            "SELECT i.seq, coalesce(i.attachment_id, h.attachment_id) FROM inbox i
+                LEFT JOIN hidden_messages h ON h.seq = i.seq
+                WHERE i.conversation_id = ?1 AND (?2 IS NULL OR i.seq = ?2)",
         )
         .bind(&chat)
         .bind(seq)
@@ -149,8 +150,9 @@ impl Client {
         }
         sqlx::query(
             "INSERT OR IGNORE INTO local_deleted_messages (seq, conversation_id, attachment_id)
-                SELECT seq, conversation_id, attachment_id FROM inbox
-                WHERE conversation_id = ?1 AND (?2 IS NULL OR seq = ?2)",
+                SELECT i.seq, i.conversation_id, coalesce(i.attachment_id, h.attachment_id)
+                FROM inbox i LEFT JOIN hidden_messages h ON h.seq = i.seq
+                WHERE i.conversation_id = ?1 AND (?2 IS NULL OR i.seq = ?2)",
         ).bind(&chat).bind(seq).execute(&mut *tx).await?;
         sqlx::query(
             "DELETE FROM hidden_messages WHERE seq IN (
@@ -206,6 +208,16 @@ impl Client {
         Ok(())
     }
 
+    pub(super) async fn migrate_hidden_history(&self) -> Result<()> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT i.conversation_id, i.seq FROM inbox i JOIN hidden_messages h ON h.seq = i.seq",
+        ).fetch_all(&self.db).await?;
+        for (conversation, seq) in rows {
+            self.delete_received_history(Uuid::parse_str(&conversation)?, Some(seq)).await?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn restore_upload_times(&self) -> Result<()> {
         let deleted_attachments: Vec<String> = sqlx::query_scalar(
             "SELECT attachment_id FROM local_deleted_messages WHERE attachment_id IS NOT NULL",
@@ -213,6 +225,7 @@ impl Client {
         for id in deleted_attachments {
             if let Ok(id) = Uuid::parse_str(&id) {
                 let _ = fs::remove_file(self.spool((id, Direction::Download))).await;
+                let _ = fs::remove_file(self.managed_files.join(id.to_string())).await;
             }
         }
         let rows: Vec<String> = sqlx::query_scalar(
