@@ -1,6 +1,6 @@
 use super::{
-    Client, OnlineError, ensure_new_destination, local_sync::persist_message, read_limited,
-    staging, unix_millis,
+    Client, MediaDescriptor, MediaVariant, OnlineError, ensure_new_destination,
+    local_sync::persist_message, media_store, read_limited, staging, unix_millis,
 };
 use crate::{
     Attachment, CHUNK_SIZE, ContentAck, MAX_PASTED_IMAGE_BYTES, Message, Publication,
@@ -791,7 +791,20 @@ impl Client {
             .await?;
         ensure!(stamp.seq > 0, OnlineError::InvalidResponse);
         if !stamp.recalled {
-            self.stage_verified(&attachment, spool).await?;
+            let desc = MediaDescriptor {
+                conversation_id: conversation,
+                message_seq: stamp.seq,
+                attachment_id: Some(attachment.id),
+                variant: MediaVariant::for_attachment(&attachment),
+                content_key: &attachment.sha256,
+                expected_sha256: &attachment.sha256,
+                expected_size: attachment.size,
+                mime: attachment
+                    .preview_mime()
+                    .unwrap_or("application/octet-stream"),
+                dimensions: None,
+            };
+            self.commit_media_file(&desc, &spool).await?;
         }
         let message = Message {
             seq: stamp.seq,
@@ -809,7 +822,7 @@ impl Client {
             pending: None,
             local_file: false,
         };
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
         persist_message(&mut tx, message).await?;
         let visible: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM inbox WHERE seq = ? AND attachment_id = ?)",
@@ -818,51 +831,58 @@ impl Client {
         .bind(id.to_string())
         .fetch_one(&mut *tx)
         .await?;
-        if visible {
+        let removed_paths = if visible {
             record_local_file(&mut tx, &job.transfer.attachment, stamp.seq, false).await?;
-        }
+            Vec::new()
+        } else {
+            media_store::release_media_refs_in_tx(&mut tx, "message", &stamp.seq.to_string())
+                .await?
+        };
         job.transfer.status = TransferStatus::Complete;
         store_job(&mut tx, job).await?;
         tx.commit().await?;
-        if !visible {
-            let _ = fs::remove_file(self.managed_path(id)).await;
+        if !removed_paths.is_empty() {
+            self.remove_rel_paths(removed_paths).await;
         }
         self.history_changed();
         Ok(TransferStatus::Complete)
     }
 
-    fn managed_path(&self, id: Uuid) -> PathBuf {
-        self.managed_files.join(id.to_string())
-    }
-
-    async fn stage_verified(&self, attachment: &Attachment, source: PathBuf) -> Result<PathBuf> {
-        let path = self.managed_path(attachment.id);
-        let target = path.clone();
-        let attachment = attachment.clone();
-        tokio::task::spawn_blocking(move || {
-            if target.try_exists()? {
-                verify_file(&target, &attachment)
-            } else {
-                publish_verified(&source, &target, &attachment)
-            }
-        })
-        .await??;
-        Ok(path)
-    }
-
     pub(super) async fn flush_content_acks(&self) -> Result<()> {
-        let pending: Vec<(String, String, i64)> = sqlx::query_as(
-            "SELECT id, sha256, size FROM local_files WHERE ack_pending = 1 LIMIT 8",
+        let pending: Vec<(String, i64, String, i64)> = sqlx::query_as(
+            "SELECT id, message_seq, sha256, size FROM local_files WHERE ack_pending = 1 LIMIT 8",
         )
         .fetch_all(&self.db)
         .await?;
-        for (id, sha256, size) in pending {
-            let path = self.managed_path(Uuid::parse_str(&id)?);
-            let digest = sha256.clone();
-            if tokio::task::spawn_blocking(move || check_hash(&path, size as u64, &digest))
-                .await?
-                .is_err()
+        for (id, seq, sha256, _size) in pending {
+            let inbox_row: Option<(String, String)> = sqlx::query_as(
+                "SELECT conversation_id, payload FROM inbox
+                 WHERE seq = ?1 AND attachment_id = ?2
+                   AND json_extract(payload, '$.recalled') IS NOT 1
+                   AND seq NOT IN (SELECT seq FROM hidden_messages)",
+            )
+            .bind(seq)
+            .bind(&id)
+            .fetch_optional(&self.db)
+            .await?;
+            let verified = if let Some((conv_str, payload)) = inbox_row
+                && let (Ok(conv_id), Ok(att_id), Ok(msg)) = (
+                    Uuid::parse_str(&conv_str),
+                    Uuid::parse_str(&id),
+                    serde_json::from_str::<Message>(&payload),
+                )
+                && let Some(att) = msg.attachment
             {
+                let variant = MediaVariant::for_attachment(&att);
+                self.verified_media_path(conv_id, seq, Some(att_id), variant, &sha256, true)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some()
+            } else {
+                false
+            };
+            if !verified {
                 sqlx::query("DELETE FROM local_files WHERE id = ?")
                     .bind(&id)
                     .execute(&self.db)
@@ -902,14 +922,21 @@ impl Client {
         let attachment = job.transfer.attachment.clone();
         let id = attachment.id;
         let destination = job.destination.clone().context("Choose a save location")?;
-        let seq: i64 = sqlx::query_scalar("SELECT seq FROM inbox WHERE attachment_id = ?")
-            .bind(id.to_string())
-            .fetch_optional(&self.db)
-            .await?
-            .context("This attachment is no longer available")?;
+        let (seq, conv_str): (i64, String) =
+            sqlx::query_as("SELECT seq, conversation_id FROM inbox WHERE attachment_id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.db)
+                .await?
+                .context("This attachment is no longer available")?;
+        let conversation_id = Uuid::parse_str(&conv_str)?;
+        let is_hidden: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM hidden_messages WHERE seq = ?)")
+                .bind(seq)
+                .fetch_one(&self.db)
+                .await?;
+        let variant = MediaVariant::for_attachment(&attachment);
         let spool = self.spool(job.key());
-        let path = self.managed_path(id);
-        let has_cache: bool =
+        let has_local_ack: bool =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM local_files WHERE id = ?)")
                 .bind(id.to_string())
                 .fetch_one(&self.db)
@@ -917,8 +944,34 @@ impl Client {
         if !job.publishing && job.overwrite.is_none() {
             ensure_new_destination(&destination)?;
         }
-        let cached = if has_cache || path.is_file() {
-            self.stage_verified(&attachment, spool.clone()).await?
+        let existing_cached = if is_hidden {
+            None
+        } else {
+            self.verified_media_path(
+                conversation_id,
+                seq,
+                Some(id),
+                variant,
+                &attachment.sha256,
+                true,
+            )
+            .await?
+        };
+        let (cached_file_id, cached, need_ack) = if let Some((file_id, path, _)) = existing_cached {
+            let need_ack = if has_local_ack {
+                false
+            } else {
+                // Best-effort download registration for content ACK if cached earlier via preview;
+                // offline or expired server copies still export cleanly from verified local media.
+                self.api
+                    .send(
+                        self.api
+                            .request(Method::POST, &format!("/v2/files/{id}/download")),
+                    )
+                    .await
+                    .is_ok()
+            };
+            (Some(file_id), path, need_ack)
         } else {
             self.api
                 .send(
@@ -962,59 +1015,136 @@ impl Client {
             }
             output.sync_all().await.map_err(save_io_error)?;
             drop(output);
-            match self.stage_verified(&attachment, spool.clone()).await {
-                Ok(path) => path,
-                Err(error) => {
+            if is_hidden {
+                let check_spool = spool.clone();
+                let check_att = attachment.clone();
+                if let Err(error) =
+                    tokio::task::spawn_blocking(move || verify_file(&check_spool, &check_att))
+                        .await?
+                {
                     let _ = fs::remove_file(&spool).await;
                     job.transfer.received = 0;
                     return Err(error);
                 }
+                (None, spool.clone(), false)
+            } else {
+                let desc = MediaDescriptor {
+                    conversation_id,
+                    message_seq: seq,
+                    attachment_id: Some(attachment.id),
+                    variant,
+                    content_key: &attachment.sha256,
+                    expected_sha256: &attachment.sha256,
+                    expected_size: attachment.size,
+                    mime: attachment
+                        .preview_mime()
+                        .unwrap_or("application/octet-stream"),
+                    dimensions: None,
+                };
+                match self.commit_media_file(&desc, &spool).await {
+                    Ok(path) => {
+                        let file_id = self
+                            .verified_media_path(
+                                conversation_id,
+                                seq,
+                                Some(id),
+                                variant,
+                                &attachment.sha256,
+                                false,
+                            )
+                            .await?
+                            .context("The downloaded file is unavailable")?
+                            .0;
+                        (Some(file_id), path, !has_local_ack)
+                    }
+                    Err(error) => {
+                        let _ = fs::remove_file(&spool).await;
+                        job.transfer.received = 0;
+                        return Err(error);
+                    }
+                }
             }
         };
-        if stop.load(Ordering::Relaxed) {
-            return Ok(TransferStatus::Paused);
+        // Pin an active download ref so hiding the message cannot delete the backing file mid-export.
+        let download_ref_id = id.to_string();
+        if let Some(file_id) = cached_file_id {
+            self.pin_task_media_ref(
+                file_id,
+                "download",
+                &download_ref_id,
+                conversation_id,
+                Some(id),
+                variant,
+            )
+            .await?;
         }
-        let recovering = job.publishing;
-        job.publishing = true;
-        self.store_job(job).await?;
-        let file = attachment.clone();
-        let overwrite = job.overwrite.clone();
-        let stop = stop.clone();
-        let saved = tokio::task::spawn_blocking(move || {
-            publish_download(&cached, &destination, &file, overwrite.as_ref(), recovering, &stop)
-        }).await?;
-        let published = match saved {
-            Ok(published) => published,
-            Err(error) => {
+        let result = async {
+            if stop.load(Ordering::Relaxed) {
+                return Ok(TransferStatus::Paused);
+            }
+            let recovering = job.publishing;
+            job.publishing = true;
+            self.store_job(job).await?;
+            let file = attachment.clone();
+            let overwrite = job.overwrite.clone();
+            let stop = stop.clone();
+            let saved = tokio::task::spawn_blocking(move || {
+                publish_download(
+                    &cached,
+                    &destination,
+                    &file,
+                    overwrite.as_ref(),
+                    recovering,
+                    &stop,
+                )
+            })
+            .await?;
+            let published = match saved {
+                Ok(published) => published,
+                Err(error) => {
+                    job.publishing = false;
+                    return Err(error);
+                }
+            };
+            if !published {
                 job.publishing = false;
-                return Err(error);
+                return Ok(TransferStatus::Paused);
             }
-        };
-        if !published {
+            let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
+            let visible: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM inbox WHERE seq = ? AND attachment_id = ?)",
+            )
+            .bind(seq)
+            .bind(id.to_string())
+            .fetch_one(&mut *tx)
+            .await?;
+            if !visible {
+                let removed =
+                    media_store::release_media_refs_in_tx(&mut tx, "message", &seq.to_string())
+                        .await?;
+                tx.commit().await?;
+                self.remove_rel_paths(removed).await;
+                bail!("This attachment was recalled");
+            }
+            if !has_local_ack && !is_hidden {
+                record_local_file(&mut tx, &attachment, seq, need_ack).await?;
+            }
             job.publishing = false;
-            return Ok(TransferStatus::Paused);
+            job.overwrite = None;
+            job.transfer.received = attachment.size;
+            job.transfer.status = TransferStatus::Complete;
+            store_job(&mut tx, job).await?;
+            tx.commit().await?;
+            self.history_changed();
+            Ok(TransferStatus::Complete)
         }
-        let mut tx = self.db.begin().await?;
-        let visible: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM inbox WHERE seq = ? AND attachment_id = ?)",
-        )
-        .bind(seq)
-        .bind(id.to_string())
-        .fetch_one(&mut *tx)
-        .await?;
-        if !visible {
-            let _ = fs::remove_file(path).await;
-            bail!("This attachment was recalled");
+        .await;
+        if cached_file_id.is_some() {
+            let _ = self
+                .release_task_media_ref("download", &download_ref_id)
+                .await;
         }
-        record_local_file(&mut tx, &attachment, seq, !has_cache).await?;
-        job.publishing = false;
-        job.overwrite = None;
-        job.transfer.received = attachment.size;
-        job.transfer.status = TransferStatus::Complete;
-        store_job(&mut tx, job).await?;
-        tx.commit().await?;
-        self.history_changed();
-        Ok(TransferStatus::Complete)
+        result
     }
 
     pub async fn read_attachment_chunk(
@@ -1028,27 +1158,50 @@ impl Client {
             expected <= CHUNK_SIZE as usize,
             OnlineError::InvalidResponse
         );
-        let size: Option<i64> = sqlx::query_scalar(
-            "SELECT size FROM local_files f JOIN inbox i ON i.attachment_id = f.id
-             WHERE f.id = ? AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h.seq = i.seq)",
+        let row: Option<(i64, String, String)> = sqlx::query_as(
+            "SELECT i.seq, i.conversation_id, i.payload FROM inbox i
+             WHERE i.attachment_id = ?1
+               AND json_extract(i.payload, '$.recalled') IS NOT 1
+               AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h.seq = i.seq)",
         )
         .bind(id.to_string())
         .fetch_optional(&self.db)
         .await?;
-        if let Some(size) = size {
-            ensure!(
-                offset <= size as u64 && expected as u64 <= size as u64 - offset,
-                OnlineError::InvalidResponse
-            );
-            let mut file = fs::File::open(self.managed_path(id)).await?;
-            ensure!(
-                file.metadata().await?.len() == size as u64,
-                "The local file is incomplete"
-            );
-            file.seek(SeekFrom::Start(offset)).await?;
-            let mut bytes = vec![0; expected];
-            file.read_exact(&mut bytes).await?;
-            return Ok(bytes);
+        if let Some((seq, conv_str, payload)) = row
+            && let (Ok(conv_id), Ok(message)) = (
+                Uuid::parse_str(&conv_str),
+                serde_json::from_str::<Message>(&payload),
+            )
+            && let Some(attachment) = message.attachment
+        {
+            let variant = MediaVariant::for_attachment(&attachment);
+            if let Some((file_id, path, size)) = self
+                .verified_media_path(conv_id, seq, Some(id), variant, &attachment.sha256, false)
+                .await?
+            {
+                ensure!(
+                    offset <= size && expected as u64 <= size - offset,
+                    OnlineError::InvalidResponse
+                );
+                let read = async {
+                    let mut file = fs::File::open(&path).await?;
+                    ensure!(
+                        file.metadata().await?.len() == size,
+                        "The local file is incomplete"
+                    );
+                    file.seek(SeekFrom::Start(offset)).await?;
+                    let mut bytes = vec![0; expected];
+                    file.read_exact(&mut bytes).await?;
+                    Ok::<_, anyhow::Error>(bytes)
+                }
+                .await;
+                match read {
+                    Ok(bytes) => return Ok(bytes),
+                    Err(_) => {
+                        self.mark_media_status(file_id, "corrupted").await;
+                    }
+                }
+            }
         }
         self.remote_chunk(id, offset, expected).await
     }
@@ -1123,17 +1276,6 @@ fn check_hash(path: &std::path::Path, size: u64, sha256: &str) -> Result<()> {
 
 fn verify_file(path: &std::path::Path, attachment: &Attachment) -> Result<()> {
     check_hash(path, attachment.size, &attachment.sha256)
-}
-
-fn publish_verified(
-    source: &Path,
-    destination: &Path,
-    attachment: &Attachment,
-) -> Result<()> {
-    stage_publication(source, destination, attachment)?
-        .persist_noclobber(destination)
-        .context("Could not publish the download. Choose an unused filename.")?;
-    Ok(())
 }
 
 fn stage_publication(source: &Path, destination: &Path, attachment: &Attachment) -> Result<tempfile::TempPath> {
@@ -1220,7 +1362,7 @@ fn overwrite_target(path: &Path, access: u32) -> Result<Option<OverwriteTarget>>
     }))
 }
 
-fn save_io_error(error: std::io::Error) -> anyhow::Error {
+pub(super) fn save_io_error(error: std::io::Error) -> anyhow::Error {
     use std::io::ErrorKind;
     let message = if cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33)) {
         "The save destination is in use. Close the file and retry."

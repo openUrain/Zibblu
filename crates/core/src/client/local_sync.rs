@@ -1,4 +1,4 @@
-use super::{Client, OnlineError, SyncUpdate, unix_millis};
+use super::{Client, OnlineError, SyncUpdate, media_store, unix_millis};
 use crate::{
     Attachment, DeviceSession, Directory, Message, MessageRecall, SYNC_PAGE_SIZE, SyncAck,
     SyncEvent, SyncPage, SyncPosition,
@@ -13,7 +13,7 @@ impl Client {
         db: &SqlitePool,
         session: &DeviceSession,
         restore: bool,
-    ) -> Result<bool> {
+    ) -> Result<(bool, Option<String>)> {
         let mut tx = db.begin().await?;
         let statements =
             "CREATE TABLE IF NOT EXISTS inbox (
@@ -72,8 +72,73 @@ impl Client {
                 mime TEXT NOT NULL, bytes BLOB NOT NULL, touched INTEGER NOT NULL,
                 PRIMARY KEY (message_seq, sha256, variant)
              );
-             CREATE VIEW IF NOT EXISTS preview_eligible AS
-                SELECT i.seq, json_extract(i.payload, '$.attachment.sha256') AS sha256,
+             CREATE TABLE IF NOT EXISTS media_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                variant TEXT NOT NULL,
+                content_key TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                mime TEXT NOT NULL,
+                rel_path TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'available',
+                width INTEGER,
+                height INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE (device_id, conversation_id, variant, content_key)
+             );
+             CREATE INDEX IF NOT EXISTS media_files_conv_status
+                ON media_files (device_id, conversation_id, variant, status);
+             CREATE TABLE IF NOT EXISTS media_refs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id INTEGER NOT NULL REFERENCES media_files(id) ON DELETE CASCADE,
+                ref_kind TEXT NOT NULL,
+                ref_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                attachment_id TEXT,
+                variant TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                UNIQUE (ref_kind, ref_id, variant)
+             );
+             CREATE INDEX IF NOT EXISTS media_refs_file ON media_refs (file_id);
+             CREATE INDEX IF NOT EXISTS media_refs_attachment ON media_refs (attachment_id, variant);
+             CREATE INDEX IF NOT EXISTS media_refs_conversation ON media_refs (conversation_id);
+             CREATE TABLE IF NOT EXISTS public_cache_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                version TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                mime TEXT NOT NULL,
+                rel_path TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'available',
+                created_at INTEGER NOT NULL,
+                touched_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                UNIQUE (device_id, kind, version)
+             );
+             CREATE TABLE IF NOT EXISTS public_cache_refs (
+                user_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                active_file_id INTEGER REFERENCES public_cache_files(id) ON DELETE SET NULL,
+                active_version TEXT,
+                desired_version TEXT,
+                updated_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, kind)
+             );
+             CREATE INDEX IF NOT EXISTS public_cache_refs_file ON public_cache_refs (active_file_id);
+             CREATE TABLE IF NOT EXISTS media_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+             );
+             DROP VIEW IF EXISTS preview_eligible;
+             CREATE VIEW preview_eligible AS
+                SELECT i.seq, i.conversation_id, i.attachment_id,
+                       json_extract(i.payload, '$.attachment.sha256') AS sha256,
                        json_extract(i.payload, '$.expires_at') AS expires_at
                 FROM inbox i JOIN directory d ON d.id = 1
                 JOIN json_each(d.payload, '$.conversations') c
@@ -81,11 +146,19 @@ impl Client {
                  AND i.seq > json_extract(c.value, '$.joined_after')
                 WHERE i.attachment_id IS NOT NULL
                   AND json_extract(i.payload, '$.recalled') IS NOT 1
-                  AND json_extract(i.payload, '$.expired') IS NULL
                   AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h.seq = i.seq);
-             CREATE VIEW IF NOT EXISTS timeline AS
+             DROP VIEW IF EXISTS timeline;
+             CREATE VIEW timeline AS
                 SELECT seq, conversation_id, attachment_id,
-                  CASE WHEN attachment_id IN (SELECT id FROM local_files)
+                  CASE WHEN attachment_id IS NOT NULL AND EXISTS (
+                         SELECT 1 FROM media_refs r
+                         JOIN media_files f ON f.id = r.file_id
+                         WHERE r.ref_kind = 'message'
+                           AND r.ref_id = CAST(inbox.seq AS TEXT)
+                           AND r.conversation_id = inbox.conversation_id
+                           AND r.variant IN ('image_original', 'video_original', 'attachment')
+                           AND f.status = 'available'
+                       )
                        THEN json_set(payload, '$.local_file', json('true')) ELSE payload END AS payload
                 FROM inbox
                 UNION ALL SELECT -id, conversation_id, NULL, draft FROM outbox WHERE draft IS NOT NULL;
@@ -102,6 +175,7 @@ impl Client {
         let re_registered = saved
             .as_ref()
             .is_some_and(|previous| *previous != device_id);
+        let previous_device_id = saved.clone();
         if saved.as_deref() != Some(&device_id) {
             ensure!(
                 !restore,
@@ -120,7 +194,7 @@ impl Client {
                 .execute(&mut *tx).await?;
         }
         tx.commit().await?;
-        Ok(re_registered)
+        Ok((re_registered, previous_device_id))
     }
 
     pub(super) fn history_changed(&self) {
@@ -185,6 +259,7 @@ impl Client {
         let mut last = 0;
         let mut changed = false;
         let mut recalled_files = Vec::new();
+        let mut recalled_media = Vec::new();
         for event in page.events {
             match event {
                 SyncEvent::Published(mut message) => {
@@ -213,7 +288,7 @@ impl Client {
                         OnlineError::InvalidResponse
                     );
                     last = recall.seq;
-                    apply_recall(&mut tx, recall, &mut recalled_files).await?;
+                    apply_recall(&mut tx, recall, &mut recalled_files, &mut recalled_media).await?;
                     changed = true;
                 }
             }
@@ -227,10 +302,11 @@ impl Client {
         .execute(&mut *tx)
         .await?
         .rows_affected() > 0;
-        if directory_changed {
-            self.prune_profile_cache(&mut tx).await?;
-        }
-        self.prune_media_previews(&mut tx).await?;
+        let removed_public = if directory_changed {
+            self.prune_profile_cache(&mut tx).await?
+        } else {
+            Vec::new()
+        };
         sqlx::query("UPDATE sync_checkpoint SET pending_ack = ? WHERE id = 1")
             .bind(serde_json::to_string(&ack)?)
             .execute(&mut *tx)
@@ -239,6 +315,8 @@ impl Client {
         if changed || directory_changed {
             self.history_changed();
         }
+        self.remove_rel_paths(recalled_media).await;
+        self.remove_rel_paths(removed_public).await;
         for id in recalled_files {
             let _ = tokio::fs::remove_file(self.managed_files.join(id)).await;
         }
@@ -280,6 +358,7 @@ impl Client {
                     .fetch_all(&self.db)
                     .await?;
             let mut files = Vec::new();
+            let mut recalled_media = Vec::new();
             let recalls: Vec<MessageRecall> = if known.is_empty() {
                 Vec::new()
             } else {
@@ -297,7 +376,7 @@ impl Client {
                     known.contains(&recall.message_seq) && recall.seq > recall.message_seq,
                     OnlineError::InvalidResponse
                 );
-                apply_recall(&mut tx, recall, &mut files).await?;
+                apply_recall(&mut tx, recall, &mut files, &mut recalled_media).await?;
             }
             sqlx::query("UPDATE sync_checkpoint SET reconcile_after = ? WHERE id = 1")
                 .bind(known.last())
@@ -305,6 +384,7 @@ impl Client {
                 .await?;
             tx.commit().await?;
             self.history_changed();
+            self.remove_rel_paths(recalled_media).await;
             for id in files {
                 let _ = tokio::fs::remove_file(self.managed_files.join(id)).await;
             }
@@ -426,7 +506,12 @@ async fn apply_recall(
     db: &mut SqliteConnection,
     recall: MessageRecall,
     files: &mut Vec<String>,
+    media_paths: &mut Vec<String>,
 ) -> Result<()> {
+    media_paths.extend(
+        media_store::release_media_refs_in_tx(&mut *db, "message", &recall.message_seq.to_string())
+            .await?,
+    );
     sqlx::query("DELETE FROM media_previews WHERE message_seq = ?")
         .bind(recall.message_seq)
         .execute(&mut *db)

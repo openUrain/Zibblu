@@ -232,6 +232,7 @@ pub fn run() {
             commands::pause_transfer,
             commands::resume_transfer,
             commands::discard_transfer,
+            commands::clear_cache,
         ]))
         .run(tauri::generate_context!())
         .expect("Could not start Zibblu");

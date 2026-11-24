@@ -1,6 +1,7 @@
 mod ai_context;
 mod device;
 mod local_sync;
+mod media_store;
 mod outbox;
 mod preview_cache;
 mod profile_cache;
@@ -8,6 +9,9 @@ mod staging;
 mod transfer;
 
 pub use ai_context::AiScope;
+pub use media_store::{
+    CacheCleanupReport, ConsistencyReport, MediaDescriptor, MediaVariant, PublicResourceKind,
+};
 pub use profile_cache::CachedProfile;
 pub use preview_cache::IMAGE_THUMBNAIL;
 pub use staging::{
@@ -76,10 +80,14 @@ fn network_error_message(error: &reqwest::Error) -> &'static str {
 
 pub struct Client {
     pub user: User,
+    device_id: Uuid,
     api: Api,
     db: SqlitePool,
     staging: PathBuf,
     managed_files: PathBuf,
+    media_root: PathBuf,
+    active_tmp: std::sync::Mutex<std::collections::HashSet<String>>,
+    media_locks: [Mutex<()>; 16],
     history_revision: AtomicI64,
     device_re_registered: bool,
     sync_gate: Mutex<()>,
@@ -176,9 +184,17 @@ impl Client {
         let profile = Self::profile_at(data_dir, &api, session.user.id);
         let staging = profile.join("transfers");
         let managed_files = profile.join("files");
-        std::fs::create_dir_all(&staging).context("Could not create the local profile")?;
-        std::fs::create_dir_all(&managed_files)
+        let media_root = profile.join("media").join(session.device_id.to_string());
+        std::fs::create_dir_all(media_store::fs_path(&staging))
+            .context("Could not create the local profile")?;
+        std::fs::create_dir_all(media_store::fs_path(&managed_files))
             .context("Could not create the local file directory")?;
+        std::fs::create_dir_all(media_store::fs_path(&media_root.join("conversations")))
+            .context("Could not create the conversation media directory")?;
+        std::fs::create_dir_all(media_store::fs_path(&media_root.join("public")))
+            .context("Could not create the public cache directory")?;
+        std::fs::create_dir_all(media_store::fs_path(&media_root.join("tmp")))
+            .context("Could not create the media temp directory")?;
         let lock = OpenOptions::new()
             .write(true)
             .create(true)
@@ -198,13 +214,18 @@ impl Client {
             )
             .await
             .context("Could not open the local chat history")?;
-        let device_re_registered = Self::initialize_history(&db, &session, restore).await?;
+        let (device_re_registered, previous_device_id) =
+            Self::initialize_history(&db, &session, restore).await?;
         let client = Arc::new(Self {
             user: session.user,
+            device_id: session.device_id,
             api,
             db,
             staging,
             managed_files,
+            media_root,
+            active_tmp: std::sync::Mutex::new(std::collections::HashSet::new()),
+            media_locks: std::array::from_fn(|_| Mutex::new(())),
             history_revision: AtomicI64::new(1),
             device_re_registered,
             _profile_lock: lock,
@@ -216,6 +237,9 @@ impl Client {
             closed: AtomicBool::new(false),
             server_clock_offset: AtomicI64::new(0),
         });
+        client
+            .migrate_legacy_media_if_needed(previous_device_id)
+            .await?;
         client.restore_upload_times().await?;
         Ok(client)
     }
@@ -511,6 +535,25 @@ impl Client {
     }
 
     pub async fn profile_image(&self, id: Uuid, version: Uuid) -> Result<Vec<u8>> {
+        self.profile_image_verified(id, version, |bytes| {
+            ensure!(
+                bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+                OnlineError::InvalidResponse
+            );
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn profile_image_verified<F>(
+        &self,
+        id: Uuid,
+        version: Uuid,
+        validate: F,
+    ) -> Result<Vec<u8>>
+    where
+        F: FnOnce(&[u8]) -> Result<()>,
+    {
         self.ensure_open()?;
         let response = match self
             .api
@@ -523,7 +566,7 @@ impl Client {
             Ok(response) => response,
             Err(error) => {
                 if matches!(&error, OnlineError::Rejected { status, .. }
-                    if matches!(*status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND))
+                    if matches!(*status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN))
                 {
                     self.forget_profile_image(id, version).await;
                 }
@@ -538,6 +581,7 @@ impl Client {
             OnlineError::InvalidResponse
         );
         let bytes = read_limited(response, MAX_PROFILE_IMAGE_BYTES).await?;
+        validate(&bytes)?;
         self.remember_profile_image(id, version, &bytes).await;
         Ok(bytes)
     }
@@ -627,7 +671,7 @@ impl Client {
     }
 
     pub async fn hide_message(&self, conversation: Uuid, seq: i64) -> Result<()> {
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
         let found = sqlx::query(
             "INSERT OR IGNORE INTO hidden_messages (seq, attachment_id)
              SELECT seq, attachment_id FROM inbox WHERE seq = ? AND conversation_id = ?",
@@ -641,11 +685,18 @@ impl Client {
                 .bind(seq).bind(conversation.to_string()).fetch_one(&mut *tx).await?;
             ensure!(hidden, "This message is unavailable");
         }
+        let removed_paths =
+            media_store::release_media_refs_in_tx(&mut tx, "message", &seq.to_string()).await?;
+        sqlx::query("DELETE FROM local_files WHERE message_seq = ?")
+            .bind(seq)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM media_previews WHERE message_seq = ?")
             .bind(seq)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        self.remove_rel_paths(removed_paths).await;
         self.history_changed();
         Ok(())
     }
