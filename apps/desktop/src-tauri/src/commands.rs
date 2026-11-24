@@ -646,7 +646,7 @@ pub(crate) async fn sync(app: AppHandle, state: State<'_, Desktop>) -> Result<Sy
         result => result?,
     };
     if let Some(lobby) = state.private.lock().await.as_ref() {
-        lobby.set_memberships(crate::private_runtime::memberships(&update.directory));
+        lobby.set_memberships(crate::private_runtime::memberships(&client.membership_directory().await?));
     }
     Ok(update)
 }
@@ -812,15 +812,44 @@ pub(crate) async fn read_update(
 
 #[tauri::command]
 pub(crate) async fn hide_message(
+    app: AppHandle,
     state: State<'_, Desktop>,
     conversation: Uuid,
     seq: i64,
 ) -> Result<()> {
-    Ok(state
-        .client()
-        .await?
-        .hide_message(conversation, seq)
-        .await?)
+    state.client().await?.hide_message(conversation, seq).await?;
+    crate::image_viewer::close_deleted(&app, &state, conversation, Some(seq), false);
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn clear_history(
+    app: AppHandle,
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+) -> Result<()> {
+    state.client().await?.clear_received_history(conversation).await?;
+    crate::image_viewer::close_deleted(&app, &state, conversation, None, false);
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn delete_conversation(
+    app: AppHandle,
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+) -> Result<()> {
+    let client = state.client().await?;
+    client.delete_conversation(conversation).await?;
+    state.drafts.remove_conversation(&client, conversation);
+    crate::image_viewer::close_deleted(&app, &state, conversation, None, true);
+    state.outbox_wake.notify_one();
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn take_send_failure_notices(state: State<'_, Desktop>) -> Result<usize> {
+    Ok(state.client().await?.take_send_failure_notices().await?)
 }
 
 #[tauri::command]
