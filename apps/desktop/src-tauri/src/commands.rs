@@ -37,6 +37,7 @@ pub(crate) struct Desktop {
     pub(crate) private_generation: std::sync::atomic::AtomicU64,
     private_worker: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     attachment_offer: StdMutex<Option<(Uuid, Vec<PathBuf>)>>,
+    pub(crate) drafts: crate::attachment_drafts::AttachmentDrafts,
     pub(crate) image_scope: std::sync::RwLock<Option<crate::image_viewer::ImageScope>>,
     #[cfg(windows)]
     pub(crate) image_window: Mutex<()>,
@@ -59,6 +60,7 @@ impl Desktop {
             private_generation: std::sync::atomic::AtomicU64::new(0),
             private_worker: Mutex::new(None),
             attachment_offer: StdMutex::new(None),
+            drafts: Default::default(),
             image_scope: Default::default(),
             #[cfg(windows)]
             image_window: Mutex::new(()),
@@ -99,6 +101,14 @@ impl Desktop {
             .collect();
         *self.attachment_offer.lock().expect("attachment offer") = Some((ticket, paths));
         DropOffer { ticket, names }
+    }
+
+    pub(crate) fn take_attachment_offer(&self, ticket: Uuid) -> anyhow::Result<Vec<PathBuf>> {
+        let mut offer = self.attachment_offer.lock().expect("attachment offer");
+        if offer.as_ref().is_none_or(|(id, _)| *id != ticket) {
+            anyhow::bail!("Drop the attachments again to add them");
+        }
+        Ok(offer.take().expect("matching attachment offer").1)
     }
 
     pub async fn close_private(&self, app: &AppHandle) {
@@ -256,6 +266,7 @@ impl Desktop {
         }
         self.close_private(app).await;
         *self.attachment_offer.lock().expect("attachment offer") = None;
+        self.drafts.clear();
         let revoked = match session.take() {
             Some(client) if revoke => client.logout().await,
             Some(client) => {
@@ -284,6 +295,7 @@ async fn run_outbox(app: AppHandle, client: Arc<Client>, wake: Arc<Notify>) {
             _ = retry.tick() => {},
         }
         if client.flush_pending_messages().await.unwrap_or(false) {
+            let _ = client.resume_queued().await;
             let _ = app.emit_to("main", "message-outbox-changed", ());
         }
     }
@@ -379,10 +391,15 @@ pub(crate) struct CommandError {
     expired: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
 }
 
 impl From<anyhow::Error> for CommandError {
     fn from(error: anyhow::Error) -> Self {
+        let code = error
+            .downcast_ref::<zibblu_core::SourceChangedError>()
+            .map(|_| "source_changed");
         Self {
             message: error.to_string(),
             expired: is_unauthorized(&error),
@@ -390,6 +407,7 @@ impl From<anyhow::Error> for CommandError {
                 Some(OnlineError::Rejected { status, .. }) => Some(status.as_u16()),
                 _ => None,
             },
+            code,
         }
     }
 }
@@ -404,6 +422,7 @@ fn invalid_saved_session() -> CommandError {
         message: "The saved sign-in is unavailable. Enter your password to sign in.".into(),
         expired: true,
         status: Some(401),
+        code: None,
     }
 }
 
@@ -579,7 +598,7 @@ pub(crate) async fn restore_session(
         Ok(client) => client,
         Err(error) if is_unauthorized(&error) => {
             if saved_session::clear(&state.data).is_err() {
-                return Err(CommandError { message: "The saved sign-in was rejected and could not be removed. Enter your password to sign in.".into(), expired: true, status: Some(401) });
+                return Err(CommandError { message: "The saved sign-in was rejected and could not be removed. Enter your password to sign in.".into(), expired: true, status: Some(401), code: None });
             }
             return Err(error.into());
         }
@@ -611,6 +630,7 @@ pub(crate) async fn sync(app: AppHandle, state: State<'_, Desktop>) -> Result<Sy
             return Err(CommandError {
                 expired: true,
                 status: Some(401),
+                code: None,
                 message: match cleanup {
                     Ok(()) => "Your session has expired. Sign in again.".into(),
                     Err(error) => error.to_string(),

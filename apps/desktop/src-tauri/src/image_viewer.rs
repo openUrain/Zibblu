@@ -25,6 +25,7 @@ pub(crate) struct ImageScope {
     conversation: Uuid,
     seq: i64,
     id: Uuid,
+    draft: bool,
 }
 
 impl ImageScope {
@@ -119,15 +120,62 @@ fn scope(state: &Desktop) -> Result<ImageScope> {
 
 pub(crate) async fn authorize(state: &Desktop, id: Uuid) -> Result<Arc<Client>> {
     let selection = scope(state)?;
-    ensure!(selection.id == id, "This image is outside the viewer");
+    ensure!(!selection.draft && selection.id == id, "This image is outside the viewer");
     let client = selection.client(state).await?;
     selection.image(&client).await?;
     let selected = scope(state)?;
     ensure!(
-        selected.id == id && selected.client.ptr_eq(&selection.client),
+        !selected.draft && selected.id == id && selected.client.ptr_eq(&selection.client),
         "The selected image changed"
     );
     Ok(client)
+}
+
+pub(crate) async fn authorize_draft(state: &Desktop, id: Uuid) -> Result<Arc<Client>> {
+    let selection = scope(state)?;
+    ensure!(selection.draft && selection.id == id, "This image is outside the viewer");
+    let client = selection.client(state).await?;
+    let (conversation, _) = state.drafts.draft_image_entry(&client, id)?;
+    ensure!(conversation == selection.conversation, "This image is outside the viewer");
+    let selected = scope(state)?;
+    ensure!(
+        selected.draft && selected.id == id && selected.client.ptr_eq(&selection.client),
+        "The selected image changed"
+    );
+    Ok(client)
+}
+
+#[tauri::command]
+pub(crate) async fn open_draft_image_viewer(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    id: Uuid,
+) -> CommandResult<()> {
+    #[cfg(windows)]
+    {
+        require(window.label() == "main", "Open an image from chat")?;
+        let _opening = state.image_window.lock().await;
+        let client = state.client().await?;
+        let (conversation, _) = state.drafts.draft_image_entry(&client, id)?;
+        let (_, bytes) = state.drafts.preview_image(&client, id, false).await?;
+        let dimensions = bytes_dimensions(bytes).await;
+        require(state.is_current(&client).await, "The session has ended")?;
+        let (latest_conv, _) = state.drafts.draft_image_entry(&client, id)?;
+        require(latest_conv == conversation, "This draft image is no longer available")?;
+        let scope = ImageScope {
+            client: Arc::downgrade(&client),
+            conversation,
+            seq: 0,
+            id,
+            draft: true,
+        };
+        open_or_reuse_viewer(&window, &state, &client, scope, dimensions).await
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, state, id);
+        Err(anyhow::anyhow!("The standalone image viewer is available on Windows").into())
+    }
 }
 
 #[tauri::command]
@@ -147,6 +195,7 @@ pub(crate) async fn open_image_viewer(
             conversation: message.conversation_id,
             seq: message.seq,
             id,
+            draft: false,
         };
         let file = scope
             .image(&client)
@@ -156,76 +205,7 @@ pub(crate) async fn open_image_viewer(
         let dimensions = image_dimensions(&client, message.seq, file).await;
         require(state.is_current(&client).await, "The session has ended")?;
         scope.image(&client).await?;
-        let app = window.app_handle();
-        if let Some(viewer) = app.get_webview_window(LABEL) {
-            *state.image_scope.write().expect("image scope") = Some(scope);
-            viewer.unminimize().map_err(anyhow::Error::from)?;
-            fit_open_window(&viewer, dimensions)?;
-            viewer.set_focus().map_err(anyhow::Error::from)?;
-            return Ok(());
-        }
-        let monitor = window
-            .current_monitor()
-            .map_err(anyhow::Error::from)?
-            .or(window.primary_monitor().map_err(anyhow::Error::from)?)
-            .context("No display is available")?;
-        let area = monitor.work_area();
-        let scale = monitor.scale_factor();
-        let work = area.size.to_logical::<f64>(scale);
-        let (width, height) = initial_size(dimensions, work.width, work.height);
-        *state.image_scope.write().expect("image scope") = Some(scope);
-        let viewer = tauri::WebviewWindowBuilder::new(
-            app,
-            LABEL,
-            tauri::WebviewUrl::App("index.html".into()),
-        )
-        .title("Image viewer")
-        .on_navigation(crate::local_navigation)
-        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
-        .data_directory(state.webview_directory())
-        .decorations(false)
-        .inner_size(width, height)
-        .min_inner_size(MIN_VIEWER_WIDTH.min(width), 176.0_f64.min(height))
-        .visible(false)
-        .build()
-        .map_err(anyhow::Error::from)?;
-        let position = PhysicalPosition::new(area.position.x, area.position.y);
-        let result = (|| {
-            viewer.set_position(position)?;
-            viewer.set_size(LogicalSize::new(width, height).to_physical::<u32>(scale))?;
-            let outer = viewer.outer_size()?;
-            let inner = viewer.inner_size()?;
-            let limit = PhysicalSize::new(
-                area.size
-                    .width
-                    .saturating_sub(outer.width.saturating_sub(inner.width)),
-                area.size
-                    .height
-                    .saturating_sub(outer.height.saturating_sub(inner.height)),
-            );
-            if inner.width > limit.width || inner.height > limit.height {
-                viewer.set_size(PhysicalSize::new(
-                    inner.width.min(limit.width),
-                    inner.height.min(limit.height),
-                ))?;
-            }
-            let outer = viewer.outer_size()?;
-            viewer.set_position(PhysicalPosition::new(
-                position.x + (area.size.width.saturating_sub(outer.width) / 2) as i32,
-                position.y + (area.size.height.saturating_sub(outer.height) / 2) as i32,
-            ))?;
-            viewer.show()?;
-            viewer.set_focus()
-        })();
-        if let Err(error) = result {
-            let _ = viewer.destroy();
-            return Err(anyhow::Error::from(error).into());
-        }
-        // The account may have signed out while the native window was being created.
-        if !state.is_current(&client).await {
-            let _ = viewer.destroy();
-        }
-        Ok(())
+        open_or_reuse_viewer(&window, &state, &client, scope, dimensions).await
     }
     #[cfg(not(windows))]
     {
@@ -235,8 +215,87 @@ pub(crate) async fn open_image_viewer(
 }
 
 #[cfg(windows)]
-async fn image_dimensions(client: &Client, seq: i64, file: Attachment) -> Option<(u32, u32)> {
-    let (_, bytes) = media::image_preview(client, seq, file, false).await.ok()?;
+async fn open_or_reuse_viewer(
+    window: &WebviewWindow,
+    state: &Desktop,
+    client: &Arc<Client>,
+    scope: ImageScope,
+    dimensions: Option<(u32, u32)>,
+) -> CommandResult<()> {
+    let app = window.app_handle();
+    if let Some(viewer) = app.get_webview_window(LABEL) {
+        *state.image_scope.write().expect("image scope") = Some(scope);
+        viewer.unminimize().map_err(anyhow::Error::from)?;
+        fit_open_window(&viewer, dimensions)?;
+        viewer.set_focus().map_err(anyhow::Error::from)?;
+        return Ok(());
+    }
+    let monitor = window
+        .current_monitor()
+        .map_err(anyhow::Error::from)?
+        .or(window.primary_monitor().map_err(anyhow::Error::from)?)
+        .context("No display is available")?;
+    let area = monitor.work_area();
+    let scale = monitor.scale_factor();
+    let work = area.size.to_logical::<f64>(scale);
+    let (width, height) = initial_size(dimensions, work.width, work.height);
+    *state.image_scope.write().expect("image scope") = Some(scope);
+    let viewer = tauri::WebviewWindowBuilder::new(
+        app,
+        LABEL,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Image viewer")
+    .on_navigation(crate::local_navigation)
+    .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+    .data_directory(state.webview_directory())
+    .decorations(false)
+    .inner_size(width, height)
+    .min_inner_size(MIN_VIEWER_WIDTH.min(width), 176.0_f64.min(height))
+    .visible(false)
+    .build()
+    .map_err(anyhow::Error::from)?;
+    let position = PhysicalPosition::new(area.position.x, area.position.y);
+    let result = (|| {
+        viewer.set_position(position)?;
+        viewer.set_size(LogicalSize::new(width, height).to_physical::<u32>(scale))?;
+        let outer = viewer.outer_size()?;
+        let inner = viewer.inner_size()?;
+        let limit = PhysicalSize::new(
+            area.size
+                .width
+                .saturating_sub(outer.width.saturating_sub(inner.width)),
+            area.size
+                .height
+                .saturating_sub(outer.height.saturating_sub(inner.height)),
+        );
+        if inner.width > limit.width || inner.height > limit.height {
+            viewer.set_size(PhysicalSize::new(
+                inner.width.min(limit.width),
+                inner.height.min(limit.height),
+            ))?;
+        }
+        let outer = viewer.outer_size()?;
+        viewer.set_position(PhysicalPosition::new(
+            position.x + (area.size.width.saturating_sub(outer.width) / 2) as i32,
+            position.y + (area.size.height.saturating_sub(outer.height) / 2) as i32,
+        ))?;
+        viewer.show()?;
+        viewer.set_focus()
+    })();
+    if let Err(error) = result {
+        let _ = viewer.destroy();
+        return Err(anyhow::Error::from(error).into());
+    }
+    // The account may have signed out while the native window was being created.
+    if !state.is_current(client).await {
+        let _ = viewer.destroy();
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn bytes_dimensions(bytes: Vec<u8>) -> Option<(u32, u32)> {
     tauri::async_runtime::spawn_blocking(move || {
         let reader = image::ImageReader::new(Cursor::new(bytes))
             .with_guessed_format()
@@ -254,6 +313,12 @@ async fn image_dimensions(client: &Client, seq: i64, file: Attachment) -> Option
     .await
     .ok()
     .flatten()
+}
+
+#[cfg(windows)]
+async fn image_dimensions(client: &Client, seq: i64, file: Attachment) -> Option<(u32, u32)> {
+    let (_, bytes) = media::image_preview(client, seq, file, false).await.ok()?;
+    bytes_dimensions(bytes).await
 }
 
 #[cfg(windows)]
@@ -323,6 +388,8 @@ pub(crate) struct ViewerSelection {
     previous: bool,
     next: bool,
     download: Option<Transfer>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    draft: bool,
 }
 
 #[tauri::command]
@@ -333,6 +400,26 @@ pub(crate) async fn image_viewer_selection(
     require(window.label() == LABEL, "Open the image viewer")?;
     let selection = scope(&state)?;
     let client = selection.client(&state).await?;
+    if selection.draft {
+        let (conversation, file) = state.drafts.draft_image_entry(&client, selection.id)?;
+        require(conversation == selection.conversation, "This draft image is no longer available")?;
+        let previous = state
+            .drafts
+            .draft_image_neighbor(&client, conversation, selection.id, false)
+            .is_some();
+        let next = state
+            .drafts
+            .draft_image_neighbor(&client, conversation, selection.id, true)
+            .is_some();
+        authorize_draft(&state, file.id).await?;
+        return Ok(ViewerSelection {
+            file,
+            previous,
+            next,
+            download: None,
+            draft: true,
+        });
+    }
     let file = selection
         .image(&client)
         .await?
@@ -352,6 +439,7 @@ pub(crate) async fn image_viewer_selection(
         previous: previous.is_some(),
         next: next.is_some(),
         download,
+        draft: false,
     })
 }
 
@@ -366,6 +454,37 @@ pub(crate) async fn image_viewer_step(
     #[cfg(windows)]
     let _opening = state.image_window.lock().await;
     let selection = scope(&state)?;
+    if selection.draft {
+        let client = authorize_draft(&state, id).await?;
+        let Some(next_id) =
+            state
+                .drafts
+                .draft_image_neighbor(&client, selection.conversation, id, forward)
+        else {
+            return Ok(());
+        };
+        let (_, bytes) = state.drafts.preview_image(&client, next_id, false).await?;
+        #[cfg(windows)]
+        let dimensions = bytes_dimensions(bytes).await;
+        #[cfg(not(windows))]
+        let _ = bytes;
+        let next = ImageScope {
+            id: next_id,
+            ..selection.clone()
+        };
+        {
+            let mut active = state.image_scope.write().expect("image scope");
+            if !active.as_ref().is_some_and(|active| {
+                active.draft && active.id == id && active.client.ptr_eq(&selection.client)
+            }) {
+                return Ok(());
+            }
+            *active = Some(next);
+        }
+        #[cfg(windows)]
+        fit_open_window(&window, dimensions)?;
+        return Ok(());
+    }
     let client = authorize(&state, id).await?;
     let cutoff = selection.cutoff(&client).await?;
     let Some(message) = selection.neighbor(&client, forward, cutoff).await? else {
@@ -407,15 +526,22 @@ pub(crate) async fn copy_viewer_image(
             window.label() == LABEL && window.is_focused().map_err(anyhow::Error::from)?,
             "Focus the image viewer before copying",
         )?;
-        let client = authorize(&state, id).await?;
-        let message = client.attachment(id).await?;
-        let (_, bytes) = media::image_preview(
-            &client,
-            message.seq,
-            message.attachment.context("Missing image")?,
-            false,
-        )
-        .await?;
+        let selection = scope(&state)?;
+        let bytes = if selection.draft {
+            let client = authorize_draft(&state, id).await?;
+            state.drafts.preview_image(&client, id, false).await?.1
+        } else {
+            let client = authorize(&state, id).await?;
+            let message = client.attachment(id).await?;
+            media::image_preview(
+                &client,
+                message.seq,
+                message.attachment.context("Missing image")?,
+                false,
+            )
+            .await?
+            .1
+        };
         let permit = media::IMAGE_JOBS
             .acquire()
             .await
@@ -426,7 +552,11 @@ pub(crate) async fn copy_viewer_image(
         })
         .await
         .map_err(anyhow::Error::from)??;
-        authorize(&state, id).await?;
+        if selection.draft {
+            authorize_draft(&state, id).await?;
+        } else {
+            authorize(&state, id).await?;
+        }
         require(
             window.is_focused().map_err(anyhow::Error::from)?,
             "Focus the image viewer before copying",

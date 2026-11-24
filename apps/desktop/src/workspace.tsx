@@ -12,7 +12,7 @@ import { ai } from "./ai-api";
 import type { AiReply, Assistant } from "./ai-api";
 import { AssistantSettings } from "./ai";
 import { api, errorMessage, isExpired } from "./api";
-import type { CloseAction, Conversation, ConversationRequest, Device, Directory, Draft, DropOffer, Profile, Session, ShareSource, SyncUpdate, Transfer, User } from "./api";
+import type { AddDraftsResult, CloseAction, Conversation, ConversationRequest, Device, Directory, Draft, DropOffer, Profile, Session, SyncUpdate, Transfer, User } from "./api";
 import { mediaKind } from "./attachment-media";
 import { Blank, Brand, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName } from "./common";
 import { orderContacts } from "./contact-order";
@@ -95,8 +95,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [syncProblem, setSyncProblem] = useState("");
   const [newChat, setNewChat] = useState(false);
   const [newContact, setNewContact] = useState(false);
-  const [offer, setOffer] = useState<DropOffer & { conversation: string }>();
-  const [sharing, setSharing] = useState(false);
+  const [sendingChats, setSendingChats] = useState<ReadonlySet<string>>(new Set());
+  const sendingChatsRef = useRef<Set<string>>(new Set());
   const [leaving, setLeaving] = useState(false);
   const signingOut = useRef(false);
   const previewAccess = useMemo(() => {
@@ -232,16 +232,32 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     });
   }
 
-  function setDraft(key: string, change: (draft: Draft) => Draft) {
+  const setDraft = useCallback((key: string, change: (draft: Draft) => Draft) => {
     setDrafts(previous => {
       const next = change(previous[key] ?? { text: "" });
-      if (next.text || next.quote || next.image) return { ...previous, [key]: next };
+      const attachments = next.attachments?.length ? next.attachments : undefined;
+      const cleaned = attachments === next.attachments ? next : { ...next, attachments };
+      if (cleaned.text || cleaned.quote || cleaned.attachments?.length) return { ...previous, [key]: cleaned };
       if (!previous[key]) return previous;
       const remaining = { ...previous };
       delete remaining[key];
       return remaining;
     });
-  }
+  }, []);
+
+  const appendDraftResult = useCallback((conversation: string, result: AddDraftsResult) => {
+    if (result.added.length > 0) {
+      setDraft(conversation, previous => {
+        const existing = previous.attachments ?? [];
+        const seen = new Set(existing.map(item => item.id));
+        const added = result.added.filter(item => !seen.has(item.id));
+        return added.length ? { ...previous, attachments: [...existing, ...added] } : previous;
+      });
+    }
+    if (result.errors.length > 0) {
+      setFailure(result.errors.join("\n"));
+    }
+  }, [setDraft]);
 
   useEffect(() => {
     const connected = new Set(privateRooms.filter(room => room.phase === "connected").map(room => "private/" + room.id));
@@ -367,16 +383,26 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const activeId = nav === "Chats" && !privateOpen && !profile && !quickProfile ? active?.id : undefined;
   useEffect(() => {
     const drop = listen<DropOffer>("attachment-drop", event => {
-      if (privateOpen) return;
+      if (privateOpen) {
+        void api.cancelAttachmentOffer(event.payload.ticket).catch(() => {});
+        return;
+      }
       const chatVisible = mobileChat || !window.matchMedia("(max-width: 740px)").matches;
-      if (activeId && chatVisible) setOffer({ ...event.payload, conversation: activeId });
-      else setFailure("Open a chat before dropping a file or folder.");
+      if (activeId && chatVisible) {
+        setFailure("");
+        void api.addDroppedFiles(activeId, event.payload.ticket)
+          .then(result => appendDraftResult(activeId, result))
+          .catch(error => setFailure(errorMessage(error)));
+      } else {
+        void api.cancelAttachmentOffer(event.payload.ticket).catch(() => {});
+        setFailure("Open a chat before dropping a file or folder.");
+      }
     });
     const error = listen<string>("attachment-drop-error", event => {
       if (!privateOpen) setFailure(event.payload);
     });
     return () => { void drop.then(unlisten => unlisten()); void error.then(unlisten => unlisten()); };
-  }, [activeId, mobileChat, privateOpen]);
+  }, [activeId, mobileChat, privateOpen, appendDraftResult]);
 
   function navigate(page: Navigation, assistants = false) {
     privateSelection.current += 1;
@@ -404,7 +430,6 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const showPrivate = useCallback((id: string, conversation?: string | null) => {
     privateSelection.current += 1;
     if (conversation) setSelected(conversation);
-    setOffer(undefined);
     setProfile(undefined);
     setChatPage(undefined);
     setNav("Chats");
@@ -484,24 +509,32 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     await refreshLocal();
   }
 
-  async function share(conversation: string, source: ShareSource) {
+  async function pickAttachments(conversation: string, kind: "file" | "folder") {
     setFailure("");
-    try { await api.share(conversation, source); }
-    catch (error) { setFailure(errorMessage(error)); }
-    finally { changed(); }
+    try {
+      const result = await api.pickDraftAttachments(conversation, kind);
+      if (result) appendDraftResult(conversation, result);
+    } catch (error) { setFailure(errorMessage(error)); }
   }
 
   async function pasteFiles(conversation: string) {
-    const clipboard = await api.offerClipboardFiles();
-    if (!clipboard) return false;
-    setOffer({ ...clipboard, conversation });
+    const result = await api.addClipboardFiles(conversation);
+    if (!result) return false;
+    appendDraftResult(conversation, result);
     return true;
   }
 
-  function cancelOffer() {
-    if (offer) void api.cancelAttachmentOffer(offer.ticket).catch(() => {});
-    setOffer(undefined);
-  }
+  const beginSending = useCallback((conversation: string) => {
+    if (sendingChatsRef.current.has(conversation)) return false;
+    sendingChatsRef.current.add(conversation);
+    setSendingChats(new Set(sendingChatsRef.current));
+    return true;
+  }, []);
+
+  const endSending = useCallback((conversation: string) => {
+    if (!sendingChatsRef.current.delete(conversation)) return;
+    setSendingChats(new Set(sendingChatsRef.current));
+  }, []);
 
   async function signOut() {
     if (signingOut.current) return;
@@ -512,7 +545,6 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }
 
   const names = useMemo(() => ({ ...directory.names, ...directory.remarks }), [directory.names, directory.remarks]);
-  const offeredChat = directory.conversations.find(chat => chat.id === offer?.conversation);
   const connected = connection === "Connected";
   const invitation = privateRooms.find(room => room.id === prompt && room.id !== privateId);
   const attention: Partial<Record<Navigation, string>> = {
@@ -618,7 +650,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
         + (profile && !splitProfile && !chatProfile && !desktopContacts ? " profile-replaces-root" : "")}>
       {nav === "Chats" && <div className={"chat-layout" + (mobileChat && (active || privateOpen) ? " mobile-chat-open" : "")
         + (profile && chatProfile ? " chat-profile-open" : "")}>
-        <ChatList chats={directory.conversations} own={session.user} selected={privateOpen && !pairedPrivate ? undefined : selected}
+        <ChatList chats={directory.conversations} drafts={drafts} own={session.user} selected={privateOpen && !pairedPrivate ? undefined : selected}
           open={selectChat} newChat={() => setNewChat(true)} addContact={() => setNewContact(true)}
           rooms={privateRooms} activePrivate={privateId}
           openPrivate={selectPrivate} createQr={() => void createPrivateCode()}
@@ -637,9 +669,10 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset}
             hidden={hidden} hide={seq => hide(active.id, seq)} readReceipts={directory.read_receipts && connected && !profile && !quickProfile}
             draft={drafts[active.id] ?? { text: "" }} setDraft={change => setDraft(active.id, change)}
+            sending={sendingChats.has(active.id)} beginSending={() => beginSending(active.id)} endSending={() => endSending(active.id)}
             transfers={transfers} changed={changed} refresh={refresh} back={() => setMobileChat(false)}
             pasteFiles={() => pasteFiles(active.id)}
-            share={source => share(active.id, source)} openPrivate={() => void invitePrivate(active)}
+            pickAttachments={kind => pickAttachments(active.id, kind)} openPrivate={() => void invitePrivate(active)}
             aiChat={{
               assistants, settings: () => navigate("Settings", true), replies: aiReplies.filter(reply => reply.conversation === active.id),
               answered: reply => setAiReplies(current => [...current, reply]),
@@ -720,18 +753,6 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       setNewContact(false);
       openProfile(user);
     }} />}
-    {!privateOpen && offer && offeredChat && <Dialog title={offer.names.length === 1 ? "Share this attachment?" : "Share these attachments?"} close={() => { if (!sharing) cancelOffer(); }}>
-      <p className="drop-confirm"><strong>{offer.names.join(", ")}</strong> will be shared in <strong>{chatName(offeredChat, session.user.id, names)}</strong>.</p>
-      <div className="dialog-actions">
-        <button className="button subtle" onClick={cancelOffer} disabled={sharing}>Cancel</button>
-        <button className="button primary" disabled={sharing} onClick={async () => {
-          setSharing(true);
-          await share(offer.conversation, { kind: "dropped", ticket: offer.ticket });
-          setSharing(false);
-          setOffer(undefined);
-        }}>{sharing ? "Preparing…" : "Share"}</button>
-      </div>
-    </Dialog>}
     {invitation && <PrivateInvitationOverlay key={invitation.id} room={invitation} />}
   </main></People.Provider></WorkspaceImages.Provider>;
 }

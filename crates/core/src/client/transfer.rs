@@ -94,6 +94,7 @@ struct OverwriteTarget {
 pub(super) type JobKey = (Uuid, Direction);
 
 pub(super) struct Active {
+    conversation: Uuid,
     stop: Arc<AtomicBool>,
     task: JoinHandle<()>,
 }
@@ -199,9 +200,44 @@ impl Client {
         self.start_upload(conversation, attachment).await
     }
 
+    pub async fn queue_upload_verified(
+        self: &Arc<Self>,
+        conversation: Uuid,
+        upload_id: Uuid,
+        source: PathBuf,
+        expected: staging::SourceSnapshot,
+    ) -> Result<Transfer> {
+        let _prepare = self.prepare_gate.lock().await;
+        self.ensure_open()?;
+        if let Some(existing) = self.job((upload_id, Direction::Upload)).await? {
+            ensure!(
+                existing.transfer.conversation_id == conversation,
+                "This attachment belongs to another conversation"
+            );
+            return Ok(existing.transfer);
+        }
+        self.check_upload(conversation).await?;
+        let target = self.spool((upload_id, Direction::Upload));
+        let attachment = tokio::task::spawn_blocking(move || {
+            staging::stage_verified(&source, &expected, &target, upload_id)
+        })
+        .await??;
+        self.start_upload(conversation, attachment).await
+    }
+
     pub async fn queue_pasted_image(
         self: &Arc<Self>,
         conversation: Uuid,
+        bytes: Vec<u8>,
+    ) -> Result<Transfer> {
+        self.queue_pasted_image_with_id(conversation, Uuid::new_v4(), bytes)
+            .await
+    }
+
+    pub async fn queue_pasted_image_with_id(
+        self: &Arc<Self>,
+        conversation: Uuid,
+        upload_id: Uuid,
         bytes: Vec<u8>,
     ) -> Result<Transfer> {
         ensure!(
@@ -209,11 +245,18 @@ impl Client {
             "Pasted images can be up to 16 MiB"
         );
         let _prepare = self.prepare_gate.lock().await;
+        self.ensure_open()?;
+        if let Some(existing) = self.job((upload_id, Direction::Upload)).await? {
+            ensure!(
+                existing.transfer.conversation_id == conversation,
+                "This attachment belongs to another conversation"
+            );
+            return Ok(existing.transfer);
+        }
         self.check_upload(conversation).await?;
-        let id = Uuid::new_v4();
-        let spool = self.spool((id, Direction::Upload));
+        let spool = self.spool((upload_id, Direction::Upload));
         let attachment =
-            tokio::task::spawn_blocking(move || staging::stage_pasted(&bytes, &spool, id))
+            tokio::task::spawn_blocking(move || staging::stage_pasted(&bytes, &spool, upload_id))
                 .await??;
         self.start_upload(conversation, attachment).await
     }
@@ -333,7 +376,7 @@ impl Client {
         let mut workers = self.workers.lock().await;
         self.ensure_open()?;
         let key = (id, direction);
-        let job = self
+        let mut job = self
             .job(key)
             .await?
             .context("This transfer is unavailable")?;
@@ -345,6 +388,15 @@ impl Client {
         {
             return Ok(job.transfer);
         }
+        if direction == Direction::Upload {
+            // Persist Queued before barrier/capacity checks so retries behind a running upload
+            // or pending text are never dropped and will resume automatically once unblocked.
+            job.transfer.status = TransferStatus::Queued;
+            job.transfer.error = None;
+            job.retry_at = 0;
+            self.store_job(&job).await?;
+            return self.launch(job, &mut workers).await;
+        }
         ensure!(
             workers.len() < MAX_RUNNING,
             "Pause a running transfer or wait for it to finish"
@@ -352,11 +404,26 @@ impl Client {
         self.launch(job, &mut workers).await
     }
 
-    pub async fn discard(&self, id: Uuid, direction: Direction) -> Result<()> {
+    pub async fn discard(self: &Arc<Self>, id: Uuid, direction: Direction) -> Result<()> {
         let _prepare = self.prepare_gate.lock().await;
-        let workers = self.workers.lock().await;
         self.ensure_open()?;
         let key = (id, direction);
+        if direction == Direction::Upload {
+            let active = {
+                let mut workers = self.workers.lock().await;
+                if let Some(active) = workers.remove(&key) {
+                    active.stop.store(true, Ordering::Relaxed);
+                    Some(active)
+                } else {
+                    None
+                }
+            };
+            if let Some(active) = active {
+                let _ = active.task.await;
+            }
+        }
+        let workers = self.workers.lock().await;
+        self.ensure_open()?;
         ensure!(
             !workers.contains_key(&key),
             "Pause the transfer before discarding it"
@@ -365,14 +432,46 @@ impl Client {
             .job(key)
             .await?
             .context("This transfer is unavailable")?;
+        let published_in_inbox: bool = if direction == Direction::Upload {
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inbox WHERE attachment_id = ?)")
+                .bind(id.to_string())
+                .fetch_one(&self.db)
+                .await?
+        } else {
+            false
+        };
         ensure!(
-            job.transfer.status != TransferStatus::Complete,
-            "This transfer is already complete"
+            job.transfer.status != TransferStatus::Complete && !published_in_inbox,
+            "This attachment was already sent."
         );
         if direction == Direction::Upload && job.transfer.status != TransferStatus::Expired {
-            self.api
+            match self
+                .api
                 .send(self.api.request(Method::DELETE, &format!("/v1/files/{id}")))
-                .await?;
+                .await
+            {
+                Ok(_)
+                | Err(OnlineError::Rejected {
+                    status: StatusCode::NOT_FOUND | StatusCode::GONE,
+                    ..
+                }) => {}
+                Err(OnlineError::Rejected {
+                    status: StatusCode::CONFLICT,
+                    ..
+                }) => bail!("This attachment was already sent."),
+                Err(error) => {
+                    // If all chunks were uploaded, /complete may have raced or had an unknown ACK.
+                    // Require server confirmation instead of falsely reporting cancellation.
+                    if job.transfer.received >= job.transfer.attachment.size {
+                        bail!(
+                            "Could not verify whether this attachment was already sent. Reconnect and try again."
+                        );
+                    }
+                    if !matches!(error, OnlineError::Network(_)) {
+                        return Err(error.into());
+                    }
+                }
+            }
         }
         match fs::remove_file(self.spool(key)).await {
             Ok(()) => {}
@@ -384,8 +483,12 @@ impl Client {
             .bind(direction.as_str())
             .execute(&self.db)
             .await?;
+        drop(workers);
         if direction == Direction::Upload {
             self.history_changed();
+            if !self.closed.load(Ordering::Relaxed) {
+                let _ = self.resume_queued().await;
+            }
         }
         Ok(())
     }
@@ -433,6 +536,44 @@ impl Client {
         Ok(())
     }
 
+    async fn has_earlier_pending_in_conversation(
+        &self,
+        conversation: Uuid,
+        upload_id: Uuid,
+    ) -> Result<bool> {
+        let chat = conversation.to_string();
+        let pending_text: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM outbox
+                WHERE conversation_id = ?
+                  AND blocked = 0
+                  AND submitted = 0
+                  AND json_extract(work, '$.kind') = 'text'
+            )",
+        )
+        .bind(&chat)
+        .fetch_one(&self.db)
+        .await?;
+        if pending_text {
+            return Ok(true);
+        }
+        let earlier_upload: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM transfers AS earlier
+                JOIN transfers AS cur ON cur.id = ? AND cur.direction = 'upload'
+                WHERE earlier.direction = 'upload'
+                  AND earlier.rowid < cur.rowid
+                  AND json_extract(earlier.payload, '$.conversation_id') = ?
+                  AND json_extract(earlier.payload, '$.status') IN ('queued', 'running')
+            )",
+        )
+        .bind(upload_id.to_string())
+        .bind(&chat)
+        .fetch_one(&self.db)
+        .await?;
+        Ok(earlier_upload)
+    }
+
     async fn launch(
         self: &Arc<Self>,
         mut job: Job,
@@ -442,10 +583,23 @@ impl Client {
             return Ok(job.transfer);
         }
         let key = job.key();
+        if key.1 == Direction::Upload {
+            let conversation = job.transfer.conversation_id;
+            if workers
+                .iter()
+                .any(|((_, dir), active)| *dir == Direction::Upload && active.conversation == conversation)
+                || self
+                    .has_earlier_pending_in_conversation(conversation, key.0)
+                    .await?
+            {
+                return Ok(job.transfer);
+            }
+        }
         job.transfer.status = TransferStatus::Running;
         job.transfer.error = None;
         self.store_job(&job).await?;
         let transfer = job.transfer.clone();
+        let conversation = job.transfer.conversation_id;
         let stop = Arc::new(AtomicBool::new(false));
         let signal = stop.clone();
         let client = self.clone();
@@ -484,40 +638,53 @@ impl Client {
                     job.retry_at = unix_millis() + 2_000;
                 }
             }
-            let mut workers = client.workers.lock().await;
-            let complete = job.transfer.status == TransferStatus::Complete;
-            if complete
-                || (client.store_job(&job).await.is_ok()
-                    && job.transfer.status == TransferStatus::Expired)
             {
-                let _ = fs::remove_file(client.spool(key)).await;
+                let mut workers = client.workers.lock().await;
+                let complete = job.transfer.status == TransferStatus::Complete;
+                if complete
+                    || (client.store_job(&job).await.is_ok()
+                        && job.transfer.status == TransferStatus::Expired)
+                {
+                    let _ = fs::remove_file(client.spool(key)).await;
+                }
+                workers.remove(&key);
             }
-            workers.remove(&key);
+            if !client.closed.load(Ordering::Relaxed) {
+                tokio::spawn(async move {
+                    let _ = client.resume_queued().await;
+                });
+            }
         });
-        workers.insert(key, Active { stop, task });
+        workers.insert(key, Active { conversation, stop, task });
         Ok(transfer)
     }
 
-    pub(super) async fn resume_queued(self: &Arc<Self>) -> Result<()> {
-        let mut workers = self.workers.lock().await;
-        let available = MAX_RUNNING.saturating_sub(workers.len());
-        if available > 0 {
-            let rows: Vec<String> = sqlx::query_scalar(
-                "SELECT payload FROM transfers WHERE json_extract(payload, '$.status') = 'queued'
-                 AND coalesce(json_extract(payload, '$.retry_at'), 0) <= ? ORDER BY rowid LIMIT ?",
-            )
-            .bind(unix_millis())
-            .bind(available as i64)
-            .fetch_all(&self.db)
-            .await?;
-            for row in rows {
-                let job: Job = serde_json::from_str(&row)?;
-                if !workers.contains_key(&job.key()) {
-                    self.launch(job, &mut workers).await?;
+    pub fn resume_queued(
+        self: &Arc<Self>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            let mut workers = self.workers.lock().await;
+            let available = MAX_RUNNING.saturating_sub(workers.len());
+            if available > 0 {
+                let rows: Vec<String> = sqlx::query_scalar(
+                    "SELECT payload FROM transfers WHERE json_extract(payload, '$.status') = 'queued'
+                     AND coalesce(json_extract(payload, '$.retry_at'), 0) <= ? ORDER BY rowid LIMIT 16",
+                )
+                .bind(unix_millis())
+                .fetch_all(&self.db)
+                .await?;
+                for row in rows {
+                    if workers.len() >= MAX_RUNNING {
+                        break;
+                    }
+                    let job: Job = serde_json::from_str(&row)?;
+                    if !workers.contains_key(&job.key()) {
+                        self.launch(job, &mut workers).await?;
+                    }
                 }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     fn spool(&self, (id, direction): JobKey) -> PathBuf {
@@ -608,6 +775,12 @@ impl Client {
             if stop.load(Ordering::Relaxed) {
                 return Ok(TransferStatus::Paused);
             }
+        }
+        if self
+            .has_earlier_pending_in_conversation(conversation, id)
+            .await?
+        {
+            return Ok(TransferStatus::Queued);
         }
         let stamp: Publication = self
             .api
@@ -1169,6 +1342,434 @@ mod tests {
         assert_eq!(after[1].created_at, 400);
         assert_eq!(client.files(filter(), Some(pending_cursor)).await?.items[0].seq, 10);
         assert_eq!(client.files(FileFilter { oldest_first: true, ..filter() }, Some(pending_cursor)).await?.items[0].seq, 11);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn verified_upload_blocks_changed_source_and_deduplicates_by_upload_id() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let files = tempfile::tempdir()?;
+        let source = files.path().join("doc.txt");
+        std::fs::write(&source, b"version-1")?;
+        let snapshot = staging::capture_source_snapshot(&source)?;
+
+        let session = DeviceSession {
+            user: User { id: Uuid::nil(), handle: "draft_tester".into() },
+            device_id: Uuid::nil(),
+            cursor: Uuid::nil(),
+        };
+        let client = Client::open(root.path(), Api::new("http://127.0.0.1:7841").unwrap(), session, false).await?;
+        let conversation = Uuid::new_v4();
+        let directory = crate::Directory {
+            contacts: Vec::new(),
+            conversations: vec![crate::Conversation {
+                id: conversation,
+                title: None,
+                members: vec![client.user.clone()],
+                activity_at: 1,
+                preview: None,
+                preview_seq: None,
+                latest_seq: 0,
+                unread: 0,
+                read_through: 0,
+                joined_after: None,
+            }],
+            pending_contacts: Vec::new(),
+            remarks: HashMap::new(),
+            names: HashMap::new(),
+            avatars: HashMap::new(),
+            read_receipts: false,
+        };
+        sqlx::query("INSERT INTO directory (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload")
+            .bind(serde_json::to_string(&directory)?)
+            .execute(&client.db)
+            .await?;
+
+        // Modify source before enqueue -> blocked with SourceChangedError and nothing queued.
+        std::fs::write(&source, b"version-2")?;
+        let blocked = client
+            .queue_upload_verified(conversation, Uuid::new_v4(), source.clone(), snapshot)
+            .await
+            .unwrap_err();
+        assert!(blocked.downcast_ref::<staging::SourceChangedError>().is_some());
+        assert!(client.transfers().await?.is_empty());
+
+        // Re-capture snapshot after modification -> queues once; second call with same upload_id is idempotent.
+        let fresh = staging::capture_source_snapshot(&source)?;
+        let upload_id = Uuid::new_v4();
+        let first = client
+            .queue_upload_verified(conversation, upload_id, source.clone(), fresh.clone())
+            .await?;
+        let second = client
+            .queue_upload_verified(conversation, upload_id, source, fresh)
+            .await?;
+        assert_eq!(first.attachment.id, upload_id);
+        assert_eq!(second.attachment.id, upload_id);
+        assert_eq!(client.transfers().await?.len(), 1);
+        client.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mixed_text_and_varying_size_uploads_publish_in_queue_order_across_recovery_and_failure() -> Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct MockState {
+            seq: i64,
+            published: Vec<String>,
+            text_attempts: usize,
+            uploads: HashMap<String, (String, u64, u64)>,
+            fail_name: Option<String>,
+        }
+
+        let state = Arc::new(Mutex::new(MockState {
+            fail_name: Some("bad.txt".into()),
+            ..Default::default()
+        }));
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let server_state = state.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else { break };
+                let state = server_state.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut tmp = [0u8; 4096];
+                    let header_end;
+                    loop {
+                        let Ok(n) = stream.read(&mut tmp).await else { return };
+                        if n == 0 { return; }
+                        buf.extend_from_slice(&tmp[..n]);
+                        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            header_end = pos + 4;
+                            break;
+                        }
+                    }
+                    let headers = String::from_utf8_lossy(&buf[..header_end]).to_string();
+                    let content_len: usize = headers
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse().ok()).flatten()
+                        })
+                        .unwrap_or(0);
+                    while buf.len() < header_end + content_len {
+                        let Ok(n) = stream.read(&mut tmp).await else { return };
+                        if n == 0 { break; }
+                        buf.extend_from_slice(&tmp[..n]);
+                    }
+                    let body = &buf[header_end..header_end + content_len];
+                    let req_line = headers.lines().next().unwrap_or("");
+                    let mut parts = req_line.split_whitespace();
+                    let method = parts.next().unwrap_or("");
+                    let path = parts.next().unwrap_or("");
+
+                    let (status, resp_body) = if method == "POST" && path.ends_with("/messages") {
+                        let mut s = state.lock().unwrap();
+                        s.text_attempts += 1;
+                        if s.text_attempts == 1 {
+                            (503, r#"{"error":"temporary outage"}"#.to_string())
+                        } else {
+                            let val: serde_json::Value = serde_json::from_slice(body).unwrap();
+                            s.seq += 1;
+                            let seq = s.seq;
+                            s.published.push(format!("text:{}", val["text"].as_str().unwrap()));
+                            (200, serde_json::json!({ "seq": seq, "created_at": 1000 + seq, "recalled": false }).to_string())
+                        }
+                    } else if method == "POST" && path.ends_with("/uploads") {
+                        let att: Attachment = serde_json::from_slice(body).unwrap();
+                        let mut s = state.lock().unwrap();
+                        if s.fail_name.as_deref() == Some(att.name.as_str()) {
+                            (400, r#"{"error":"rejected attachment"}"#.to_string())
+                        } else {
+                            let entry = s.uploads.entry(att.id.to_string()).or_insert((att.name.clone(), att.size, 0));
+                            (200, serde_json::json!({ "received": entry.2, "complete": false }).to_string())
+                        }
+                    } else if method == "PUT" && path.contains("/chunks/") {
+                        let segs: Vec<&str> = path.split('/').collect();
+                        let id = segs[3].to_string();
+                        let offset: u64 = segs[5].parse().unwrap();
+                        let slow = {
+                            let s = state.lock().unwrap();
+                            s.uploads.get(&id).is_some_and(|(name, _, _)| name == "large.bin") && offset == 0
+                        };
+                        if slow {
+                            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                        }
+                        let mut s = state.lock().unwrap();
+                        let entry = s.uploads.get_mut(&id).unwrap();
+                        entry.2 = offset + body.len() as u64;
+                        (200, serde_json::json!({ "received": entry.2, "complete": false }).to_string())
+                    } else if method == "POST" && path.ends_with("/complete") {
+                        let segs: Vec<&str> = path.split('/').collect();
+                        let id = segs[3].to_string();
+                        let mut s = state.lock().unwrap();
+                        let name = s.uploads.get(&id).unwrap().0.clone();
+                        s.seq += 1;
+                        let seq = s.seq;
+                        s.published.push(format!("file:{name}"));
+                        (200, serde_json::json!({ "seq": seq, "created_at": 1000 + seq, "recalled": false }).to_string())
+                    } else {
+                        (404, "{}".to_string())
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp_body}",
+                        resp_body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+
+        let root = tempfile::tempdir()?;
+        let files = tempfile::tempdir()?;
+        let large = files.path().join("large.bin");
+        let bad = files.path().join("bad.txt");
+        let small = files.path().join("small.txt");
+        std::fs::write(&large, vec![b'A'; 600 * 1024])?; // 2 chunks, slower
+        std::fs::write(&bad, b"will-fail")?;
+        std::fs::write(&small, b"tiny")?; // 1 chunk, fast
+
+        let session = DeviceSession {
+            user: User { id: Uuid::nil(), handle: "order_tester".into() },
+            device_id: Uuid::nil(),
+            cursor: Uuid::nil(),
+        };
+        let client = Client::open(root.path(), Api::new(&format!("http://{addr}")).unwrap(), session, false).await?;
+        let conversation = Uuid::new_v4();
+        let directory = crate::Directory {
+            contacts: Vec::new(),
+            conversations: vec![crate::Conversation {
+                id: conversation,
+                title: None,
+                members: vec![client.user.clone()],
+                activity_at: 1,
+                preview: None,
+                preview_seq: None,
+                latest_seq: 0,
+                unread: 0,
+                read_through: 0,
+                joined_after: None,
+            }],
+            pending_contacts: Vec::new(),
+            remarks: HashMap::new(),
+            names: HashMap::new(),
+            avatars: HashMap::new(),
+            read_receipts: false,
+        };
+        sqlx::query("INSERT INTO directory (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload")
+            .bind(serde_json::to_string(&directory)?)
+            .execute(&client.db)
+            .await?;
+
+        // Queue text, then large.bin, then bad.txt (400 rejected), then small.txt
+        client
+            .queue_message(
+                conversation,
+                crate::SendMessage {
+                    text: "hello first".into(),
+                    nonce: Uuid::new_v4(),
+                    reply_to: None,
+                },
+            )
+            .await?;
+        let large_snap = staging::capture_source_snapshot(&large)?;
+        let bad_snap = staging::capture_source_snapshot(&bad)?;
+        let small_snap = staging::capture_source_snapshot(&small)?;
+        client.queue_upload_verified(conversation, Uuid::new_v4(), large, large_snap).await?;
+        client.queue_upload_verified(conversation, Uuid::new_v4(), bad, bad_snap).await?;
+        client.queue_upload_verified(conversation, Uuid::new_v4(), small, small_snap).await?;
+
+        // First flush hits 503 on text; force next_attempt=0 to simulate reconnect recovery.
+        let _ = client.flush_pending_messages().await?;
+        sqlx::query("UPDATE outbox SET next_attempt = 0").execute(&client.db).await?;
+        let _ = client.flush_pending_messages().await?;
+        client.resume_queued().await?;
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let published_len = state.lock().unwrap().published.len();
+            if published_len >= 3 {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "timed out waiting for ordered publications");
+            let _ = client.resume_queued().await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        let published = state.lock().unwrap().published.clone();
+        assert_eq!(published, vec!["text:hello first", "file:large.bin", "file:small.txt"]);
+        let transfers = client.transfers().await?;
+        let bad_job = transfers.iter().find(|t| t.attachment.name == "bad.txt").unwrap();
+        assert_eq!(bad_job.status, TransferStatus::Failed);
+
+        client.close().await;
+        server.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn upload_retry_persists_queued_behind_running_upload_and_pending_text() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let session = DeviceSession {
+            user: User { id: Uuid::nil(), handle: "retry_tester".into() },
+            device_id: Uuid::nil(),
+            cursor: Uuid::nil(),
+        };
+        let client = Client::open(root.path(), Api::new("http://127.0.0.1:1").unwrap(), session, false).await?;
+        let conversation = Uuid::new_v4();
+        let make_att = |name: &str| Attachment {
+            id: Uuid::new_v4(),
+            kind: AttachmentKind::File,
+            name: name.into(),
+            size: 4,
+            sha256: "0".repeat(64),
+        };
+
+        // Case 1: Retry paused upload A while upload B is actively running in the same conversation.
+        let att_a = make_att("a.txt");
+        let att_b = make_att("b.txt");
+        let mut job_a = Job::new(att_a.clone(), conversation, Direction::Upload);
+        job_a.transfer.status = TransferStatus::Paused;
+        job_a.transfer.error = Some("old pause".into());
+        job_a.retry_at = unix_millis() + 60_000;
+        client.store_job(&job_a).await?;
+        {
+            let mut workers = client.workers.lock().await;
+            workers.insert(
+                (att_b.id, Direction::Upload),
+                Active {
+                    conversation,
+                    stop: Arc::new(AtomicBool::new(false)),
+                    task: tokio::spawn(async {}),
+                },
+            );
+        }
+        let resumed_a = client.resume(att_a.id, Direction::Upload).await?;
+        assert_eq!(resumed_a.status, TransferStatus::Queued);
+        assert_eq!(resumed_a.error, None);
+        let stored_a = client.job((att_a.id, Direction::Upload)).await?.unwrap();
+        assert_eq!(stored_a.transfer.status, TransferStatus::Queued);
+        assert_eq!(stored_a.retry_at, 0);
+        client.workers.lock().await.clear();
+
+        // Case 2: Retry failed upload C while pending text exists in outbox for the same conversation.
+        client
+            .queue_message(
+                conversation,
+                crate::SendMessage {
+                    text: "pending text".into(),
+                    nonce: Uuid::new_v4(),
+                    reply_to: None,
+                },
+            )
+            .await?;
+        let att_c = make_att("c.txt");
+        let mut job_c = Job::new(att_c.clone(), conversation, Direction::Upload);
+        job_c.transfer.status = TransferStatus::Failed;
+        job_c.transfer.error = Some("network failed".into());
+        client.store_job(&job_c).await?;
+        let resumed_c = client.resume(att_c.id, Direction::Upload).await?;
+        assert_eq!(resumed_c.status, TransferStatus::Queued);
+        assert_eq!(resumed_c.error, None);
+        let stored_c = client.job((att_c.id, Direction::Upload)).await?.unwrap();
+        assert_eq!(stored_c.transfer.status, TransferStatus::Queued);
+
+        client.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn upload_discard_handles_in_flight_published_race_and_unknown_ack() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let src_dir = tempfile::tempdir()?;
+        let original = src_dir.path().join("keep_me.txt");
+        std::fs::write(&original, b"user-original-file")?;
+
+        let session = DeviceSession {
+            user: User { id: Uuid::nil(), handle: "discard_tester".into() },
+            device_id: Uuid::nil(),
+            cursor: Uuid::nil(),
+        };
+        let client = Client::open(root.path(), Api::new("http://127.0.0.1:1").unwrap(), session, false).await?;
+        let conversation = Uuid::new_v4();
+
+        // Case 1: Discard upload with partial received < size while offline succeeds and keeps original file.
+        let att_partial = Attachment {
+            id: Uuid::new_v4(),
+            kind: AttachmentKind::File,
+            name: "keep_me.txt".into(),
+            size: 100,
+            sha256: "0".repeat(64),
+        };
+        let mut job_partial = Job::new(att_partial.clone(), conversation, Direction::Upload);
+        job_partial.transfer.status = TransferStatus::Queued;
+        job_partial.transfer.received = 0;
+        std::fs::write(client.spool(job_partial.key()), b"staged-copy")?;
+        client.store_job(&job_partial).await?;
+        client.discard(att_partial.id, Direction::Upload).await?;
+        assert!(client.job(job_partial.key()).await?.is_none());
+        assert!(!client.spool(job_partial.key()).exists());
+        assert!(original.exists(), "discard must never delete the user's original file");
+
+        // Case 2: Discard upload when all chunks were uploaded (received == size) and server unreachable
+        // fails closed so we never falsely claim cancellation on an unknown /complete ACK.
+        let att_unknown = Attachment {
+            id: Uuid::new_v4(),
+            kind: AttachmentKind::File,
+            name: "unknown_ack.txt".into(),
+            size: 10,
+            sha256: "0".repeat(64),
+        };
+        let mut job_unknown = Job::new(att_unknown.clone(), conversation, Direction::Upload);
+        job_unknown.transfer.status = TransferStatus::Failed;
+        job_unknown.transfer.received = 10;
+        client.store_job(&job_unknown).await?;
+        let err = client.discard(att_unknown.id, Direction::Upload).await.unwrap_err();
+        assert!(err.to_string().contains("Could not verify whether this attachment was already sent"));
+        assert!(client.job(job_unknown.key()).await?.is_some());
+
+        // Case 3: Discard upload already recorded in inbox (published race) is rejected.
+        let att_sent = Attachment {
+            id: Uuid::new_v4(),
+            kind: AttachmentKind::File,
+            name: "sent.txt".into(),
+            size: 5,
+            sha256: "0".repeat(64),
+        };
+        let mut job_sent = Job::new(att_sent.clone(), conversation, Direction::Upload);
+        job_sent.transfer.status = TransferStatus::Queued;
+        client.store_job(&job_sent).await?;
+        let mut tx = client.db.begin().await?;
+        persist_message(
+            &mut tx,
+            Message {
+                seq: 99,
+                conversation_id: conversation,
+                sender: client.user.clone(),
+                created_at: 1000,
+                text: None,
+                attachment: Some(att_sent.clone()),
+                ai_provider: None,
+                recalled: false,
+                reply_to: None,
+                nonce: None,
+                expires_at: None,
+                expired: None,
+                pending: None,
+                local_file: false,
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        let err = client.discard(att_sent.id, Direction::Upload).await.unwrap_err();
+        assert!(err.to_string().contains("already sent"));
+
+        client.close().await;
         Ok(())
     }
 }

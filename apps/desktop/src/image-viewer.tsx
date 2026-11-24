@@ -8,7 +8,7 @@ import type { Attachment, Transfer } from "./api";
 import { WindowControls, WindowDrag } from "./window-chrome";
 import "./image-viewer.css";
 
-type Selection = { file: Attachment; previous: boolean; next: boolean; download?: Transfer };
+type Selection = { file: Attachment; previous: boolean; next: boolean; download?: Transfer; draft?: boolean };
 type Point = { x: number; y: number };
 type View = Point & { scale?: number; turn: number };
 type Size = { width: number; height: number };
@@ -80,7 +80,7 @@ function ViewerToolbar({ fullscreen, children }: { fullscreen: boolean; children
   </header>;
 }
 
-function ImageCanvas({ file, previous, next, download, refresh, fullscreen, changeFullscreen }: Selection & {
+function ImageCanvas({ file, previous, next, download, draft, refresh, fullscreen, changeFullscreen }: Selection & {
   refresh: () => Promise<void>; fullscreen: boolean; changeFullscreen: (value: boolean) => Promise<void>;
 }) {
   const stage = useRef<HTMLDivElement>(null);
@@ -246,7 +246,7 @@ function ImageCanvas({ file, previous, next, download, refresh, fullscreen, chan
       </div>
       <div>
         {tool("Copy image", <Copy size={18} />, () => void copy(), !loaded || busy)}
-        {tool("Save image", <Download size={18} />, () => void save(), busy || saving)}
+        {!draft && tool("Save image", <Download size={18} />, () => void save(), busy || saving)}
         {tool(fullscreen ? "Exit full screen" : "Full screen", fullscreen ? <Minimize size={18} /> : <Maximize size={18} />, () => void full())}
       </div>
     </ViewerToolbar>
@@ -257,13 +257,13 @@ function ImageCanvas({ file, previous, next, download, refresh, fullscreen, chan
         if (loaded && event.target instanceof Element && !event.target.closest("button")) setScale(view.scale === 1 ? undefined : 1);
       }}>
       {!loaded && !failed && <img className="image-stage-thumbnail" aria-hidden alt="" draggable={false}
-        src={api.mediaUrl(file.id, "cached-thumbnail")} onError={event => { event.currentTarget.hidden = true; }} />}
+        src={draft ? api.draftMediaUrl(file.id, "thumbnail") : api.mediaUrl(file.id, "cached-thumbnail")} onError={event => { event.currentTarget.hidden = true; }} />}
       {!failed && <img key={attempt} className="image-stage-original" draggable={false} alt={file.name}
         style={{
           visibility: loaded ? "visible" : "hidden",
           transform: `translate(-50%, -50%) translate(${transform.x}px, ${transform.y}px) rotate(${view.turn * 90}deg) scale(${scale})`,
         }}
-        src={api.mediaUrl(file.id) + (attempt ? "?original&retry=" + attempt : "")}
+        src={(draft ? api.draftMediaUrl(file.id) : api.mediaUrl(file.id)) + (attempt ? "?original&retry=" + attempt : "")}
         onLoad={event => {
           const { naturalWidth: width, naturalHeight: height } = event.currentTarget;
           setImage({ width, height });

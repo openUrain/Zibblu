@@ -1,5 +1,5 @@
 import { FloatingField } from "./floating-field";
-import { Archive, Check, CircleAlert, Clock, Download, ExternalLink, File, FileSpreadsheet, FileText, FileType2, FolderOpen, Image, Pause, Play, Presentation, RotateCcw, Search, Share, Trash2, Video } from "lucide-react";
+import { Archive, Check, CircleAlert, Clock, Download, ExternalLink, File, FileSpreadsheet, FileText, FileType2, FolderOpen, Image, LoaderCircle, Pause, Play, Presentation, RotateCcw, Search, Share, Trash2, Upload, Video } from "lucide-react";
 import { useCallback, useContext, useId, useState } from "react";
 import type { ChangeEvent } from "react";
 import { api, errorMessage, fileExpired } from "./api";
@@ -13,7 +13,22 @@ import { WorkspaceSearchField } from "./workspace-search";
 import { Selector } from "./selector";
 import { decimalSize, splitFileName } from "./file-labels";
 
-export function FileIcon({ file, library = false }: { file: Attachment; library?: boolean }) {
+export function UploadOverlay({ upload }: { upload?: Transfer }) {
+  if (!upload || upload.direction !== "upload") return null;
+  if (upload.status === "running") {
+    return <span className="upload-overlay" aria-hidden="true">
+      <LoaderCircle className="preview-spinner" size={18} />
+    </span>;
+  }
+  if (upload.status === "queued") {
+    return <span className="upload-overlay upload-overlay-queued" aria-hidden="true">
+      <Clock size={15} />
+    </span>;
+  }
+  return null;
+}
+
+export function FileIcon({ file, library = false, upload }: { file: Attachment; library?: boolean; upload?: Transfer }) {
   const media = mediaKind(file);
   const type = file.name.split(".").at(-1)?.toLowerCase() ?? "";
   const archive = /^(zip|7z|rar|tar|gz|bz2|xz)$/.test(type);
@@ -25,7 +40,10 @@ export function FileIcon({ file, library = false }: { file: Attachment; library?
   const Icon = format === "sheet" ? FileSpreadsheet : format === "slides" ? Presentation
     : format === "pdf" ? FileType2 : library && !format && document ? File : standard;
   const tone = file.kind === "folder" || archive ? "archive" : media ? "media" : !library && document ? "document" : undefined;
-  return <span className="file-icon" data-tone={format ?? tone} aria-hidden="true"><Icon size={20} /></span>;
+  return <span className="file-icon" data-tone={format ?? tone} aria-hidden="true">
+    <Icon size={20} />
+    <UploadOverlay upload={upload} />
+  </span>;
 }
 
 function FileName({ name }: { name: string }) {
@@ -35,18 +53,13 @@ function FileName({ name }: { name: string }) {
   </span>;
 }
 
-export function ChatUploadProgress({ upload }: { upload: Transfer }) {
-  return <progress className="chat-upload-progress" max={Math.max(1, upload.attachment.size)}
-    value={upload.received} aria-label={t("Upload progress", "上传进度") + " " + upload.attachment.name} />;
-}
-
 export function SharedFile({ message, transfer, onChanged, previewStatus, upload, expired = fileExpired(message) }: {
   message: Message; transfer?: Transfer; onChanged: () => void; previewStatus?: string; expired?: boolean; upload?: Transfer;
 }) {
   const file = message.attachment!;
   return <article className="shared-file chat-file-card">
     <div className="file-main">
-      <FileIcon file={file} />
+      <FileIcon file={file} upload={upload} />
       <div className="file-info">
         <FileName name={file.name} />
         <small>{file.kind === "folder" ? "Folder" : (splitFileName(file.name)[1].slice(1).toUpperCase() || "File")} · {bytes(file.size)}</small>
@@ -56,12 +69,9 @@ export function SharedFile({ message, transfer, onChanged, previewStatus, upload
       ? <small className="file-preview-status" role="status">This file expired. Ask the sender to share it again.</small>
       : <>
         {previewStatus && <small className="file-preview-status" role="status">{previewStatus}</small>}
-        {upload ? <>
-          <div className="attachment-download" aria-hidden="true" style={{ visibility: "hidden" }}>
-            <div className="file-download-actions"><button className="button subtle small" disabled><Download size={16} /> {actions.save}</button></div>
-          </div>
-          <ChatUploadProgress upload={upload} />
-        </> : <AttachmentDownload file={file} transfer={transfer} onChanged={onChanged} />}
+        {upload ? <div className="attachment-download" aria-hidden="true" style={{ visibility: "hidden" }}>
+          <div className="file-download-actions"><button className="button subtle small" disabled><Download size={16} /> {actions.save}</button></div>
+        </div> : <AttachmentDownload file={file} transfer={transfer} onChanged={onChanged} />}
       </>}
   </article>;
 }
@@ -143,11 +153,52 @@ function TransferProgress({ transfer, onChanged, chooseNew, choosing, compact = 
   const pause = running || queued;
   const recovery = failed ? t("Retry", "重试") : t("Resume", "继续");
   const error = pickerError || failure || transfer.error;
+  if (transfer.direction === "upload") {
+    const uploadStatus = complete ? t("Shared", "已发送")
+      : expired ? t("Expired", "已过期")
+        : failed ? t("Upload failed", "上传失败")
+          : running ? t("Uploading", "上传中")
+            : queued ? t("Queued", "排队中")
+              : t("Waiting to upload", "待上传");
+    const canRetryUpload = failed || transfer.status === "paused";
+    if (compact) {
+      return <div className="library-transfer">
+        <div className="library-progress" title={uploadStatus}>
+          <span role="status" className={error ? "danger" : ""}>{uploadStatus}</span>
+        </div>
+        {!complete && <button className="icon-button danger library-discard" type="button" disabled={busy}
+          title={t("Delete", "删除")} aria-label={t("Delete", "删除") + " " + transfer.attachment.name}
+          onClick={() => void action("discard")}><Trash2 size={16} /></button>}
+        <LibraryError error={error} id={errorId} />
+        {canRetryUpload && <button className={(windows ? "button subtle small" : "icon-button") + " library-transfer-action"} type="button" disabled={busy}
+          aria-label={t("Upload", "上传") + " " + transfer.attachment.name} aria-describedby={error ? errorId : undefined} title={t("Upload", "上传")}
+          onClick={() => void action("resume")}>
+          <Upload size={16} />
+          {windows && t("Upload", "上传")}
+        </button>}
+      </div>;
+    }
+    return <div className="transfer-progress">
+      <div className="transfer-status"><span role="status" className={complete ? "verified" : failed || expired ? "danger" : ""}>
+        {complete && <Check size={14} />}{uploadStatus}
+      </span></div>
+      {!complete && <>
+        {error && <p className="inline-error" role="alert">{error}</p>}
+        <div className="transfer-buttons">
+          {canRetryUpload && <button className="button subtle small" onClick={() => void action("resume")} disabled={busy}>
+            <Upload size={14} /> {t("Upload", "上传")}
+          </button>}
+          <button className="icon-button danger" aria-label={t("Delete", "删除") + " " + transfer.attachment.name}
+            title={t("Delete", "删除")} onClick={() => void action("discard")} disabled={busy}><Trash2 size={15} /></button>
+        </div>
+      </>}
+    </div>;
+  }
   if (compact) {
     const compactStatus = expired ? t("Expired", "已过期") : failed ? t("Failed", "失败")
       : queued ? t("Queued", "排队中") : running
         ? percentage === 100 ? t("Verifying", "校验中")
-          : transfer.direction === "upload" ? t("Uploading", "上传中") : t("Downloading", "下载中")
+          : t("Downloading", "下载中")
         : t("Paused", "已暂停");
     const actionLabel = pause ? t("Pause", "暂停") : recovery;
     return <div className="library-transfer">
@@ -203,7 +254,7 @@ export function TransferList({ transfers, onChanged, inChat = false }: {
   const { remarks } = useContext(People);
   return <div className="transfer-list">{transfers.map(transfer =>
     <div className="shared-file" key={transfer.direction + transfer.attachment.id}>
-      <div className="file-main"><FileIcon file={transfer.attachment} />
+      <div className="file-main"><FileIcon file={transfer.attachment} upload={transfer.direction === "upload" ? transfer : undefined} />
         <div className="file-info"><FileName name={transfer.attachment.name} />
           <small>{transfer.direction === "upload" && transfer.status !== "complete" ? "Not yet shared"
             : transfer.direction === "upload" ? "Upload" : "Download"} · {bytes(transfer.attachment.size)}</small>
@@ -304,7 +355,7 @@ function LibraryFile({ message, transfer, onChanged }: { message: Message; trans
   };
   return <article className="library-file" data-attachment={file.id}>
     <div className="file-main">
-      <FileIcon file={file} library />
+      <FileIcon file={file} library upload={transfer?.direction === "upload" ? transfer : undefined} />
       <div className="file-info">
         <FileName name={file.name} />
         <div className="library-meta">
