@@ -32,6 +32,16 @@ impl Client {
              CREATE TABLE IF NOT EXISTS local_deleted_messages (
                 seq INTEGER PRIMARY KEY, conversation_id TEXT NOT NULL, attachment_id TEXT UNIQUE
              );
+             CREATE TABLE IF NOT EXISTS local_deleted_chats (conversation_id TEXT PRIMARY KEY);
+             CREATE TABLE IF NOT EXISTS local_suppressed_sends (
+                kind TEXT NOT NULL, id TEXT NOT NULL, conversation_id TEXT NOT NULL,
+                PRIMARY KEY (kind, id)
+             );
+             CREATE TABLE IF NOT EXISTS cancelled_downloads (id TEXT PRIMARY KEY);
+             CREATE TABLE IF NOT EXISTS send_failure_notices (
+                kind TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY (kind, id)
+             );
+             CREATE TABLE IF NOT EXISTS media_reclaims (rel_path TEXT PRIMARY KEY);
              CREATE TABLE IF NOT EXISTS directory (
                 id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL
              );
@@ -164,7 +174,8 @@ impl Client {
                        )
                        THEN json_set(payload, '$.local_file', json('true')) ELSE payload END AS payload
                 FROM inbox
-                UNION ALL SELECT -id, conversation_id, NULL, draft FROM outbox WHERE draft IS NOT NULL;
+                UNION ALL SELECT -id, conversation_id, NULL, draft FROM outbox WHERE draft IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM local_suppressed_sends s WHERE s.kind = 'text' AND s.id = outbox.nonce);
              UPDATE transfers SET payload = json_set(payload, '$.status', 'queued')
                 WHERE json_extract(payload, '$.status') = 'running';";
         for statement in statements.split_terminator(';') {
@@ -203,6 +214,17 @@ impl Client {
     pub(super) async fn is_locally_deleted(&self, seq: i64) -> Result<bool> {
         Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM local_deleted_messages WHERE seq = ?)")
             .bind(seq).fetch_one(&self.db).await?)
+    }
+
+    pub(super) async fn is_suppressed_upload(&self, id: uuid::Uuid) -> Result<bool> {
+        Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM local_suppressed_sends WHERE kind = 'upload' AND id = ?)")
+            .bind(id.to_string()).fetch_one(&self.db).await?)
+    }
+
+    pub async fn take_send_failure_notices(&self) -> Result<usize> {
+        let ids: Vec<String> = sqlx::query_scalar("DELETE FROM send_failure_notices RETURNING id")
+            .fetch_all(&self.db).await?;
+        Ok(ids.len())
     }
 
     pub(super) fn history_changed(&self) {
@@ -418,6 +440,7 @@ impl Client {
         Ok(SyncUpdate {
             directory: self.directory().await?,
             recalled,
+            deleted: sqlx::query_scalar("SELECT seq FROM local_deleted_messages ORDER BY seq").fetch_all(&self.db).await?,
             server_now: self.server_now(),
             last_seq,
             revision,
@@ -433,6 +456,9 @@ impl Client {
             .map(|value| serde_json::from_str(&value))
             .transpose()?
             .unwrap_or_default();
+        let deleted_chats: Vec<String> = sqlx::query_scalar("SELECT conversation_id FROM local_deleted_chats")
+            .fetch_all(&self.db).await?;
+        directory.conversations.retain(|chat| !deleted_chats.contains(&chat.id.to_string()));
         for chat in &mut directory.conversations {
             let id = chat.id.to_string();
             let latest: Option<(i64, String, i64)> = sqlx::query_as(
@@ -493,6 +519,20 @@ pub(super) async fn persist_message(
     if deleted {
         return Ok(false);
     }
+    let suppressed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM local_suppressed_sends WHERE conversation_id = ?1
+            AND ((kind = 'text' AND id = ?2) OR (kind = 'upload' AND id IN (?2, ?3))))",
+    ).bind(message.conversation_id.to_string())
+        .bind(message.nonce.map(|id| id.to_string()))
+        .bind(message.attachment.as_ref().map(|file| file.id.to_string()))
+        .fetch_one(&mut *db).await?;
+    if suppressed {
+        sqlx::query("INSERT OR IGNORE INTO local_deleted_messages (seq, conversation_id, attachment_id) VALUES (?,?,?)")
+            .bind(message.seq).bind(message.conversation_id.to_string())
+            .bind(message.attachment.as_ref().map(|file| file.id.to_string()))
+            .execute(&mut *db).await?;
+        return Ok(false);
+    }
     let recalled: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM recall_tombstones WHERE message_seq = ?)")
             .bind(message.seq)
@@ -528,6 +568,10 @@ pub(super) async fn persist_message(
             attachment,
         )
         .await?;
+    }
+    if changed.rows_affected() != 0 {
+        sqlx::query("DELETE FROM local_deleted_chats WHERE conversation_id = ?")
+            .bind(message.conversation_id.to_string()).execute(&mut *db).await?;
     }
     Ok(changed.rows_affected() != 0)
 }
