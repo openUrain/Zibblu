@@ -823,6 +823,18 @@ pub(crate) async fn hide_message(
 }
 
 #[tauri::command]
+pub(crate) async fn hide_pending_upload(
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+    id: Uuid,
+) -> Result<()> {
+    let client = state.client().await?;
+    client.hide_pending_upload(conversation, id).await?;
+    client.resume_queued().await?;
+    Ok(())
+}
+
+#[tauri::command]
 pub(crate) async fn clear_history(
     app: AppHandle,
     state: State<'_, Desktop>,
