@@ -240,6 +240,7 @@ impl Client {
         client
             .migrate_legacy_media_if_needed(previous_device_id)
             .await?;
+        client.migrate_hidden_history().await?;
         client.restore_upload_times().await?;
         Ok(client)
     }
