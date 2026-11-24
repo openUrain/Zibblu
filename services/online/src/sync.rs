@@ -158,7 +158,7 @@ async fn events(
                'seq', m.seq, 'conversation_id', m.conversation_id,
                'sender', jsonb_build_object('id', a.id, 'handle', a.handle),
                'created_at', m.created_at, 'recalled', m.recall_seq IS NOT NULL,
-               'nonce', CASE WHEN m.sender_id = $2 THEN m.nonce END,
+               'nonce', CASE WHEN m.sender_id = $2 THEN coalesce(m.nonce, m.attachment_id) END,
                'expires_at', (extract(epoch FROM m.expires_at) * 1000)::BIGINT,
                'ai_provider', m.ai_provider,
                'reply_to', CASE WHEN live.payload THEN quote.seq END,
