@@ -619,9 +619,11 @@ impl Client {
             "SELECT EXISTS(SELECT 1 FROM recall_tombstones WHERE message_seq = ?1)
                  OR EXISTS(SELECT 1 FROM hidden_messages WHERE seq = ?1)
                  OR EXISTS(SELECT 1 FROM local_deleted_messages WHERE seq = ?1)
+                 OR EXISTS(SELECT 1 FROM local_suppressed_sends WHERE kind = 'upload' AND id = ?2)
                  OR EXISTS(SELECT 1 FROM inbox WHERE seq = ?1 AND json_extract(payload, '$.recalled') = 1)",
         )
         .bind(desc.message_seq)
+        .bind(desc.attachment_id.map(|id| id.to_string()))
         .fetch_one(&mut *tx)
         .await?;
         ensure!(!blocked, "This attachment is no longer available");
@@ -914,24 +916,39 @@ impl Client {
             .await;
     }
 
+    pub(super) async fn recover_media_reclaims(&self) -> Result<()> {
+        let paths: Vec<String> = sqlx::query_scalar("SELECT rel_path FROM media_reclaims")
+            .fetch_all(&self.db).await?;
+        self.remove_rel_paths(paths).await;
+        Ok(())
+    }
+
     pub(super) async fn remove_rel_paths(&self, rel_paths: Vec<String>) {
-        let device = self.device_id.to_string();
         for rel in rel_paths {
             let _lock = self.media_locks[lock_slot(&rel)].lock().await;
-            let still_indexed: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM media_files WHERE device_id = ?1 AND rel_path = ?2)
-                     OR EXISTS(SELECT 1 FROM public_cache_files WHERE device_id = ?1 AND rel_path = ?2)",
-            )
-            .bind(&device)
-            .bind(&rel)
-            .fetch_one(&self.db)
-            .await
-            .unwrap_or(true);
-            if still_indexed {
-                continue;
-            }
-            if let Ok(path) = self.resolve_device_media_path(&rel) {
-                let _ = tokio::fs::remove_file(path).await;
+            let indexed: Result<bool, _> = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM media_files WHERE rel_path = ?1)
+                     OR EXISTS(SELECT 1 FROM public_cache_files WHERE rel_path = ?1)",
+            ).bind(&rel).fetch_one(&self.db).await;
+            let completed = match indexed {
+                Ok(true) => true,
+                Ok(false) => {
+                    let path = rel.strip_prefix("media/").and_then(|rest| rest.split_once('/'))
+                        .and_then(|(device, _)| Uuid::parse_str(device).ok()
+                            .and_then(|_| safe_rel_path(self.profile_dir(), &rel, &format!("media/{device}/")).ok()));
+                    match path {
+                        Some(path) => match tokio::fs::remove_file(path).await {
+                            Ok(()) => true,
+                            Err(error) => error.kind() == io::ErrorKind::NotFound,
+                        },
+                        None => false,
+                    }
+                }
+                Err(_) => false,
+            };
+            if completed {
+                let _ = sqlx::query("DELETE FROM media_reclaims WHERE rel_path = ?")
+                    .bind(&rel).execute(&self.db).await;
             }
         }
     }
@@ -1104,6 +1121,7 @@ impl Client {
         let mut report = ConsistencyReport::default();
         let device = self.device_id.to_string();
 
+        self.recover_media_reclaims().await?;
         // 1. Reclaim any DB media_files rows that have 0 references (e.g. crash after unref).
         {
             let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
@@ -1320,6 +1338,13 @@ impl Client {
             .await
             .unwrap_or(true);
             if indexed_now {
+                continue;
+            }
+            let reclaim: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM media_reclaims WHERE rel_path = ?)")
+                .bind(&rel_str).fetch_one(&self.db).await?;
+            if reclaim {
+                drop(_lock);
+                self.remove_rel_paths(vec![rel_str]).await;
                 continue;
             }
             let qroot = quarantine_root.clone();
@@ -2174,6 +2199,8 @@ pub(super) async fn release_media_refs_in_tx(
             .fetch_optional(&mut *db)
             .await?
         {
+            sqlx::query("INSERT OR IGNORE INTO media_reclaims (rel_path) VALUES (?)")
+                .bind(&rel_path).execute(&mut *db).await?;
             removed_paths.push(rel_path);
         }
     }
