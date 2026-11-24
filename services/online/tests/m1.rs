@@ -1200,6 +1200,276 @@ async fn session_restore_validates_account_before_opening_the_local_profile() ->
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn conversation_media_cache_end_to_end() -> Result<()> {
+    let url = std::env::var("ZIBBLU_TEST_DATABASE_URL")
+        .context("Set ZIBBLU_TEST_DATABASE_URL to a disposable PostgreSQL database")?;
+    let db = PgPoolOptions::new()
+        .max_connections(6)
+        .connect(&url)
+        .await?;
+    let app = zibblu_online::router(db.clone()).await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let server = format!("http://{}", listener.local_addr()?);
+    let task = tokio::spawn(async move { axum::serve(listener, app).await });
+
+    let shared_data = tempfile::tempdir()?;
+    let suffix = &Uuid::new_v4().simple().to_string()[..10];
+    let password = format!("media-cache-{suffix}");
+    let alice = sign_in(
+        shared_data.path(),
+        &server,
+        &format!("mc_alice_{suffix}"),
+        &password,
+        true,
+    )
+    .await?;
+    let bob = sign_in(
+        shared_data.path(),
+        &server,
+        &format!("mc_bob_{suffix}"),
+        &password,
+        true,
+    )
+    .await?;
+    let bob_id = bob.user.id;
+    let bob_token = bob.session_token().to_owned();
+
+    alice.add_contact(bob.user.id).await?;
+    bob.respond_contact(alice.user.id, true).await?;
+    alice.sync().await?;
+    bob.sync().await?;
+
+    let carol = sign_in(
+        shared_data.path(),
+        &server,
+        &format!("mc_carol_{suffix}"),
+        &password,
+        true,
+    )
+    .await?;
+    alice.add_contact(carol.user.id).await?;
+    carol.respond_contact(alice.user.id, true).await?;
+    alice.sync().await?;
+    carol.sync().await?;
+    let conv_a = alice
+        .create_conversation(ConversationRequest::Direct {
+            contact_id: bob.user.id,
+        })
+        .await?;
+    let conv_b = alice
+        .create_conversation(ConversationRequest::Group {
+            title: "Media Cache Group".into(),
+            contact_ids: vec![bob.user.id, carol.user.id],
+        })
+        .await?;
+    alice.sync().await?;
+    bob.sync().await?;
+
+    // Valid 1x1 PNG bytes for chat media and two distinct valid PNGs for avatar v1/v2.
+    let png_chat: Vec<u8> = vec![
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
+        0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 8, 215, 99, 248, 207, 192, 240, 31,
+        0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+    let encode = |side: u32| -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        png::Encoder::new(&mut out, side, side)
+            .write_header()?
+            .write_image_data(&vec![0; (side * side) as usize])?;
+        Ok(out)
+    };
+    let png_avatar_v1 = encode(1)?;
+    let png_avatar_v2 = encode(2)?;
+
+    // Alice sends identical image once to conv_a and twice to conv_b.
+    let up_a = alice.queue_pasted_image(conv_a, png_chat.clone()).await?;
+    wait_transfer(&alice, up_a.attachment.id, Direction::Upload, |job| {
+        job.status == TransferStatus::Complete
+    })
+    .await?;
+    let up_b1 = alice.queue_pasted_image(conv_b, png_chat.clone()).await?;
+    wait_transfer(&alice, up_b1.attachment.id, Direction::Upload, |job| {
+        job.status == TransferStatus::Complete
+    })
+    .await?;
+    let up_b2 = alice.queue_pasted_image(conv_b, png_chat.clone()).await?;
+    wait_transfer(&alice, up_b2.attachment.id, Direction::Upload, |job| {
+        job.status == TransferStatus::Complete
+    })
+    .await?;
+
+    // Set Alice avatar v1 and sync Bob.
+    let avatar_v1 = alice
+        .set_profile_image(ProfileImage::Avatar, png_avatar_v1.clone())
+        .await?;
+    bob.sync().await?;
+
+    // Verify account isolation under shared_data: two distinct profile dirs exist.
+    let profile_dirs: Vec<_> = std::fs::read_dir(shared_data.path().join("profiles-v2"))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .collect();
+    assert_eq!(profile_dirs.len(), 3);
+
+    let msgs_a = bob.messages(conv_a, None).await?.items;
+    let msgs_b = bob.messages(conv_b, None).await?.items;
+    let msg_a = msgs_a.iter().find(|m| m.attachment.is_some()).context("missing msg_a")?;
+    let att_a = msg_a.attachment.as_ref().unwrap();
+    let msgs_b_att: Vec<_> = msgs_b.iter().filter(|m| m.attachment.is_some()).collect();
+    assert_eq!(msgs_b_att.len(), 2);
+
+    // Bob fetches & commits image into conv_a and both messages of conv_b.
+    for (conv, msg) in [
+        (conv_a, msg_a),
+        (conv_b, msgs_b_att[0]),
+        (conv_b, msgs_b_att[1]),
+    ] {
+        let att = msg.attachment.as_ref().unwrap();
+        let bytes = bob.read_attachment_chunk(att.id, 0, att.size as usize).await?;
+        assert_eq!(bytes, png_chat);
+        bob.remember_image_variant(conv, msg.seq, Some(att.id), &att.sha256, false, "image/png", &bytes)
+            .await?;
+        bob.remember_image_variant(conv, msg.seq, Some(att.id), &att.sha256, true, "image/png", &bytes)
+            .await?;
+    }
+
+    // Verify on-disk directory & SQLite state for Bob.
+    let bob_profile_key = format!("{:x}", Sha256::digest(format!("{server}/\n{bob_id}")));
+    let bob_profile = shared_data.path().join("profiles-v2").join(bob_profile_key);
+    let bob_sqlite = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(SqliteConnectOptions::new().filename(bob_profile.join("chat.sqlite3")))
+        .await?;
+
+    let conv_a_paths: Vec<String> = sqlx::query_scalar(
+        "SELECT rel_path FROM media_files WHERE conversation_id = ? AND variant = 'image_original' AND status = 'available'",
+    )
+    .bind(conv_a.to_string())
+    .fetch_all(&bob_sqlite)
+    .await?;
+    let conv_b_paths: Vec<String> = sqlx::query_scalar(
+        "SELECT rel_path FROM media_files WHERE conversation_id = ? AND variant = 'image_original' AND status = 'available'",
+    )
+    .bind(conv_b.to_string())
+    .fetch_all(&bob_sqlite)
+    .await?;
+    assert_eq!(conv_a_paths.len(), 1);
+    assert_eq!(conv_b_paths.len(), 1);
+    assert_ne!(conv_a_paths[0], conv_b_paths[0]);
+    assert!(conv_a_paths[0].contains(&format!("/conversations/{conv_a}/images/")));
+    assert!(conv_b_paths[0].contains(&format!("/conversations/{conv_b}/images/")));
+
+    // Same-conversation dedup: 2 message refs pointing to 1 media_files row in conv_b.
+    let conv_b_refs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM media_refs WHERE conversation_id = ? AND variant = 'image_original'",
+    )
+    .bind(conv_b.to_string())
+    .fetch_one(&bob_sqlite)
+    .await?;
+    assert_eq!(conv_b_refs, 2);
+
+    // Locate device media root and verify both physical files exist independently.
+    let device_dir = std::fs::read_dir(bob_profile.join("media"))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.is_dir())
+        .context("missing Bob device media dir")?;
+    let phys_a = bob_profile.join(&conv_a_paths[0]);
+    let phys_b = bob_profile.join(&conv_b_paths[0]);
+    assert!(phys_a.is_file());
+    assert!(phys_b.is_file());
+
+    // External Save As copy from conv_a before deleting conv_a.
+    let export_dir = tempfile::tempdir()?;
+    let saved_copy = export_dir.path().join("exported.png");
+    bob.queue_download(att_a.id, saved_copy.clone()).await?;
+    wait_transfer(&bob, att_a.id, Direction::Download, |job| {
+        job.status == TransferStatus::Complete
+    })
+    .await?;
+    assert_eq!(std::fs::read(&saved_copy)?, png_chat);
+
+    // Fetch Alice avatar v1 into public cache, then update Alice to v2.
+    let fetched_v1 = bob
+        .profile_image_verified(alice.user.id, avatar_v1, |b| {
+            ensure!(b.starts_with(b"\x89PNG"));
+            Ok(())
+        })
+        .await?;
+    assert_eq!(fetched_v1, png_avatar_v1);
+    let v1_rel: String = sqlx::query_scalar(
+        "SELECT f.rel_path FROM public_cache_refs r JOIN public_cache_files f ON f.id = r.active_file_id
+         WHERE r.user_id = ? AND r.kind = 'avatar'",
+    )
+    .bind(alice.user.id.to_string())
+    .fetch_one(&bob_sqlite)
+    .await?;
+    let v1_phys = bob_profile.join(&v1_rel);
+    assert!(v1_phys.is_file());
+
+    let avatar_v2 = alice
+        .set_profile_image(ProfileImage::Avatar, png_avatar_v2.clone())
+        .await?;
+    bob.sync().await?;
+    // Before v2 is fetched, fallback still returns v1.
+    let fallback = bob
+        .active_profile_image_for_request(alice.user.id, avatar_v2)
+        .await;
+    assert_eq!(fallback.as_ref().map(|(v, b)| (*v, b.as_slice())), Some((avatar_v1, png_avatar_v1.as_slice())));
+    // Commit v2 atomically and confirm v1 physical file is automatically reclaimed.
+    let fetched_v2 = bob
+        .profile_image_verified(alice.user.id, avatar_v2, |b| {
+            ensure!(b.starts_with(b"\x89PNG"));
+            Ok(())
+        })
+        .await?;
+    assert_eq!(fetched_v2, png_avatar_v2);
+    assert!(!v1_phys.exists());
+
+    // Delete/hide conv_a message: conv_a file reclaimed, conv_b file + external Save As unaffected.
+    bob.hide_message(conv_a, msg_a.seq).await?;
+    assert!(!phys_a.exists());
+    assert!(phys_b.is_file());
+    assert_eq!(std::fs::read(&saved_copy)?, png_chat);
+
+    // Create a stale temp file, run clear_cache, and confirm conv_b media & saved_copy survive.
+    let stale_tmp = device_dir.join("tmp").join("stale-acceptance.part");
+    std::fs::create_dir_all(stale_tmp.parent().unwrap())?;
+    std::fs::write(&stale_tmp, b"partial")?;
+    let cleanup = bob.clear_cache().await?;
+    assert!(cleanup.removed_temp_files >= 1);
+    assert!(!stale_tmp.exists());
+    assert!(phys_b.is_file());
+    assert_eq!(std::fs::read(&saved_copy)?, png_chat);
+
+    // Hide first message in conv_b: physical file MUST remain because 2nd message still references it.
+    bob.hide_message(conv_b, msgs_b_att[0].seq).await?;
+    assert!(phys_b.is_file());
+
+    // Simulate process restart via Client::restore, then shut down server and verify conv_b reads offline!
+    bob_sqlite.close().await;
+    drop(bob);
+    let bob_restarted = Client::restore(shared_data.path(), &server, bob_id, &bob_token).await?;
+    task.abort();
+    let b2 = msgs_b_att[1];
+    let b2_att = b2.attachment.as_ref().unwrap();
+    let offline_orig = bob_restarted
+        .cached_image_variant(conv_b, b2.seq, Some(b2_att.id), &b2_att.sha256, false)
+        .await?;
+    assert_eq!(offline_orig.as_ref().map(|(_, b)| b.as_slice()), Some(png_chat.as_slice()));
+    let offline_thumb = bob_restarted
+        .cached_image_variant(conv_b, b2.seq, Some(b2_att.id), &b2_att.sha256, true)
+        .await?;
+    assert_eq!(offline_thumb.as_ref().map(|(_, b)| b.as_slice()), Some(png_chat.as_slice()));
+
+    // Hiding the final remaining reference in conv_b reclaims phys_b.
+    bob_restarted.hide_message(conv_b, b2.seq).await?;
+    assert!(!phys_b.exists());
+    assert_eq!(std::fs::read(&saved_copy)?, png_chat);
+    Ok(())
+}
+
 async fn send(client: &Client, chat: Uuid, text: &str) -> Result<()> {
     client
         .send_message(

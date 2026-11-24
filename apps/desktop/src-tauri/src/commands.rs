@@ -220,6 +220,12 @@ impl Desktop {
             client.clone(),
             self.outbox_wake.clone(),
         )));
+        {
+            let consistency_client = client.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = consistency_client.run_consistency_check().await;
+            });
+        }
         #[cfg(any(windows, target_os = "ios"))]
         {
             let app = app.clone();
@@ -1280,4 +1286,15 @@ pub(crate) async fn discard_transfer(
     direction: Direction,
 ) -> Result<()> {
     Ok(state.client().await?.discard(id, direction).await?)
+}
+
+#[tauri::command]
+pub(crate) async fn clear_cache(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+) -> Result<zibblu_core::CacheCleanupReport> {
+    if window.label() != "main" {
+        return Err(anyhow!("Clear cache from the main window").into());
+    }
+    Ok(state.client().await?.clear_cache().await?)
 }

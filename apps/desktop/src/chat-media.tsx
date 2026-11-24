@@ -28,13 +28,17 @@ function MediaTile({ message, open, fitImage, size: hint }: {
   const [visible, setVisible] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [onlineSize, setOnlineSize] = useState<ImageSize>();
+  const [cachedLocally, setCachedLocally] = useState(Boolean(message.local_file));
   const access = resources?.previewAccess(message.conversation_id, message.seq);
   const allowed = !resources || !!access;
   const cachedImage = kind === "image" && access === "cached" && canPreview(file);
   const key = cachedImage && allowed ? thumbnailKey(message, file) : undefined;
-  const expires = !message.local_file && message.expires_at != null
+  const expires = !message.local_file && !cachedLocally && message.expires_at != null
     ? message.expires_at - (resources?.clockOffset ?? 0) : Infinity;
   const { url, size, failed } = useWorkspaceImage(key, file.id, undefined, expires, attempt, visible);
+  useEffect(() => {
+    if (message.local_file || url) setCachedLocally(true);
+  }, [message.local_file, url]);
   const status = !allowed ? "failed" : cachedImage ? (url ? "ready" : failed ? "failed" : "loading") : state;
   // WebView can reuse a decoded image at the same URL even when the response says no-store.
   const onlineQuery = useMemo(() => access === "online" ? `view=${crypto.randomUUID()}` : "", [access]);

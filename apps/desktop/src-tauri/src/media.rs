@@ -13,10 +13,9 @@ use tauri::{
 };
 use tokio::sync::{Mutex, Semaphore};
 use uuid::Uuid;
-use zibblu_core::{Attachment, CHUNK_SIZE, Client, IMAGE_THUMBNAIL as THUMBNAIL, MAX_PASTED_IMAGE_BYTES, ProfileImage, Transfer};
+use zibblu_core::{Attachment, CHUNK_SIZE, Client, MAX_PASTED_IMAGE_BYTES, OnlineError, ProfileImage, Transfer};
 
 pub(crate) static IMAGE_JOBS: Semaphore = Semaphore::const_new(2);
-const ORIGINAL: i64 = -1;
 static PREVIEW_LOCKS: [Mutex<()>; 16] = [const { Mutex::const_new(()) }; 16];
 
 #[tauri::command]
@@ -58,7 +57,7 @@ pub(crate) async fn preview_image_bytes(
         } else {
             let message = client.preview_attachment(id).await?;
             let file = message.attachment.context("Missing attachment")?;
-            let (_, bytes) = image_preview(&client, message.seq, file, true).await?;
+            let (_, bytes) = image_preview(&client, message.conversation_id, message.seq, file, true).await?;
             client.preview_attachment(id).await?;
             bytes
         };
@@ -70,12 +69,30 @@ pub(crate) async fn preview_image_bytes(
 
 async fn profile_image(client: &Client, id: Uuid, version: Uuid) -> Result<Vec<u8>> {
     let _request = PREVIEW_LOCKS[id.as_bytes()[0] as usize % PREVIEW_LOCKS.len()].lock().await;
-    let bytes = match client.cached_profile_image(id, version).await {
-        Some(bytes) => bytes,
-        None => client.profile_image(id, version).await?,
-    };
-    images::check_stored_profile(&bytes)?;
-    Ok(bytes)
+    if let Some(bytes) = client.cached_profile_image(id, version).await {
+        images::check_stored_profile(&bytes)?;
+        return Ok(bytes);
+    }
+    match client
+        .profile_image_verified(id, version, images::check_stored_profile)
+        .await
+    {
+        Ok(bytes) => Ok(bytes),
+        Err(error) => {
+            let revoked = matches!(
+                error.downcast_ref::<OnlineError>(),
+                Some(OnlineError::Rejected { status, .. })
+                    if matches!(*status, reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN)
+            );
+            if !revoked
+                && let Some((_, fallback)) = client.active_profile_image_for_request(id, version).await
+                && images::check_stored_profile(&fallback).is_ok()
+            {
+                return Ok(fallback);
+            }
+            Err(error)
+        }
+    }
 }
 
 fn image_body(body: &InvokeBody) -> Result<&[u8]> {
@@ -387,17 +404,12 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>, viewer: bool
         let end = end.min((start / CHUNK_SIZE + 1) * CHUNK_SIZE - 1);
         let offset = start - start % CHUNK_SIZE;
         let expected = (file.size - offset).min(CHUNK_SIZE) as usize;
-        let chunk = if let Some((_, bytes)) = client.cached_preview(message.seq, &file.sha256, offset as i64).await.ok().flatten()
-            .filter(|(_, bytes)| bytes.len() == expected)
-        {
-            bytes
-        } else {
-            let bytes = client.read_attachment_chunk(id, offset, expected).await?;
-            if !message.local_file {
-                let _ = client.remember_preview(message.seq, &file.sha256, offset as i64, mime_hint, &bytes).await;
-            }
-            bytes
-        };
+        let chunk = client.read_attachment_chunk(id, offset, expected).await?;
+        if !message.local_file && offset == 0 && file.size <= CHUNK_SIZE && chunk.len() as u64 == file.size {
+            let _ = client
+                .remember_single_chunk_video(message.conversation_id, message.seq, &file, mime_hint, &chunk)
+                .await;
+        }
         ensure_current(app, &client, &file).await?;
         let body = chunk[(start - offset) as usize..=(end - offset) as usize].to_vec();
         return Ok(response
@@ -412,10 +424,12 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>, viewer: bool
 
     let query = request.uri().query().and_then(|query| query.split('&').next());
     let (mime, bytes) = if query == Some("cached-thumbnail") {
-        client.cached_preview(message.seq, &file.sha256, THUMBNAIL).await?
+        client
+            .cached_image_variant(message.conversation_id, message.seq, Some(file.id), &file.sha256, true)
+            .await?
             .context("No cached thumbnail")?
     } else {
-        image_preview(&client, message.seq, file.clone(), query == Some("thumbnail")).await?
+        image_preview(&client, message.conversation_id, message.seq, file.clone(), query == Some("thumbnail")).await?
     };
     ensure_current(app, &client, &file).await?;
     if viewer {
@@ -441,16 +455,30 @@ async fn ensure_current(app: &AppHandle, client: &std::sync::Arc<Client>, file: 
     Ok(())
 }
 
-pub(crate) async fn image_preview(client: &Client, seq: i64, file: Attachment, thumbnail: bool) -> Result<(String, Vec<u8>)> {
+pub(crate) async fn image_preview(
+    client: &Client,
+    conversation_id: Uuid,
+    seq: i64,
+    file: Attachment,
+    thumbnail: bool,
+) -> Result<(String, Vec<u8>)> {
     ensure!(file.size <= MAX_PASTED_IMAGE_BYTES as u64, "Image too large for inline preview");
     ensure!(file.preview_mime().is_some_and(|mime| mime.starts_with("image/")), "Unsupported image type");
-    let variant = if thumbnail { THUMBNAIL } else { ORIGINAL };
     let _request = PREVIEW_LOCKS[file.id.as_bytes()[0] as usize % PREVIEW_LOCKS.len()].lock().await;
-    if let Some(cached) = client.cached_preview(seq, &file.sha256, variant).await.ok().flatten() {
+    if let Some(cached) = client
+        .cached_image_variant(conversation_id, seq, Some(file.id), &file.sha256, thumbnail)
+        .await
+        .ok()
+        .flatten()
+    {
         return Ok(cached);
     }
     let permit = IMAGE_JOBS.acquire().await?;
-    let cached = client.cached_preview(seq, &file.sha256, ORIGINAL).await.ok().flatten();
+    let cached = client
+        .cached_image_variant(conversation_id, seq, Some(file.id), &file.sha256, false)
+        .await
+        .ok()
+        .flatten();
     let bytes = if let Some((_, bytes)) = cached {
         bytes
     } else {
@@ -470,8 +498,12 @@ pub(crate) async fn image_preview(client: &Client, seq: i64, file: Attachment, t
         Ok((mime, bytes, small))
     })
     .await??;
-    let _ = client.remember_preview(seq, &file.sha256, ORIGINAL, mime, &bytes).await;
-    let _ = client.remember_preview(seq, &file.sha256, THUMBNAIL, "image/png", &small).await;
+    let _ = client
+        .remember_image_variant(conversation_id, seq, Some(file.id), &file.sha256, false, mime, &bytes)
+        .await;
+    let _ = client
+        .remember_image_variant(conversation_id, seq, Some(file.id), &file.sha256, true, "image/png", &small)
+        .await;
     drop(permit);
     Ok(if thumbnail { ("image/png".into(), small) } else { (mime.into(), bytes) })
 }
