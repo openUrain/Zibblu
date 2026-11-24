@@ -128,10 +128,10 @@ function DrawerAction({ icon, children, onClick, className = "", next = true, bu
 }
 
 export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, back, pickAttachments, pasteFiles, openPrivate, aiChat,
-  hidden, hide, readReceipts, draft, setDraft, sending, beginSending, endSending, profileOpen, visibleOnNarrow, requested, historyCache, privateRoom }: {
+  hidden, hide, removeHistory, readReceipts, draft, setDraft, sending, beginSending, endSending, profileOpen, visibleOnNarrow, requested, historyCache, privateRoom }: {
   chat: Conversation; own: User; server: string; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
   refresh: () => Promise<void>; back: () => void; pickAttachments: (kind: "file" | "folder") => Promise<void>; pasteFiles: () => Promise<boolean>; openPrivate: () => void;
-  aiChat: ChatAssistants; hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean;
+  aiChat: ChatAssistants; hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; removeHistory: (entire: boolean) => Promise<void>; readReceipts: boolean;
   profileOpen: boolean; visibleOnNarrow: boolean;
   requested?: { page: ChatPage };
   historyCache: ChatHistoryCache;
@@ -142,6 +142,9 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
   const [searchOpen, setSearchOpen] = useState(false);
   const [media, setMedia] = useState<Message>();
   const [mediaError, setMediaError] = useState("");
+  const [historyAction, setHistoryAction] = useState<"clear" | "delete">();
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyError, setHistoryError] = useState("");
   const [leave, setLeave] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [leaveError, setLeaveError] = useState("");
@@ -163,7 +166,7 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
   const detailsButton = useRef<HTMLButtonElement>(null);
   const filesBack = useRef<HTMLButtonElement>(null);
   const drawerReturn = useRef<HTMLButtonElement>(null);
-  const secondaryOpen = profileOpen || searchOpen || showFiles || leave;
+  const secondaryOpen = profileOpen || searchOpen || showFiles || leave || !!historyAction;
   const detailsVisible = drawer && (windows || !secondaryOpen);
   function openMedia(message: Message) {
     setMediaError("");
@@ -311,6 +314,16 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
             {t("Shared files", "共享文件")}
           </DrawerAction>
         </div>
+        <div className="drawer-actions">
+          <DrawerAction className="danger" icon={<Trash2 size={20} />} next={false} busy={sending}
+            onClick={button => fromDrawer(button, () => { setHistoryError(""); setHistoryAction("clear"); })}>
+            {t("Clear chat history", "清空聊天记录")}
+          </DrawerAction>
+          <DrawerAction className="danger" icon={<Trash2 size={20} />} next={false} busy={sending}
+            onClick={button => fromDrawer(button, () => { setHistoryError(""); setHistoryAction("delete"); })}>
+            {t("Delete conversation", "删除会话")}
+          </DrawerAction>
+        </div>
         {groupMember && <div className="drawer-actions">
           <DrawerAction className="danger" icon={<LogOut size={20} />} next={false} onClick={button => fromDrawer(button, () => {
             setLeaveError(""); setLeave(true);
@@ -319,6 +332,25 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
       </Dialog>}
     </div>
     {invite && <ShareQr code={invite} server={server} close={() => setInvite(undefined)} />}
+    {historyAction && <Dialog title={historyAction === "delete" ? t("Delete conversation", "删除会话") : t("Clear chat history", "清空聊天记录")}
+      close={() => setHistoryAction(undefined)} closeDisabled={historyBusy}>
+      <p>{historyAction === "delete"
+        ? t("Delete this conversation and its history on this device? Pending sends will continue.", "删除本设备的会话及聊天记录？已入队的发送任务仍会继续。")
+        : t("Clear chat history on this device? Pending sends will continue.", "清空本设备的聊天记录？已入队的发送任务仍会继续。")}</p>
+      {historyError && <p className="inline-error" role="alert">{historyError}</p>}
+      <div className="dialog-actions">
+        <button className="button subtle" disabled={historyBusy} onClick={() => setHistoryAction(undefined)}>{t("Cancel", "取消")}</button>
+        <button className="button danger" disabled={historyBusy || sending} onClick={async () => {
+          setHistoryBusy(true);
+          try {
+            await removeHistory(historyAction === "delete");
+            setMedia(undefined); setSearchOpen(false); setShowFiles(false);
+            setHistoryAction(undefined); setDrawer(false);
+          } catch (error) { setHistoryError(errorMessage(error)); }
+          finally { setHistoryBusy(false); }
+        }}>{historyAction === "delete" ? t("Delete", "删除") : t("Clear", "清空")}</button>
+      </div>
+    </Dialog>}
     {leave && <Dialog title="Leave group" close={() => setLeave(false)} closeDisabled={leaving}>
       <p>You will stop receiving messages from {name}.</p>
       {leaveError && <p className="inline-error" role="alert">{leaveError}</p>}
