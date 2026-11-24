@@ -882,9 +882,10 @@ impl Client {
         attachment_id: Option<Uuid>,
         variant: MediaVariant,
     ) -> Result<()> {
-        sqlx::query(
+        let inserted = sqlx::query(
             "INSERT INTO media_refs (file_id, ref_kind, ref_id, conversation_id, attachment_id, variant, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
+             WHERE ?2 <> 'download' OR NOT EXISTS (SELECT 1 FROM cancelled_downloads WHERE id = ?3)
              ON CONFLICT (ref_kind, ref_id, variant) DO UPDATE SET file_id = excluded.file_id",
         )
         .bind(file_id)
@@ -896,6 +897,7 @@ impl Client {
         .bind(unix_millis())
         .execute(&self.db)
         .await?;
+        ensure!(inserted.rows_affected() != 0, "This download was cancelled");
         Ok(())
     }
 
