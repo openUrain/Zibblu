@@ -12,7 +12,8 @@ use std::{
     sync::atomic::{AtomicU8, Ordering},
 };
 use zibblu_core::{
-    Attachment, AttachmentKind, ContentAck, DeviceSession, ExpiredPayload, MAX_MESSAGE_BYTES,
+    Attachment, AttachmentKind, ContentAck, DeviceSession, ExpiredPayload, ForwardRequest,
+    ForwardResult, ForwardTarget, ForwardUploadProgress, ForwardUploadRequest, MAX_MESSAGE_BYTES,
     SYNC_PAGE_SIZE,
 };
 use zibblu_online::retention::Retention;
@@ -726,6 +727,199 @@ async fn expiry_reclaims_payloads_and_keeps_verified_local_files() -> Result<()>
 }
 
 
+fn forwarding_request(chats: &[Uuid]) -> ForwardRequest {
+    ForwardRequest {
+        batch_id: Uuid::new_v4(),
+        targets: chats.iter().map(|&conversation_id| ForwardTarget {
+            conversation_id, attachment_id: Uuid::new_v4(),
+        }).collect(),
+    }
+}
+
+async fn expire_attachment(db: &PgPool, id: Uuid) -> Result<()> {
+    let mut tx = db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(1001)").execute(&mut *tx).await?;
+    sqlx::query("UPDATE messages SET expires_at=clock_timestamp()-interval '1 second' WHERE attachment_id=$1")
+        .bind(id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE attachments SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1")
+        .bind(id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn attachment_forwarding_retries_expiry_and_local_original() -> Result<()> {
+    let db = test_db().await?;
+    let app = zibblu_online::router_with_retention(db.clone(), Retention {
+        file_secs: Some(604800), upload_secs: Some(86400), ..Retention::default()
+    }).await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let server = format!("http://{}", listener.local_addr()?);
+    let task = tokio::spawn(async move { axum::serve(listener, app).await });
+    let first = tempfile::tempdir()?;
+    let second = tempfile::tempdir()?;
+    let third = tempfile::tempdir()?;
+    let suffix = &Uuid::new_v4().simple().to_string()[..10];
+    let password = "attachment-forwarding-fixture";
+    let alice = sign_in(first.path(), &server, &format!("fw_a_{suffix}"), password, true).await?;
+    let bob = sign_in(second.path(), &server, &format!("fw_b_{suffix}"), password, true).await?;
+    let carol = sign_in(third.path(), &server, &format!("fw_c_{suffix}"), password, true).await?;
+    let source_chat = direct(&alice, &bob).await?;
+    let target_chat = direct(&bob, &carol).await?;
+    let mut chats = vec![target_chat];
+    for index in 0..8 {
+        chats.push(bob.create_conversation(ConversationRequest::Group {
+            title: format!("forward {index} {suffix}"), contact_ids: vec![alice.user.id, carol.user.id],
+        }).await?);
+    }
+    alice.sync().await?;
+    bob.sync().await?;
+    carol.sync().await?;
+    let path = first.path().join("forward.bin");
+    let bytes = b"verified independent forwarding payload";
+    std::fs::write(&path, bytes)?;
+    let id = alice.queue_upload(source_chat, path.clone()).await?.attachment.id;
+    wait_transfer(&alice, id, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
+    bob.sync().await?;
+    assert!(!bob.attachment(id).await?.local_file);
+
+    let http = reqwest::Client::builder().no_proxy().build()?;
+    let url = format!("{server}/v2/files/{id}/forward");
+    let over_limit = forwarding_request(&[chats.clone(), vec![source_chat]].concat());
+    assert_eq!(http.post(&url).bearer_auth(bob.session_token()).json(&over_limit).send().await?.status(), 400);
+    let duplicate = forwarding_request(&[target_chat, target_chat]);
+    assert_eq!(http.post(&url).bearer_auth(bob.session_token()).json(&duplicate).send().await?.status(), 400);
+    let request = forwarding_request(&chats);
+    assert_eq!(http.post(&url).bearer_auth(carol.session_token()).json(&request).send().await?.status(), 404);
+
+    // Simulate forwarding on day six without downloading the original.
+    sqlx::query("UPDATE messages SET expires_at=clock_timestamp()+interval '1 day' WHERE attachment_id=$1")
+        .bind(id).execute(&db).await?;
+    sqlx::query("UPDATE attachments SET expires_at=clock_timestamp()+interval '1 day' WHERE id=$1")
+        .bind(id).execute(&db).await?;
+    bob.remove_contact(carol.user.id).await?;
+    let (first_results, replay) = tokio::join!(
+        bob.forward_attachment(id, &request), bob.forward_attachment(id, &request)
+    );
+    let first_results = first_results?;
+    let replay = replay?;
+    assert_eq!(first_results[0].status, 409);
+    assert_eq!(replay[0].status, 409);
+    for (left, right) in first_results[1..].iter().zip(&replay[1..]) {
+        let a = left.publication.as_ref().context("group target failed")?;
+        let b = right.publication.as_ref().context("group retry failed")?;
+        assert_eq!(left.status, 200);
+        assert_eq!((a.seq, a.expires_at), (b.seq, b.expires_at));
+        assert!((a.expires_at.unwrap() - a.created_at - 604800000).abs() < 1000);
+    }
+    assert_eq!(direct(&bob, &carol).await?, target_chat);
+    let all = bob.forward_attachment(id, &request).await?;
+    assert!(all.iter().all(|item| item.status == 200));
+    for (before, after) in first_results[1..].iter().zip(&all[1..]) {
+        let a = before.publication.as_ref().unwrap();
+        let b = after.publication.as_ref().unwrap();
+        assert_eq!((a.seq, a.expires_at), (b.seq, b.expires_at));
+    }
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachments WHERE payload_id=$1")
+        .bind(id).fetch_one(&db).await?, 9);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachment_chunks WHERE attachment_id=$1")
+        .bind(id).fetch_one(&db).await?, 1);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachment_chunks WHERE attachment_id=ANY($1)")
+        .bind(request.targets.iter().map(|t| t.attachment_id).collect::<Vec<_>>()).fetch_one(&db).await?, 0);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE forward_batch=$1")
+        .bind(request.batch_id).fetch_one(&db).await?, 9);
+    let changed = forwarding_request(&chats[..1]);
+    let changed = ForwardRequest { batch_id: request.batch_id, ..changed };
+    assert_eq!(http.post(&url).bearer_auth(bob.session_token()).json(&changed).send().await?.status(), 409);
+
+    let target_id = request.targets[0].attachment_id;
+    let chunk = |id| format!("{server}/v1/files/{id}/chunks/0");
+    assert_eq!(http.get(chunk(id)).bearer_auth(carol.session_token()).send().await?.status(), 404);
+    assert_eq!(http.get(chunk(target_id)).bearer_auth(alice.session_token()).send().await?.status(), 404);
+    expire_attachment(&db, id).await?;
+    zibblu_online::retention::sweep(&db).await?;
+    assert_eq!(http.get(chunk(id)).bearer_auth(bob.session_token()).send().await?.status(), 410);
+    assert_eq!(&http.get(chunk(target_id)).bearer_auth(carol.session_token()).send().await?.error_for_status()?.bytes().await?[..], bytes);
+    let no_local = forwarding_request(&[target_chat]);
+    assert_eq!(bob.forward_attachment(id, &no_local).await?[0].status, 410);
+    let source_seq = bob.attachment(id).await?.seq;
+    http.delete(format!("{server}/v1/conversations/{source_chat}/messages/{source_seq}"))
+        .bearer_auth(alice.session_token()).send().await?.error_for_status()?;
+    assert_eq!(http.post(&url).bearer_auth(bob.session_token()).json(&forwarding_request(&[target_chat])).send().await?.status(), 404);
+    let committed = bob.forward_attachment(id, &request).await?;
+    assert_eq!(committed[0].publication.as_ref().unwrap().seq, all[0].publication.as_ref().unwrap().seq);
+    assert_eq!(&http.get(chunk(target_id)).bearer_auth(carol.session_token()).send().await?.error_for_status()?.bytes().await?[..], bytes);
+
+    // A second source is downloaded and checked before natural expiry and physical reclamation.
+    let second_upload = alice.queue_upload(source_chat, path).await?.attachment;
+    let expired_id = second_upload.id;
+    wait_transfer(&alice, expired_id, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
+    bob.sync().await?;
+    bob.queue_download(expired_id, second.path().join("saved.bin")).await?;
+    wait_transfer(&bob, expired_id, Direction::Download, |job| job.status == TransferStatus::Complete).await?;
+    bob.sync().await?;
+    assert!(bob.attachment(expired_id).await?.local_file);
+    expire_attachment(&db, expired_id).await?;
+    for _ in 0..4 { zibblu_online::retention::sweep(&db).await?; }
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachments WHERE id=$1")
+        .bind(expired_id).fetch_one(&db).await?, 0);
+    let fallback = forwarding_request(&chats[..2]);
+    let forward_url = format!("{server}/v2/files/{expired_id}/forward");
+    let upload_url = format!("{server}/v2/files/{expired_id}/forward-upload");
+    let local_path = profile(second.path(), &server, bob.user.id).join("files").join(expired_id.to_string());
+    std::fs::write(&local_path, vec![0; bytes.len()])?;
+    assert!(bob.forward_attachment(expired_id, &fallback).await?.iter().all(|item| item.status == 422));
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE forward_batch=$1")
+        .bind(fallback.batch_id).fetch_one(&db).await?, 0);
+    std::fs::write(&local_path, bytes)?;
+    let mut incorrect = second_upload.clone();
+    incorrect.sha256 = "0".repeat(64);
+    assert_eq!(http.post(&upload_url).bearer_auth(bob.session_token()).json(&ForwardUploadRequest {
+        request: fallback.clone(), original: incorrect,
+    }).send().await?.status(), 422);
+    let results = bob.forward_attachment(expired_id, &fallback).await?;
+    assert!(results.iter().all(|item| item.status == 200));
+    let root: Uuid = sqlx::query_scalar("SELECT upload_id FROM m1_forward_batches WHERE id=$1")
+        .bind(fallback.batch_id).fetch_one(&db).await?;
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachments WHERE payload_id=$1")
+        .bind(root).fetch_one(&db).await?, 2);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachment_chunks WHERE attachment_id=$1")
+        .bind(root).fetch_one(&db).await?, 1);
+    for target in &fallback.targets {
+        assert!(bob.attachment(target.attachment_id).await?.local_file);
+        assert_eq!(std::fs::read(profile(second.path(), &server, bob.user.id).join("files").join(target.attachment_id.to_string()))?, bytes);
+        assert_eq!(&http.get(chunk(target.attachment_id)).bearer_auth(carol.session_token()).send().await?.error_for_status()?.bytes().await?[..], bytes);
+    }
+
+    // An upload begun while expired cannot be published after a later source recall.
+    let blocked = forwarding_request(&[target_chat]);
+    let staged: ForwardUploadProgress = http.post(&upload_url).bearer_auth(bob.session_token())
+        .json(&ForwardUploadRequest { request: blocked.clone(), original: second_upload.clone() })
+        .send().await?.error_for_status()?.json().await?;
+    http.put(format!("{server}/v1/files/{}/chunks/0", staged.id)).bearer_auth(bob.session_token())
+        .body(bytes.to_vec()).send().await?.error_for_status()?;
+    assert_eq!(http.post(format!("{server}/v1/files/{}/complete", staged.id))
+        .bearer_auth(bob.session_token()).send().await?.status(), 404);
+    let seq = bob.attachment(expired_id).await?.seq;
+    http.delete(format!("{server}/v1/conversations/{source_chat}/messages/{seq}"))
+        .bearer_auth(alice.session_token()).send().await?.error_for_status()?;
+    let denied: Vec<ForwardResult> = http.post(&forward_url).bearer_auth(bob.session_token())
+        .json(&blocked).send().await?.error_for_status()?.json().await?;
+    assert_eq!(denied[0].status, 404);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE forward_batch=$1")
+        .bind(blocked.batch_id).fetch_one(&db).await?, 0);
+    assert_eq!(&http.get(chunk(fallback.targets[0].attachment_id)).bearer_auth(carol.session_token()).send().await?.error_for_status()?.bytes().await?[..], bytes);
+
+    for target in request.targets.iter().chain(&fallback.targets) {
+        expire_attachment(&db, target.attachment_id).await?;
+    }
+    for _ in 0..5 { zibblu_online::retention::sweep(&db).await?; }
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachments WHERE id=ANY($1)")
+        .bind(vec![id, root]).fetch_one(&db).await?, 0);
+    task.abort();
+    Ok(())
+}
+
 // Real FFmpeg + authenticated HTTP + disposable PostgreSQL; CI installs the Linux tools.
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
@@ -1019,6 +1213,39 @@ async fn video_derivatives_and_retention() -> Result<()> {
     zibblu_online::retention::sweep(&db).await?;
     assert_eq!(get(&late_url).send().await?.status(), 410);
     assert_eq!(get(&bad_url).send().await?.status(), 200);
+
+    // A ready video can be forwarded without the recipient obtaining its original;
+    // the new target keeps all three resources after the source expires.
+    let target_chat = direct(&bob, &outsider).await?;
+    bob.sync().await?;
+    outsider.sync().await?;
+    assert!(!bob.attachment(restart_id).await?.local_file);
+    let forwarding = forwarding_request(&[target_chat]);
+    let target_id = forwarding.targets[0].attachment_id;
+    let forwarded = bob.forward_attachment(restart_id, &forwarding).await?;
+    assert_eq!(forwarded[0].status, 200);
+    let target_url = format!("{server}/v2/files/{target_id}/media");
+    let target_get = |url: &str| http.get(url).bearer_auth(outsider.session_token());
+    let target_meta: serde_json::Value = target_get(&target_url).send().await?.error_for_status()?.json().await?;
+    assert_eq!(target_meta["preview"]["sha256"], restarted_meta["preview"]["sha256"]);
+    assert_eq!(target_meta["cover"]["sha256"], restarted_meta["cover"]["sha256"]);
+    assert_ne!(target_meta["preview"]["id"], restarted_meta["preview"]["id"]);
+    expire_attachment(&db, restart_id).await?;
+    zibblu_online::retention::sweep(&db).await?;
+    assert_eq!(get(&restart_url).send().await?.status(), 410);
+    assert_eq!(target_get(&format!("{target_url}/preview")).header("Range", "bytes=0-31").send().await?.status(), 206);
+    assert_eq!(target_get(&format!("{target_url}/cover")).send().await?.status(), 200);
+    let mut forwarded_original = Vec::new();
+    for offset in (0..original.len()).step_by(CHUNK_SIZE as usize) {
+        forwarded_original.extend_from_slice(&target_get(&format!("{server}/v1/files/{target_id}/chunks/{offset}"))
+            .send().await?.error_for_status()?.bytes().await?);
+    }
+    assert_eq!(forwarded_original, original);
+    expire_attachment(&db, target_id).await?;
+    zibblu_online::retention::sweep(&db).await?;
+    zibblu_online::retention::sweep(&db).await?;
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM video_resource_chunks WHERE attachment_id=$1")
+        .bind(restart_id).fetch_one(&db).await?, 0);
     server_task.abort();
     Ok(())
 }
