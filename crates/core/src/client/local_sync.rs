@@ -497,8 +497,19 @@ pub(super) async fn persist_message(
          )",
     ).bind(message.seq).bind(message.conversation_id.to_string())
         .bind(serde_json::to_string(&message)?)
-        .bind(message.attachment.map(|f| f.id.to_string()))
-        .execute(db).await?;
+        .bind(message.attachment.as_ref().map(|f| f.id.to_string()))
+        .execute(&mut *db).await?;
+    if !message.recalled
+        && let Some(ref attachment) = message.attachment
+    {
+        media_store::bind_message_to_existing_media_in_tx(
+            &mut *db,
+            message.conversation_id,
+            message.seq,
+            attachment,
+        )
+        .await?;
+    }
     Ok(changed.rows_affected() != 0)
 }
 

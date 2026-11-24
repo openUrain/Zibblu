@@ -86,6 +86,17 @@ impl MediaVariant {
             _ => Self::Attachment,
         }
     }
+
+    pub fn is_compatible_with_attachment(self, attachment: &Attachment) -> bool {
+        let base = Self::for_attachment(attachment);
+        match self {
+            Self::ImageOriginal | Self::ImageThumbnail => base == Self::ImageOriginal,
+            Self::VideoCover | Self::VideoPreview | Self::VideoOriginal => {
+                base == Self::VideoOriginal
+            }
+            Self::Attachment => base == Self::Attachment,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -444,20 +455,13 @@ impl Client {
             bytes.len() as u64 == desc.expected_size && desc.expected_size <= MAX_ATTACHMENT_SIZE,
             "Media length verification failed"
         );
-        let slot = lock_slot(&format!(
-            "{}:{}:{}",
-            desc.conversation_id,
-            desc.variant.as_str(),
-            desc.content_key
-        ));
-        let _lock = self.media_locks[slot].lock().await;
-
         let rel_path = self.conversation_rel_path(
             desc.conversation_id,
             desc.variant,
             desc.content_key,
             desc.mime,
         );
+        let _lock = self.media_locks[lock_slot(&rel_path)].lock().await;
         let final_path = self.resolve_conversation_path(desc.conversation_id, &rel_path)?;
         let tmp_dir = self.tmp_dir();
         let expected_sha = desc.expected_sha256.to_owned();
@@ -525,20 +529,13 @@ impl Client {
             "Invalid media digest"
         );
         ensure!(desc.expected_size <= MAX_ATTACHMENT_SIZE, "Media exceeds size limit");
-        let slot = lock_slot(&format!(
-            "{}:{}:{}",
-            desc.conversation_id,
-            desc.variant.as_str(),
-            desc.content_key
-        ));
-        let _lock = self.media_locks[slot].lock().await;
-
         let rel_path = self.conversation_rel_path(
             desc.conversation_id,
             desc.variant,
             desc.content_key,
             desc.mime,
         );
+        let _lock = self.media_locks[lock_slot(&rel_path)].lock().await;
         let final_path = self.resolve_conversation_path(desc.conversation_id, &rel_path)?;
         let tmp_dir = self.tmp_dir();
         let expected_sha = desc.expected_sha256.to_owned();
@@ -675,6 +672,15 @@ impl Client {
         .bind(desc.variant.as_str())
         .bind(now)
         .execute(&mut *tx)
+        .await?;
+        bind_same_conversation_duplicates_in_tx(
+            &mut tx,
+            file_id,
+            desc.conversation_id,
+            desc.variant,
+            desc.content_key,
+            Some(desc.message_seq),
+        )
         .await?;
         tx.commit().await?;
         Ok(())
@@ -908,7 +914,21 @@ impl Client {
     }
 
     pub(super) async fn remove_rel_paths(&self, rel_paths: Vec<String>) {
+        let device = self.device_id.to_string();
         for rel in rel_paths {
+            let _lock = self.media_locks[lock_slot(&rel)].lock().await;
+            let still_indexed: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM media_files WHERE device_id = ?1 AND rel_path = ?2)
+                     OR EXISTS(SELECT 1 FROM public_cache_files WHERE device_id = ?1 AND rel_path = ?2)",
+            )
+            .bind(&device)
+            .bind(&rel)
+            .fetch_one(&self.db)
+            .await
+            .unwrap_or(true);
+            if still_indexed {
+                continue;
+            }
             if let Ok(path) = self.resolve_device_media_path(&rel) {
                 let _ = tokio::fs::remove_file(path).await;
             }
@@ -916,6 +936,13 @@ impl Client {
     }
 
     pub async fn clear_cache(&self) -> Result<CacheCleanupReport> {
+        self.clear_cache_inner(None).await
+    }
+
+    async fn clear_cache_inner(
+        &self,
+        after_snapshot_hook: Option<(tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Receiver<()>)>,
+    ) -> Result<CacheCleanupReport> {
         let _prepare = self.prepare_gate.lock().await;
         self.ensure_open()?;
         let now = unix_millis();
@@ -957,7 +984,24 @@ impl Client {
         .collect();
         tx.commit().await?;
 
+        if let Some((ready, resume)) = after_snapshot_hook {
+            let _ = ready.send(());
+            let _ = resume.await;
+        }
+
         for rel in removed_public {
+            let _lock = self.media_locks[lock_slot(&rel)].lock().await;
+            let still_indexed: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM public_cache_files WHERE device_id = ?1 AND rel_path = ?2)",
+            )
+            .bind(&device)
+            .bind(&rel)
+            .fetch_one(&self.db)
+            .await
+            .unwrap_or(true);
+            if still_indexed {
+                continue;
+            }
             if let Ok(path) = self.resolve_public_path(&rel) {
                 let bytes = remove_file_if_exists(&path);
                 if bytes > 0 || !path.exists() {
@@ -967,18 +1011,13 @@ impl Client {
             }
         }
 
-        // Remove unreferenced stray files inside public/{avatars,covers} only.
+        // Collect stray public/{avatars,covers} and tmp/ candidates read-only, then re-verify under lock before deleting.
         let profile_dir = fs_path(self.profile_dir());
         let public_root = fs_path(&self.media_root.join("public"));
         let tmp_root = self.tmp_dir();
-        let active_tmp: HashSet<String> = self
-            .active_tmp
-            .lock()
-            .expect("active temp files")
-            .clone();
 
-        let disk_report = tokio::task::spawn_blocking(move || -> CacheCleanupReport {
-            let mut extra = CacheCleanupReport::default();
+        let (public_candidates, tmp_candidates) = tokio::task::spawn_blocking(move || {
+            let mut public_candidates = Vec::new();
             for sub in ["avatars", "covers"] {
                 let dir = public_root.join(sub);
                 if let Ok(entries) = fs::read_dir(&dir) {
@@ -991,39 +1030,75 @@ impl Client {
                         if let Ok(rel) = path.strip_prefix(&profile_dir) {
                             let rel_str = rel.to_string_lossy().replace('\\', "/");
                             if !valid_public_rel.contains(&rel_str) {
-                                extra.reclaimed_bytes += remove_file_if_exists(&path);
-                                extra.removed_public_files += 1;
+                                public_candidates.push((rel_str, path));
                             }
                         }
                     }
                 }
             }
+            let mut tmp_candidates = Vec::new();
             if let Ok(entries) = fs::read_dir(&tmp_root) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     let name = entry.file_name().to_string_lossy().into_owned();
-                    let in_use = active_tmp.iter().any(|prefix| name.starts_with(prefix));
-                    if in_use {
-                        continue;
-                    }
                     let Ok(meta) = fs::symlink_metadata(&path) else { continue };
                     if meta.is_file() && !staging::is_link(&meta) {
-                        extra.reclaimed_bytes += remove_file_if_exists(&path);
-                        extra.removed_temp_files += 1;
+                        tmp_candidates.push((name, path));
                     }
                 }
             }
-            extra
+            (public_candidates, tmp_candidates)
         })
         .await?;
 
-        report.removed_public_files += disk_report.removed_public_files;
-        report.removed_temp_files += disk_report.removed_temp_files;
-        report.reclaimed_bytes += disk_report.reclaimed_bytes;
+        for (rel_str, path) in public_candidates {
+            let _lock = self.media_locks[lock_slot(&rel_str)].lock().await;
+            let still_indexed: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM public_cache_files WHERE device_id = ?1 AND rel_path = ?2)",
+            )
+            .bind(&device)
+            .bind(&rel_str)
+            .fetch_one(&self.db)
+            .await
+            .unwrap_or(true);
+            if still_indexed {
+                continue;
+            }
+            let bytes = remove_file_if_exists(&path);
+            if bytes > 0 || !path.exists() {
+                report.removed_public_files += 1;
+                report.reclaimed_bytes += bytes;
+            }
+        }
+
+        if !tmp_candidates.is_empty() {
+            let active_tmp = Arc::clone(&self.active_tmp);
+            let (removed_tmp, reclaimed_tmp) = tokio::task::spawn_blocking(move || {
+                let mut removed = 0usize;
+                let mut reclaimed = 0u64;
+                for (name, path) in tmp_candidates {
+                    if let Some(bytes) = delete_if_inactive_tmp(&active_tmp, &name, &path) {
+                        removed += 1;
+                        reclaimed += bytes;
+                    }
+                }
+                (removed, reclaimed)
+            })
+            .await?;
+            report.removed_temp_files += removed_tmp;
+            report.reclaimed_bytes += reclaimed_tmp;
+        }
         Ok(report)
     }
 
     pub async fn run_consistency_check(self: &Arc<Self>) -> Result<ConsistencyReport> {
+        self.run_consistency_check_inner(None).await
+    }
+
+    async fn run_consistency_check_inner(
+        self: &Arc<Self>,
+        after_snapshot_hook: Option<(tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Receiver<()>)>,
+    ) -> Result<ConsistencyReport> {
         self.ensure_open()?;
         let mut report = ConsistencyReport::default();
         let device = self.device_id.to_string();
@@ -1053,6 +1128,19 @@ impl Client {
             .await?;
             tx.commit().await?;
             for rel in orphan_media.into_iter().chain(orphan_public) {
+                let _lock = self.media_locks[lock_slot(&rel)].lock().await;
+                let still_indexed: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM media_files WHERE device_id = ?1 AND rel_path = ?2)
+                         OR EXISTS(SELECT 1 FROM public_cache_files WHERE device_id = ?1 AND rel_path = ?2)",
+                )
+                .bind(&device)
+                .bind(&rel)
+                .fetch_one(&self.db)
+                .await
+                .unwrap_or(true);
+                if still_indexed {
+                    continue;
+                }
                 if let Ok(path) = self.resolve_device_media_path(&rel) {
                     if remove_file_if_exists(&path) > 0 || !path.exists() {
                         report.removed_orphan_files += 1;
@@ -1141,87 +1229,145 @@ impl Client {
             }
             tokio::task::yield_now().await;
         }
+        let non_available_public: Vec<String> = sqlx::query_scalar(
+            "SELECT rel_path FROM public_cache_files WHERE device_id = ?1 AND status <> 'available'",
+        )
+        .bind(&device)
+        .fetch_all(&self.db)
+        .await?;
+        indexed_public.extend(non_available_public);
 
-        // 4. Scan disk: quarantine unknown unindexed files under conversations/; clean stale tmp & orphan public files.
+        if let Some((ready, resume)) = after_snapshot_hook {
+            let _ = ready.send(());
+            let _ = resume.await;
+        }
+
+        // 4. Scan disk read-only to collect unindexed candidates; re-verify under lock before quarantine/delete.
         let profile_dir = fs_path(self.profile_dir());
         let conversations_root = fs_path(&self.media_root.join("conversations"));
         let public_root = fs_path(&self.media_root.join("public"));
         let tmp_root = self.tmp_dir();
-        let quarantine_root = self.quarantine_dir();
-        let active_tmp: HashSet<String> = self
-            .active_tmp
-            .lock()
-            .expect("active temp files")
-            .clone();
 
-        let disk = tokio::task::spawn_blocking(move || -> (usize, usize, usize) {
-            let mut quarantined = 0usize;
-            let mut orphans = 0usize;
-            let mut stale_tmp = 0usize;
+        let (conv_candidates, public_candidates, tmp_candidates) =
+            tokio::task::spawn_blocking(move || {
+                let mut conv_candidates = Vec::new();
+                let mut public_candidates = Vec::new();
+                let mut tmp_candidates = Vec::new();
 
-            if conversations_root.is_dir() {
-                for entry in walkdir::WalkDir::new(&conversations_root)
-                    .follow_links(false)
-                    .into_iter()
-                    .flatten()
-                {
-                    let path = entry.path();
-                    let Ok(meta) = fs::symlink_metadata(path) else { continue };
-                    if !meta.is_file() || staging::is_link(&meta) {
-                        continue;
-                    }
-                    let Ok(rel) = path.strip_prefix(&profile_dir) else { continue };
-                    let rel_str = rel.to_string_lossy().replace('\\', "/");
-                    if !indexed_paths.contains(&rel_str) {
-                        if move_to_quarantine(path, &quarantine_root, "unindexed", &rel_str).is_ok() {
-                            quarantined += 1;
+                if conversations_root.is_dir() {
+                    for entry in walkdir::WalkDir::new(&conversations_root)
+                        .follow_links(false)
+                        .into_iter()
+                        .flatten()
+                    {
+                        let path = entry.path();
+                        let Ok(meta) = fs::symlink_metadata(path) else { continue };
+                        if !meta.is_file() || staging::is_link(&meta) {
+                            continue;
+                        }
+                        let Ok(rel) = path.strip_prefix(&profile_dir) else { continue };
+                        let rel_str = rel.to_string_lossy().replace('\\', "/");
+                        if !indexed_paths.contains(&rel_str) {
+                            conv_candidates.push((rel_str, path.to_path_buf()));
                         }
                     }
                 }
-            }
 
-            if public_root.is_dir() {
-                for entry in walkdir::WalkDir::new(&public_root)
-                    .follow_links(false)
-                    .into_iter()
-                    .flatten()
-                {
-                    let path = entry.path();
-                    let Ok(meta) = fs::symlink_metadata(path) else { continue };
-                    if !meta.is_file() || staging::is_link(&meta) {
-                        continue;
-                    }
-                    let Ok(rel) = path.strip_prefix(&profile_dir) else { continue };
-                    let rel_str = rel.to_string_lossy().replace('\\', "/");
-                    if !indexed_public.contains(&rel_str) {
-                        let _ = fs::remove_file(path);
-                        orphans += 1;
-                    }
-                }
-            }
-
-            if let Ok(entries) = fs::read_dir(&tmp_root) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    if active_tmp.iter().any(|prefix| name.starts_with(prefix)) {
-                        continue;
-                    }
-                    let Ok(meta) = fs::symlink_metadata(&path) else { continue };
-                    if meta.is_file() && !staging::is_link(&meta) {
-                        let _ = fs::remove_file(&path);
-                        stale_tmp += 1;
+                if public_root.is_dir() {
+                    for entry in walkdir::WalkDir::new(&public_root)
+                        .follow_links(false)
+                        .into_iter()
+                        .flatten()
+                    {
+                        let path = entry.path();
+                        let Ok(meta) = fs::symlink_metadata(path) else { continue };
+                        if !meta.is_file() || staging::is_link(&meta) {
+                            continue;
+                        }
+                        let Ok(rel) = path.strip_prefix(&profile_dir) else { continue };
+                        let rel_str = rel.to_string_lossy().replace('\\', "/");
+                        if !indexed_public.contains(&rel_str) {
+                            public_candidates.push((rel_str, path.to_path_buf()));
+                        }
                     }
                 }
+
+                if let Ok(entries) = fs::read_dir(&tmp_root) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        let Ok(meta) = fs::symlink_metadata(&path) else { continue };
+                        if meta.is_file() && !staging::is_link(&meta) {
+                            tmp_candidates.push((name, path));
+                        }
+                    }
+                }
+                (conv_candidates, public_candidates, tmp_candidates)
+            })
+            .await?;
+
+        let quarantine_root = self.quarantine_dir();
+        for (rel_str, path) in conv_candidates {
+            self.ensure_open()?;
+            let _lock = self.media_locks[lock_slot(&rel_str)].lock().await;
+            let indexed_now: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM media_files WHERE device_id = ?1 AND rel_path = ?2)",
+            )
+            .bind(&device)
+            .bind(&rel_str)
+            .fetch_one(&self.db)
+            .await
+            .unwrap_or(true);
+            if indexed_now {
+                continue;
             }
+            let qroot = quarantine_root.clone();
+            let rel_for_q = rel_str.clone();
+            if tokio::task::spawn_blocking(move || {
+                move_to_quarantine(&path, &qroot, "unindexed", &rel_for_q)
+            })
+            .await?
+            .is_ok()
+            {
+                report.quarantined_unknown += 1;
+            }
+            tokio::task::yield_now().await;
+        }
 
-            (quarantined, orphans, stale_tmp)
-        })
-        .await?;
+        for (rel_str, path) in public_candidates {
+            self.ensure_open()?;
+            let _lock = self.media_locks[lock_slot(&rel_str)].lock().await;
+            let indexed_now: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM public_cache_files WHERE device_id = ?1 AND rel_path = ?2)",
+            )
+            .bind(&device)
+            .bind(&rel_str)
+            .fetch_one(&self.db)
+            .await
+            .unwrap_or(true);
+            if indexed_now {
+                continue;
+            }
+            if remove_file_if_exists(&path) > 0 || !path.exists() {
+                report.removed_orphan_files += 1;
+            }
+            tokio::task::yield_now().await;
+        }
 
-        report.quarantined_unknown += disk.0;
-        report.removed_orphan_files += disk.1;
-        report.removed_stale_tmp += disk.2;
+        if !tmp_candidates.is_empty() {
+            let active_tmp = Arc::clone(&self.active_tmp);
+            let stale_tmp = tokio::task::spawn_blocking(move || {
+                let mut removed = 0usize;
+                for (name, path) in tmp_candidates {
+                    if delete_if_inactive_tmp(&active_tmp, &name, &path).is_some() {
+                        removed += 1;
+                    }
+                }
+                removed
+            })
+            .await?;
+            report.removed_stale_tmp += stale_tmp;
+        }
         Ok(report)
     }
 
@@ -1240,6 +1386,8 @@ impl Client {
         if done.as_deref() == Some("done") {
             return Ok(());
         }
+
+        let mut any_pending_retry = false;
 
         // 1. Migrate legacy <profile>/files/<attachment_id> entries.
         let legacy_local: Vec<(String, i64, String, i64)> = sqlx::query_as(
@@ -1289,16 +1437,34 @@ impl Client {
             match self.commit_media_file(&desc, &old_path).await {
                 Ok(_) => {
                     let _ = tokio::fs::remove_file(&old_path).await;
+                    let _ = sqlx::query("DELETE FROM local_files WHERE id = ?1")
+                        .bind(&att_id)
+                        .execute(&self.db)
+                        .await;
                 }
                 Err(_) => {
-                    // Corrupt or unverified legacy file: protect in quarantine instead of deleting.
-                    let quarantine = self.quarantine_dir();
-                    let src = old_path.clone();
-                    let hint = att_id.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        move_to_quarantine(&src, &quarantine, "legacy-files", &hint)
+                    // Distinguish genuine corrupt source from transient write/index failure.
+                    let check_path = old_path.clone();
+                    let check_sha = sha256.clone();
+                    let check_size = size.max(0) as u64;
+                    let source_valid = tokio::task::spawn_blocking(move || {
+                        verify_file_integrity(&check_path, check_size, &check_sha).is_ok()
                     })
-                    .await;
+                    .await
+                    .unwrap_or(false);
+                    if source_valid {
+                        // Valid source failed to commit (e.g. disk full / DB failure): keep source and retry on next open.
+                        any_pending_retry = true;
+                    } else {
+                        // Corrupt or unverified legacy file: protect in quarantine instead of deleting.
+                        let quarantine = self.quarantine_dir();
+                        let src = old_path.clone();
+                        let hint = att_id.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            move_to_quarantine(&src, &quarantine, "legacy-files", &hint)
+                        })
+                        .await;
+                    }
                 }
             }
         }
@@ -1323,7 +1489,11 @@ impl Client {
             })
             .await?;
             for (name, path) in leftovers {
+                if handled_legacy_files.contains(&name) && any_pending_retry {
+                    continue;
+                }
                 let mut migrated = false;
+                let mut keep_for_retry = false;
                 if let Ok(att_uuid) = Uuid::parse_str(&name) {
                     let inbox_row: Option<(i64, String, String)> = sqlx::query_as(
                         "SELECT seq, conversation_id, payload FROM inbox
@@ -1352,13 +1522,29 @@ impl Client {
                             mime,
                             dimensions: None,
                         };
-                        if self.commit_media_file(&desc, &path).await.is_ok() {
-                            let _ = tokio::fs::remove_file(&path).await;
-                            migrated = true;
+                        match self.commit_media_file(&desc, &path).await {
+                            Ok(_) => {
+                                let _ = tokio::fs::remove_file(&path).await;
+                                migrated = true;
+                            }
+                            Err(_) => {
+                                let check_path = path.clone();
+                                let check_sha = attachment.sha256.clone();
+                                let check_size = attachment.size;
+                                let source_valid = tokio::task::spawn_blocking(move || {
+                                    verify_file_integrity(&check_path, check_size, &check_sha).is_ok()
+                                })
+                                .await
+                                .unwrap_or(false);
+                                if source_valid {
+                                    keep_for_retry = true;
+                                    any_pending_retry = true;
+                                }
+                            }
                         }
                     }
                 }
-                if !migrated {
+                if !migrated && !keep_for_retry {
                     let quarantine = self.quarantine_dir();
                     let _ = tokio::task::spawn_blocking(move || {
                         move_to_quarantine(&path, &quarantine, "legacy-files", &name)
@@ -1369,6 +1555,7 @@ impl Client {
         }
 
         // 2. Migrate legacy SQLite media_previews (image original = -1, thumbnail = -2).
+        // Delete each legacy row ONLY after its replacement file & index commit succeeds (or if message was recalled/hidden).
         let legacy_previews: Vec<(i64, String, i64, String, Vec<u8>)> = sqlx::query_as(
             "SELECT message_seq, sha256, variant, mime, bytes FROM media_previews WHERE variant IN (-1, -2)",
         )
@@ -1377,6 +1564,23 @@ impl Client {
         .unwrap_or_default();
 
         for (seq, sha256, variant_id, mime, bytes) in legacy_previews {
+            let dead: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM recall_tombstones WHERE message_seq = ?1)
+                     OR EXISTS(SELECT 1 FROM hidden_messages WHERE seq = ?1)
+                     OR EXISTS(SELECT 1 FROM inbox WHERE seq = ?1 AND json_extract(payload, '$.recalled') = 1)",
+            )
+            .bind(seq)
+            .fetch_one(&self.db)
+            .await
+            .unwrap_or(false);
+            if dead {
+                let _ = sqlx::query("DELETE FROM media_previews WHERE message_seq = ?1 AND variant = ?2")
+                    .bind(seq)
+                    .bind(variant_id)
+                    .execute(&self.db)
+                    .await;
+                continue;
+            }
             let inbox_row: Option<(String, Option<String>, String)> = sqlx::query_as(
                 "SELECT conversation_id, attachment_id, payload FROM inbox
                  WHERE seq = ?1
@@ -1387,6 +1591,7 @@ impl Client {
             .fetch_optional(&self.db)
             .await?;
             let Some((conv_str, att_str, payload)) = inbox_row else {
+                // Unknown attribution: preserve legacy row without deleting.
                 continue;
             };
             let Ok(conv_id) = Uuid::parse_str(&conv_str) else { continue };
@@ -1411,7 +1616,17 @@ impl Client {
                         mime: &mime,
                         dimensions: None,
                     };
-                    let _ = self.commit_media_bytes(&desc, &bytes).await;
+                    if self.commit_media_bytes(&desc, &bytes).await.is_ok() {
+                        let _ = sqlx::query(
+                            "DELETE FROM media_previews WHERE message_seq = ?1 AND variant = ?2",
+                        )
+                        .bind(seq)
+                        .bind(variant_id)
+                        .execute(&self.db)
+                        .await;
+                    } else {
+                        any_pending_retry = true;
+                    }
                 }
             } else if variant_id == -2
                 && let Some(dims) = png_dimensions(&bytes)
@@ -1428,13 +1643,26 @@ impl Client {
                     mime: "image/png",
                     dimensions: Some(dims),
                 };
-                let _ = self.commit_media_bytes(&desc, &bytes).await;
+                if self.commit_media_bytes(&desc, &bytes).await.is_ok() {
+                    let _ = sqlx::query(
+                        "DELETE FROM media_previews WHERE message_seq = ?1 AND variant = ?2",
+                    )
+                    .bind(seq)
+                    .bind(variant_id)
+                    .execute(&self.db)
+                    .await;
+                } else {
+                    any_pending_retry = true;
+                }
             }
         }
-        let _ = sqlx::query("DELETE FROM media_previews").execute(&self.db).await;
 
         // 3. Migrate legacy SQLite cached_profile_images to public cache files.
         let now = unix_millis();
+        let _ = sqlx::query("DELETE FROM cached_profile_images WHERE expires_at <= ?1")
+            .bind(now)
+            .execute(&self.db)
+            .await;
         let legacy_pub: Vec<(String, String, Vec<u8>, i64)> = sqlx::query_as(
             "SELECT user_id, version, data, expires_at FROM cached_profile_images WHERE expires_at > ?1",
         )
@@ -1457,11 +1685,6 @@ impl Client {
                 .fetch_one(&self.db)
                 .await
                 .unwrap_or(false);
-                if is_avatar {
-                    let _ = self
-                        .commit_public_image(user_id, PublicResourceKind::Avatar, version, &data, expires_at)
-                        .await;
-                }
                 let is_cover: bool = sqlx::query_scalar(
                     "SELECT EXISTS(
                         SELECT 1 FROM cached_profiles WHERE user_id = ?1 AND json_extract(payload, '$.cover') = ?2
@@ -1472,21 +1695,47 @@ impl Client {
                 .fetch_one(&self.db)
                 .await
                 .unwrap_or(false);
-                if is_cover {
-                    let _ = self
+                if !is_avatar && !is_cover {
+                    // Unknown attribution: preserve legacy row without deleting.
+                    continue;
+                }
+                let mut ok = true;
+                if is_avatar
+                    && self
+                        .commit_public_image(user_id, PublicResourceKind::Avatar, version, &data, expires_at)
+                        .await
+                        .is_err()
+                {
+                    ok = false;
+                }
+                if is_cover
+                    && self
                         .commit_public_image(user_id, PublicResourceKind::Cover, version, &data, expires_at)
-                        .await;
+                        .await
+                        .is_err()
+                {
+                    ok = false;
+                }
+                if ok {
+                    let _ = sqlx::query(
+                        "DELETE FROM cached_profile_images WHERE user_id = ?1 AND version = ?2",
+                    )
+                    .bind(&user_str)
+                    .bind(&ver_str)
+                    .execute(&self.db)
+                    .await;
+                } else {
+                    any_pending_retry = true;
                 }
             }
         }
-        let _ = sqlx::query("DELETE FROM cached_profile_images")
-            .execute(&self.db)
-            .await;
 
-        sqlx::query("INSERT INTO media_meta (key, value) VALUES (?1, 'done') ON CONFLICT(key) DO UPDATE SET value = 'done'")
-            .bind(MEDIA_MIGRATION_KEY)
-            .execute(&self.db)
-            .await?;
+        if !any_pending_retry {
+            sqlx::query("INSERT INTO media_meta (key, value) VALUES (?1, 'done') ON CONFLICT(key) DO UPDATE SET value = 'done'")
+                .bind(MEDIA_MIGRATION_KEY)
+                .execute(&self.db)
+                .await?;
+        }
         Ok(())
     }
 
@@ -1546,10 +1795,8 @@ impl Client {
             !bytes.is_empty() && bytes.len() <= MAX_PROFILE_IMAGE_BYTES,
             "Invalid profile image size"
         );
-        let slot = lock_slot(&format!("public:{}:{}", kind.as_str(), version));
-        let _lock = self.media_locks[slot].lock().await;
-
         let rel_path = self.public_rel_path(kind, version);
+        let lock = self.media_locks[lock_slot(&rel_path)].lock().await;
         let final_path = self.resolve_public_path(&rel_path)?;
         let tmp_dir = self.tmp_dir();
         let payload = bytes.to_vec();
@@ -1668,12 +1915,8 @@ impl Client {
             }
             return Err(error.into());
         }
-
-        for old_rel in unreferenced {
-            if let Ok(path) = self.resolve_public_path(&old_rel) {
-                let _ = tokio::fs::remove_file(path).await;
-            }
-        }
+        drop(lock);
+        self.remove_rel_paths(unreferenced).await;
         Ok(())
     }
 
@@ -1714,6 +1957,158 @@ impl Client {
     }
 }
 
+fn delete_if_inactive_tmp(
+    active_tmp: &std::sync::Mutex<HashSet<String>>,
+    name: &str,
+    path: &Path,
+) -> Option<u64> {
+    let active = active_tmp.lock().expect("active temp files");
+    if active.iter().any(|prefix| name.starts_with(prefix)) {
+        return None;
+    }
+    let bytes = remove_file_if_exists(path);
+    if bytes > 0 || !path.exists() {
+        Some(bytes)
+    } else {
+        None
+    }
+}
+
+async fn conversation_joined_after_in_tx(
+    db: &mut SqliteConnection,
+    conversation_id: Uuid,
+) -> Result<Option<Option<i64>>> {
+    let has_directory: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM directory WHERE id = 1)")
+            .fetch_one(&mut *db)
+            .await?;
+    if !has_directory {
+        return Ok(None);
+    }
+    let row: Option<(Option<i64>,)> = sqlx::query_as(
+        "SELECT json_extract(c.value, '$.joined_after')
+         FROM directory d, json_each(d.payload, '$.conversations') c
+         WHERE d.id = 1 AND json_extract(c.value, '$.id') = ?1",
+    )
+    .bind(conversation_id.to_string())
+    .fetch_optional(&mut *db)
+    .await?;
+    Ok(Some(row.and_then(|(cutoff,)| cutoff)))
+}
+
+async fn bind_same_conversation_duplicates_in_tx(
+    db: &mut SqliteConnection,
+    file_id: i64,
+    conversation_id: Uuid,
+    variant: MediaVariant,
+    content_key: &str,
+    exclude_seq: Option<i64>,
+) -> Result<()> {
+    let cutoff = match conversation_joined_after_in_tx(&mut *db, conversation_id).await? {
+        None => None,
+        Some(Some(joined_after)) => Some(joined_after),
+        Some(None) => return Ok(()),
+    };
+    let conv_str = conversation_id.to_string();
+    let rows: Vec<(i64, Option<String>, String)> = sqlx::query_as(
+        "SELECT seq, attachment_id, payload FROM inbox
+         WHERE conversation_id = ?1
+           AND attachment_id IS NOT NULL
+           AND json_extract(payload, '$.attachment.sha256') = ?2
+           AND json_extract(payload, '$.recalled') IS NOT 1
+           AND seq NOT IN (SELECT seq FROM hidden_messages)
+           AND seq NOT IN (SELECT message_seq FROM recall_tombstones)",
+    )
+    .bind(&conv_str)
+    .bind(content_key)
+    .fetch_all(&mut *db)
+    .await?;
+    let now = unix_millis();
+    for (seq, att_str, payload) in rows {
+        if exclude_seq == Some(seq) {
+            continue;
+        }
+        if let Some(joined_after) = cutoff
+            && seq <= joined_after
+        {
+            continue;
+        }
+        let Ok(message) = serde_json::from_str::<Message>(&payload) else { continue };
+        if message.recalled {
+            continue;
+        }
+        let Some(ref attachment) = message.attachment else { continue };
+        if attachment.sha256 != content_key || !variant.is_compatible_with_attachment(attachment) {
+            continue;
+        }
+        sqlx::query(
+            "INSERT OR IGNORE INTO media_refs (file_id, ref_kind, ref_id, conversation_id, attachment_id, variant, created_at)
+             VALUES (?1, 'message', ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(file_id)
+        .bind(seq.to_string())
+        .bind(&conv_str)
+        .bind(att_str.or_else(|| Some(attachment.id.to_string())))
+        .bind(variant.as_str())
+        .bind(now)
+        .execute(&mut *db)
+        .await?;
+    }
+    Ok(())
+}
+
+pub(super) async fn bind_message_to_existing_media_in_tx(
+    db: &mut SqliteConnection,
+    conversation_id: Uuid,
+    message_seq: i64,
+    attachment: &Attachment,
+) -> Result<()> {
+    let blocked: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM hidden_messages WHERE seq = ?1)
+             OR EXISTS(SELECT 1 FROM recall_tombstones WHERE message_seq = ?1)",
+    )
+    .bind(message_seq)
+    .fetch_one(&mut *db)
+    .await?;
+    if blocked {
+        return Ok(());
+    }
+    match conversation_joined_after_in_tx(&mut *db, conversation_id).await? {
+        None => {}
+        Some(Some(joined_after)) if message_seq > joined_after => {}
+        Some(_) => return Ok(()),
+    }
+    let conv_str = conversation_id.to_string();
+    let files: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id, variant FROM media_files
+         WHERE conversation_id = ?1 AND content_key = ?2 AND status = 'available'",
+    )
+    .bind(&conv_str)
+    .bind(&attachment.sha256)
+    .fetch_all(&mut *db)
+    .await?;
+    let now = unix_millis();
+    for (file_id, variant_str) in files {
+        let Some(variant) = MediaVariant::from_str(&variant_str) else { continue };
+        if !variant.is_compatible_with_attachment(attachment) {
+            continue;
+        }
+        sqlx::query(
+            "INSERT OR IGNORE INTO media_refs (file_id, ref_kind, ref_id, conversation_id, attachment_id, variant, created_at)
+             VALUES (?1, 'message', ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(file_id)
+        .bind(message_seq.to_string())
+        .bind(&conv_str)
+        .bind(attachment.id.to_string())
+        .bind(variant.as_str())
+        .bind(now)
+        .execute(&mut *db)
+        .await?;
+    }
+    Ok(())
+}
+
 pub(super) async fn release_media_refs_in_tx(
     db: &mut SqliteConnection,
     ref_kind: &str,
@@ -1729,14 +2124,47 @@ pub(super) async fn release_media_refs_in_tx(
     if candidate_files.is_empty() {
         return Ok(Vec::new());
     }
+    let excluded_seq = if ref_kind == "message" {
+        ref_id.parse::<i64>().ok()
+    } else {
+        None
+    };
     let mut removed_paths = Vec::new();
     let unique: HashSet<i64> = candidate_files.into_iter().collect();
     for file_id in unique {
-        let remaining: i64 =
+        let mut remaining: i64 =
             sqlx::query_scalar("SELECT count(*) FROM media_refs WHERE file_id = ?1")
                 .bind(file_id)
                 .fetch_one(&mut *db)
                 .await?;
+        if remaining == 0 {
+            let meta: Option<(String, String, String, String)> = sqlx::query_as(
+                "SELECT conversation_id, variant, content_key, status FROM media_files WHERE id = ?1",
+            )
+            .bind(file_id)
+            .fetch_optional(&mut *db)
+            .await?;
+            if let Some((conv_str, variant_str, content_key, status)) = meta
+                && status == "available"
+                && let Ok(conv_id) = Uuid::parse_str(&conv_str)
+                && let Some(variant) = MediaVariant::from_str(&variant_str)
+            {
+                bind_same_conversation_duplicates_in_tx(
+                    &mut *db,
+                    file_id,
+                    conv_id,
+                    variant,
+                    &content_key,
+                    excluded_seq,
+                )
+                .await?;
+                remaining =
+                    sqlx::query_scalar("SELECT count(*) FROM media_refs WHERE file_id = ?1")
+                        .bind(file_id)
+                        .fetch_one(&mut *db)
+                        .await?;
+            }
+        }
         if remaining == 0
             && let Some(rel_path) = sqlx::query_scalar::<_, String>(
                 "DELETE FROM media_files WHERE id = ?1 RETURNING rel_path",
@@ -2487,6 +2915,380 @@ mod tests {
         assert_eq!(rereg.cached_image_variant(conv, 2, Some(att2_id), &sha, false).await?.map(|(_, b)| b), Some(img));
         assert!(outbox_spool.is_file());
         rereg.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_migration_write_failure_preserves_source_and_retries_on_reopen() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let user = User { id: Uuid::new_v4(), handle: "mig_fail".into() };
+        let dev = Uuid::new_v4();
+        let conv = Uuid::new_v4();
+        let peer = Uuid::new_v4();
+        let avatar_ver = Uuid::new_v4();
+        let img = sample_png(24, 16, 42);
+        let sha = sha256_hex(&img);
+        let avatar = sample_png(16, 16, 43);
+
+        // Open once to initialize schema, then seed legacy rows and clear migration_v1.
+        let client = Client::open(
+            root.path(),
+            Api::new("http://127.0.0.1:1")?,
+            DeviceSession { user: user.clone(), device_id: dev, cursor: Uuid::new_v4() },
+            false,
+        )
+        .await?;
+        let media_root = client.media_root().to_path_buf();
+        setup_directory(&client, &[(conv, Some(0))]).await?;
+        sqlx::query("UPDATE directory SET payload = json_set(payload, '$.avatars', json_object(?1, ?2)) WHERE id = 1")
+            .bind(peer.to_string())
+            .bind(avatar_ver.to_string())
+            .execute(&client.db)
+            .await?;
+        insert_attachment_message(&client, 1, conv, "legacy.png", &img, None).await?;
+        sqlx::query("INSERT INTO media_previews VALUES (1, ?, -1, 'image/png', ?, 1)")
+            .bind(&sha)
+            .bind(&img)
+            .execute(&client.db)
+            .await?;
+        sqlx::query("INSERT INTO media_previews VALUES (1, ?, -2, 'image/png', ?, 1)")
+            .bind(&sha)
+            .bind(&img)
+            .execute(&client.db)
+            .await?;
+        sqlx::query("INSERT INTO cached_profile_images (user_id, version, data, expires_at) VALUES (?, ?, ?, ?)")
+            .bind(peer.to_string())
+            .bind(avatar_ver.to_string())
+            .bind(&avatar)
+            .bind(unix_millis() + 600_000)
+            .execute(&client.db)
+            .await?;
+        // Also seed an unknown-attribution preview row (no inbox message) to confirm it is not deleted.
+        sqlx::query("INSERT INTO media_previews VALUES (999, ?, -1, 'image/png', ?, 1)")
+            .bind(&sha)
+            .bind(&img)
+            .execute(&client.db)
+            .await?;
+        sqlx::query("DELETE FROM media_meta WHERE key = ?")
+            .bind(MEDIA_MIGRATION_KEY)
+            .execute(&client.db)
+            .await?;
+        client.close().await;
+        drop(client);
+
+        // Inject real migration write failures: block the conversation & public avatar target dirs with regular files
+        // so Client::open succeeds while commit_media_bytes and commit_public_image fail during migration.
+        let conv_blocker = fs_path(&media_root.join("conversations").join(conv.to_string()));
+        let pub_blocker = fs_path(&media_root.join("public").join("avatars"));
+        for blocker in [&conv_blocker, &pub_blocker] {
+            if blocker.is_dir() {
+                fs::remove_dir_all(blocker)?;
+            }
+            fs::create_dir_all(blocker.parent().unwrap())?;
+            fs::write(blocker, b"blocker")?;
+        }
+
+        let failed_open = Client::open(
+            root.path(),
+            Api::new("http://127.0.0.1:1")?,
+            DeviceSession { user: user.clone(), device_id: dev, cursor: Uuid::new_v4() },
+            false,
+        )
+        .await?;
+        let preview_count: i64 = sqlx::query_scalar("SELECT count(*) FROM media_previews")
+            .fetch_one(&failed_open.db)
+            .await?;
+        let pub_count: i64 = sqlx::query_scalar("SELECT count(*) FROM cached_profile_images")
+            .fetch_one(&failed_open.db)
+            .await?;
+        let mig_state: Option<String> = sqlx::query_scalar("SELECT value FROM media_meta WHERE key = ?")
+            .bind(MEDIA_MIGRATION_KEY)
+            .fetch_optional(&failed_open.db)
+            .await?;
+        assert_eq!(preview_count, 3, "legacy media_previews must be preserved on migration failure");
+        assert_eq!(pub_count, 1, "legacy cached_profile_images must be preserved on migration failure");
+        assert_ne!(mig_state.as_deref(), Some("done"), "migration_v1 must not be marked done after failure");
+        failed_open.close().await;
+        drop(failed_open);
+
+        // Remove obstacles and reopen: migration must retry, succeed, clean migrated rows, preserve unknown row, and mark done.
+        fs::remove_file(&conv_blocker)?;
+        fs::remove_file(&pub_blocker)?;
+        let retried = Client::open(
+            root.path(),
+            Api::new("http://127.0.0.1:1")?,
+            DeviceSession { user, device_id: dev, cursor: Uuid::new_v4() },
+            false,
+        )
+        .await?;
+        assert_eq!(
+            retried.cached_image_variant(conv, 1, None, &sha, false).await?.map(|(_, b)| b),
+            Some(img.clone())
+        );
+        assert_eq!(
+            retried.cached_image_variant(conv, 1, None, &sha, true).await?.map(|(_, b)| b),
+            Some(img)
+        );
+        assert_eq!(retried.cached_profile_image(peer, avatar_ver).await, Some(avatar));
+        let remaining_previews: Vec<i64> = sqlx::query_scalar("SELECT message_seq FROM media_previews")
+            .fetch_all(&retried.db)
+            .await?;
+        assert_eq!(remaining_previews, vec![999], "only unknown-attribution preview row should remain");
+        let remaining_pub: i64 = sqlx::query_scalar("SELECT count(*) FROM cached_profile_images")
+            .fetch_one(&retried.db)
+            .await?;
+        assert_eq!(remaining_pub, 0);
+        let mig_done: Option<String> = sqlx::query_scalar("SELECT value FROM media_meta WHERE key = ?")
+            .bind(MEDIA_MIGRATION_KEY)
+            .fetch_optional(&retried.db)
+            .await?;
+        assert_eq!(mig_done.as_deref(), Some("done"));
+        retried.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn within_conversation_dedup_protects_unopened_duplicates_in_both_orderings() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let user = User { id: Uuid::new_v4(), handle: "dedup_unopened".into() };
+        let conv = Uuid::new_v4();
+        let other_conv = Uuid::new_v4();
+        let client = Client::open(
+            root.path(),
+            Api::new("http://127.0.0.1:1")?,
+            DeviceSession { user: user.clone(), device_id: Uuid::new_v4(), cursor: Uuid::new_v4() },
+            false,
+        )
+        .await?;
+        setup_directory(&client, &[(conv, Some(0)), (other_conv, Some(0))]).await?;
+        let img = sample_png(30, 20, 55);
+        let sha = sha256_hex(&img);
+
+        // Timing 1: both A (seq 10) and B (seq 20) are already in inbox; also a recalled seq 21 and other_conv seq 22.
+        let msg_a = insert_attachment_message(&client, 10, conv, "a.png", &img, None).await?;
+        let msg_b = insert_attachment_message(&client, 20, conv, "b.png", &img, None).await?;
+        let _msg_other = insert_attachment_message(&client, 22, other_conv, "other.png", &img, None).await?;
+        let mut recalled_msg = insert_attachment_message(&client, 21, conv, "rec.png", &img, None).await?;
+        recalled_msg.recalled = true;
+        recalled_msg.attachment = None;
+        sqlx::query("UPDATE inbox SET payload = ?, attachment_id = NULL WHERE seq = 21")
+            .bind(serde_json::to_string(&recalled_msg)?)
+            .execute(&client.db)
+            .await?;
+
+        // Open/cache ONLY A (B is never opened!).
+        let att_a = msg_a.attachment.as_ref().unwrap().id;
+        let att_b = msg_b.attachment.as_ref().unwrap().id;
+        client.remember_image_variant(conv, 10, Some(att_a), &sha, false, "image/png", &img).await?;
+        let phys = fs_path(&client.media_root().join("conversations").join(conv.to_string()).join("images").join(format!("orig_{sha}.png")));
+        assert!(phys.is_file());
+        // Cross-conversation message must NOT be bound to conv's file!
+        let other_refs: i64 = sqlx::query_scalar("SELECT count(*) FROM media_refs WHERE conversation_id = ?")
+            .bind(other_conv.to_string())
+            .fetch_one(&client.db)
+            .await?;
+        assert_eq!(other_refs, 0);
+
+        // Delete/hide A while B was never opened: physical file MUST survive and B reads offline!
+        client.hide_message(conv, 10).await?;
+        assert!(phys.is_file(), "unopened duplicate B must keep physical file alive");
+        assert_eq!(
+            client.cached_image_variant(conv, 20, Some(att_b), &sha, false).await?.map(|(_, b)| b),
+            Some(img.clone())
+        );
+
+        // Timing 2: while B is cached, a new duplicate C (seq 30) arrives via persist_message (never opened!).
+        let msg_c = Message {
+            seq: 30,
+            conversation_id: conv,
+            sender: user.clone(),
+            created_at: unix_millis(),
+            text: None,
+            attachment: Some(Attachment {
+                id: Uuid::new_v4(),
+                name: "c.png".into(),
+                kind: AttachmentKind::File,
+                size: img.len() as u64,
+                sha256: sha.clone(),
+            }),
+            ai_provider: None,
+            recalled: false,
+            reply_to: None,
+            nonce: None,
+            expires_at: None,
+            expired: None,
+            pending: None,
+            local_file: false,
+        };
+        let att_c = msg_c.attachment.as_ref().unwrap().id;
+        let mut tx = client.db.begin_with("BEGIN IMMEDIATE").await?;
+        super::super::local_sync::persist_message(&mut tx, msg_c).await?;
+        tx.commit().await?;
+
+        // Delete/hide B while C was never opened: physical file MUST survive and C reads offline!
+        client.hide_message(conv, 20).await?;
+        assert!(phys.is_file(), "newly persisted duplicate C must keep physical file alive");
+        assert_eq!(
+            client.cached_image_variant(conv, 30, Some(att_c), &sha, false).await?.map(|(_, b)| b),
+            Some(img)
+        );
+
+        // Finally hide C (last live ref in conv): physical file MUST be reclaimed (recalled seq 21 must NOT hold it).
+        client.hide_message(conv, 30).await?;
+        assert!(!phys.exists(), "physical file must be reclaimed once all live references are removed");
+        client.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn consistency_check_does_not_quarantine_or_delete_concurrent_commits() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let user = User { id: Uuid::new_v4(), handle: "race_scan".into() };
+        let conv = Uuid::new_v4();
+        let peer = Uuid::new_v4();
+        let avatar_ver = Uuid::new_v4();
+        let client = Arc::new(
+            Client::open(
+                root.path(),
+                Api::new("http://127.0.0.1:1")?,
+                DeviceSession { user, device_id: Uuid::new_v4(), cursor: Uuid::new_v4() },
+                false,
+            )
+            .await?,
+        );
+        setup_directory(&client, &[(conv, Some(0))]).await?;
+        sqlx::query("UPDATE directory SET payload = json_set(payload, '$.avatars', json_object(?1, ?2)) WHERE id = 1")
+            .bind(peer.to_string())
+            .bind(avatar_ver.to_string())
+            .execute(&client.db)
+            .await?;
+        let img = sample_png(18, 18, 66);
+        let sha = sha256_hex(&img);
+        let avatar = sample_png(12, 12, 67);
+        let msg = insert_attachment_message(&client, 1, conv, "race.png", &img, None).await?;
+        let att_id = msg.attachment.as_ref().unwrap().id;
+
+        // Place genuinely unknown/orphan files on disk so we verify they ARE still cleaned/quarantined.
+        let stray_conv = fs_path(&client.media_root().join("conversations").join(conv.to_string()).join("images").join("stray.bin"));
+        fs::create_dir_all(stray_conv.parent().unwrap())?;
+        fs::write(&stray_conv, b"stray")?;
+        let orphan_pub = fs_path(&client.media_root().join("public").join("avatars").join(format!("{}.png", Uuid::new_v4())));
+        fs::create_dir_all(orphan_pub.parent().unwrap())?;
+        fs::write(&orphan_pub, b"orphan")?;
+
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+        let scan_client = Arc::clone(&client);
+        let scan_task = tokio::spawn(async move {
+            scan_client
+                .run_consistency_check_inner(Some((ready_tx, resume_rx)))
+                .await
+        });
+
+        // Wait until consistency check has taken its DB snapshot, then commit new chat media + new avatar!
+        ready_rx.await?;
+        client.remember_image_variant(conv, 1, Some(att_id), &sha, false, "image/png", &img).await?;
+        client
+            .commit_public_image(peer, PublicResourceKind::Avatar, avatar_ver, &avatar, unix_millis() + 600_000)
+            .await?;
+        let _ = resume_tx.send(());
+
+        let report = scan_task.await??;
+        assert_eq!(report.quarantined_unknown, 1, "only stray file should be quarantined");
+        assert_eq!(report.removed_orphan_files, 1, "only orphan public file should be removed");
+        assert!(!stray_conv.exists());
+        assert!(!orphan_pub.exists());
+
+        // Concurrently committed chat image and avatar MUST still exist and be readable!
+        let new_img_path = fs_path(&client.media_root().join("conversations").join(conv.to_string()).join("images").join(format!("orig_{sha}.png")));
+        let new_avatar_path = fs_path(&client.media_root().join("public").join("avatars").join(format!("{avatar_ver}.png")));
+        assert!(new_img_path.is_file(), "concurrently committed chat media must not be quarantined");
+        assert!(new_avatar_path.is_file(), "concurrently committed avatar must not be deleted");
+        assert_eq!(
+            client.cached_image_variant(conv, 1, Some(att_id), &sha, false).await?.map(|(_, b)| b),
+            Some(img)
+        );
+        assert_eq!(client.cached_profile_image(peer, avatar_ver).await, Some(avatar));
+        client.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn clear_cache_and_remove_rel_paths_respect_concurrent_writes() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let user = User { id: Uuid::new_v4(), handle: "race_clear".into() };
+        let conv = Uuid::new_v4();
+        let peer = Uuid::new_v4();
+        let avatar_ver = Uuid::new_v4();
+        let client = Arc::new(
+            Client::open(
+                root.path(),
+                Api::new("http://127.0.0.1:1")?,
+                DeviceSession { user, device_id: Uuid::new_v4(), cursor: Uuid::new_v4() },
+                false,
+            )
+            .await?,
+        );
+        setup_directory(&client, &[(conv, Some(0))]).await?;
+        sqlx::query("UPDATE directory SET payload = json_set(payload, '$.avatars', json_object(?1, ?2)) WHERE id = 1")
+            .bind(peer.to_string())
+            .bind(avatar_ver.to_string())
+            .execute(&client.db)
+            .await?;
+        let img = sample_png(14, 14, 77);
+        let sha = sha256_hex(&img);
+        let avatar = sample_png(10, 10, 78);
+        let msg = insert_attachment_message(&client, 1, conv, "keep.png", &img, None).await?;
+        let att_id = msg.attachment.as_ref().unwrap().id;
+        client.remember_image_variant(conv, 1, Some(att_id), &sha, false, "image/png", &img).await?;
+
+        // Seed one stale tmp file.
+        let stale_tmp = client.tmp_dir().join("stale-old.part");
+        fs::create_dir_all(client.tmp_dir())?;
+        fs::write(&stale_tmp, b"stale")?;
+
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+        let clear_client = Arc::clone(&client);
+        let clear_task = tokio::spawn(async move {
+            clear_client.clear_cache_inner(Some((ready_tx, resume_rx))).await
+        });
+
+        // After clear_cache commits its DB snapshot, concurrently commit a new avatar AND create an active tmp file!
+        ready_rx.await?;
+        client
+            .commit_public_image(peer, PublicResourceKind::Avatar, avatar_ver, &avatar, unix_millis() + 600_000)
+            .await?;
+        let active_prefix = "concurrent-active.tmp".to_owned();
+        let _active_guard = ActiveTempGuard::track(&client.active_tmp, active_prefix.clone());
+        let active_tmp_file = client.tmp_dir().join(format!("{active_prefix}1234.part"));
+        fs::write(&active_tmp_file, b"in-progress")?;
+        let _ = resume_tx.send(());
+
+        let report = clear_task.await??;
+        assert_eq!(report.removed_temp_files, 1, "only stale tmp file should be removed");
+        assert!(!stale_tmp.exists());
+        assert!(active_tmp_file.is_file(), "active tmp file created after snapshot must survive");
+        assert_eq!(
+            client.cached_profile_image(peer, avatar_ver).await,
+            Some(avatar),
+            "avatar committed after snapshot must survive clear_cache"
+        );
+
+        // Stale remove_rel_paths must re-check SQLite and NOT unlink a currently indexed file!
+        let rel_path: String = sqlx::query_scalar(
+            "SELECT rel_path FROM media_files WHERE conversation_id = ? AND variant = 'image_original'",
+        )
+        .bind(conv.to_string())
+        .fetch_one(&client.db)
+        .await?;
+        client.remove_rel_paths(vec![rel_path]).await;
+        assert_eq!(
+            client.cached_image_variant(conv, 1, Some(att_id), &sha, false).await?.map(|(_, b)| b),
+            Some(img),
+            "remove_rel_paths must not delete a file that is still indexed"
+        );
+        client.close().await;
         Ok(())
     }
 }
