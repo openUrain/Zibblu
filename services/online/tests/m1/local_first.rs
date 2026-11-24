@@ -124,8 +124,12 @@ async fn outbox_and_inbox_progress_independently_and_confirm_the_same_nonce() ->
     let saved = alice.messages(chat, None).await?.items;
     assert!(saved.iter().any(|row| row.nonce == Some(delayed_nonce) && row.pending.is_none()));
     assert!(saved.iter().any(|row| row.nonce == Some(following_nonce) && row.pending.is_some()));
+    let deleted_seq = saved.iter().find(|row| row.nonce == Some(delayed_nonce))
+        .context("missing sync-confirmed message")?.seq;
+    alice.hide_message(chat, deleted_seq).await?;
     release.notify_one();
     assert!(flushing.await??);
+    assert!(!alice.messages(chat, None).await?.items.iter().any(|row| row.seq == deleted_seq));
     assert!(alice.queue_message(chat, SendMessage {
         nonce: delayed_nonce,
         text: "Different text with the same ID".into(),
