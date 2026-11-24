@@ -241,6 +241,22 @@ impl Client {
                 .bind(&chat).execute(&mut *tx).await?;
         }
         for (seq, attachment_id) in rows {
+            if let Some(id) = attachment_id.as_ref() {
+                sqlx::query("INSERT OR IGNORE INTO local_suppressed_sends (kind, id, conversation_id)
+                    SELECT 'upload', id, ?2 FROM transfers WHERE id = ?1 AND direction = 'upload'
+                    AND json_extract(payload, '$.status') <> 'complete'")
+                    .bind(id).bind(&chat).execute(&mut *tx).await?;
+                if !delete_chat {
+                    // An already requested external save owns its original independently of the message.
+                    sqlx::query("INSERT OR IGNORE INTO media_refs (file_id, ref_kind, ref_id, conversation_id, attachment_id, variant, created_at)
+                        SELECT r.file_id, 'download', ?1, r.conversation_id, r.attachment_id, r.variant, ?3
+                        FROM media_refs r JOIN transfers t ON t.id = ?1 AND t.direction = 'download'
+                        WHERE r.ref_kind = 'message' AND r.ref_id = ?2 AND r.attachment_id = ?1
+                        AND r.variant IN ('image_original', 'video_original', 'attachment')
+                        AND json_extract(t.payload, '$.status') <> 'complete'")
+                        .bind(id).bind(seq.to_string()).bind(unix_millis()).execute(&mut *tx).await?;
+                }
+            }
             media_paths.extend(media_store::release_media_refs_in_tx(
                 &mut tx, "message", &seq.to_string(),
             ).await?);
@@ -370,7 +386,7 @@ impl Client {
              WHERE (json_extract(t.payload, '$.status') <> 'complete'
                 OR NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h.attachment_id = t.id))
                 AND NOT EXISTS (SELECT 1 FROM local_suppressed_sends s WHERE s.kind = 'upload' AND t.direction = 'upload' AND s.id = t.id)
-                AND (json_extract(t.payload, '$.status') <> 'complete'
+                AND ((t.direction = 'download' AND json_extract(t.payload, '$.status') <> 'complete')
                     OR NOT EXISTS (SELECT 1 FROM local_deleted_messages d WHERE d.attachment_id = t.id))
              ORDER BY t.rowid DESC",
         )
@@ -852,6 +868,9 @@ impl Client {
             .execute(&self.db)
             .await?;
         drop(workers);
+        if direction == Direction::Download {
+            self.release_task_media_ref("download", &id.to_string()).await?;
+        }
         if direction == Direction::Upload {
             self.history_changed();
             if !self.closed.load(Ordering::Relaxed) {
@@ -1374,7 +1393,29 @@ impl Client {
             ensure_new_destination(&destination)?;
         }
         let existing_cached = if is_hidden {
-            None
+            let row: Option<(i64, String)> = sqlx::query_as(
+                "SELECT f.id, f.rel_path FROM media_refs r JOIN media_files f ON f.id = r.file_id
+                 WHERE r.ref_kind = 'download' AND r.ref_id = ?1 AND r.conversation_id = ?2
+                 AND r.attachment_id = ?1 AND r.variant = ?3 AND f.status = 'available'
+                 AND f.sha256 = ?4 AND f.size = ?5 AND f.device_id = ?6
+                 AND EXISTS (SELECT 1 FROM directory d, json_each(d.payload, '$.conversations') c
+                    WHERE d.id = 1 AND json_extract(c.value, '$.id') = ?2
+                    AND json_extract(c.value, '$.joined_after') < ?7)",
+            ).bind(id.to_string()).bind(&conv_str).bind(variant.as_str())
+                .bind(&attachment.sha256).bind(attachment.size as i64)
+                .bind(self.device_id.to_string()).bind(seq).fetch_optional(&self.db).await?;
+            if let Some((file_id, rel)) = row {
+                let path = self.resolve_conversation_path(conversation_id, &rel)?;
+                let check = path.clone();
+                let file = attachment.clone();
+                if tokio::task::spawn_blocking(move || verify_file(&check, &file)).await?.is_ok() {
+                    Some((file_id, path, attachment.size))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         } else {
             self.verified_media_path(
                 conversation_id,
@@ -1387,7 +1428,7 @@ impl Client {
             .await?
         };
         let (cached_file_id, cached, need_ack) = if let Some((file_id, path, _)) = existing_cached {
-            let need_ack = if has_local_ack {
+            let need_ack = if has_local_ack || is_hidden {
                 false
             } else {
                 // Best-effort download registration for content ACK if cached earlier via preview;
@@ -1585,10 +1626,12 @@ impl Client {
             Ok(TransferStatus::Complete)
         }
         .await;
-        if cached_file_id.is_some() {
-            let _ = self
-                .release_task_media_ref("download", &download_ref_id)
-                .await;
+        if cached_file_id.is_some()
+            && (matches!(&result, Ok(TransferStatus::Complete))
+                || !sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM local_deleted_messages WHERE seq = ?)")
+                    .bind(seq).fetch_one(&self.db).await?)
+        {
+            self.release_task_media_ref("download", &download_ref_id).await?;
         }
         result
     }
