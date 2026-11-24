@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 264" width="1200" height="264" role="img" aria-labelledby="arch-title arch-desc">
+  <title id="arch-title">Zibblu Transport &amp; Privacy Boundaries</title>
+  <desc id="arch-desc">Visual comparison of Zibblu Online server-routed ordinary chat, direct encrypted Private LAN sessions, and explicit read-only AI requests.</desc>
+  <defs>
+    <linearGradient id="abg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#141022"/>
+      <stop offset="100%" stop-color="#211838"/>
+    </linearGradient>
+    <linearGradient id="node" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#c4a7ff" stop-opacity="0.04"/>
+    </linearGradient>
+    <linearGradient id="accentNode" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7c56d6" stop-opacity="0.48"/>
+      <stop offset="100%" stop-color="#53329a" stop-opacity="0.34"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="264" rx="20" fill="url(#abg)" stroke="#c4a7ff" stroke-opacity="0.22" stroke-width="1.2"/>
+
+  <!-- Row 1: Ordinary Online / Self-Hosted -->
+  <text x="32" y="42" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11.5" font-weight="700" fill="#c4a7ff" letter-spacing="1.4">ORDINARY CHAT &amp; FILES · SERVER-ROUTED (NOT E2EE)</text>
+
+  <g transform="translate(32, 56)">
+    <rect width="268" height="68" rx="14" fill="url(#node)" stroke="#dfd0ff" stroke-opacity="0.22"/>
+    <text x="20" y="31" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="14" font-weight="700" fill="#ffffff">Windows Client</text>
+    <text x="20" y="51" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#cbc3dc">Local SQLite history &amp; verified files</text>
+  </g>
+
+  <g stroke="#c4a7ff" stroke-width="1.8" fill="none">
+    <line x1="312" y1="90" x2="404" y2="90" stroke-dasharray="5 5"/>
+    <path d="M398 84l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="358" y="79" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="10.5" font-weight="700" fill="#b7a9d4">HTTPS</text>
+
+  <g transform="translate(416, 56)">
+    <rect width="368" height="68" rx="14" fill="url(#accentNode)" stroke="#dfd0ff" stroke-opacity="0.40"/>
+    <text x="20" y="31" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="14" font-weight="700" fill="#ffffff">Zibblu Online or Your Self-Hosted Server</text>
+    <text x="20" y="51" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#e5d9ff">Rust + PostgreSQL · Controls accounts &amp; delivery</text>
+  </g>
+
+  <g stroke="#c4a7ff" stroke-width="1.8" fill="none">
+    <line x1="796" y1="90" x2="888" y2="90" stroke-dasharray="5 5"/>
+    <path d="M882 84l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="842" y="79" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="10.5" font-weight="700" fill="#b7a9d4">HTTPS</text>
+
+  <g transform="translate(900, 56)">
+    <rect width="268" height="68" rx="14" fill="url(#node)" stroke="#dfd0ff" stroke-opacity="0.22"/>
+    <text x="20" y="31" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="14" font-weight="700" fill="#ffffff">Windows Client</text>
+    <text x="20" y="51" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#cbc3dc">Offline-readable profile</text>
+  </g>
+
+  <!-- Divider -->
+  <line x1="32" y1="146" x2="1168" y2="146" stroke="#c4a7ff" stroke-opacity="0.14"/>
+
+  <!-- Row 2 Left: Private LAN -->
+  <g transform="translate(32, 164)">
+    <rect width="556" height="74" rx="14" fill="#ffffff" fill-opacity="0.06" stroke="#c4a7ff" stroke-opacity="0.26"/>
+    <text x="20" y="28" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11.5" font-weight="700" fill="#dfd0ff" letter-spacing="1.2">PRIVATE LAN MODE · ISOLATED DIRECT CHANNEL</text>
+    <text x="20" y="52" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13.5" fill="#ffffff">Device A  ⇄  Mutual QUIC TLS (LAN Only)  ⇄  Device B</text>
+    <text x="410" y="52" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11.5" fill="#bfb5d6">No relay · In-memory</text>
+  </g>
+
+  <!-- Row 2 Right: Read-Only AI -->
+  <g transform="translate(612, 164)">
+    <rect width="556" height="74" rx="14" fill="#ffffff" fill-opacity="0.06" stroke="#c4a7ff" stroke-opacity="0.26"/>
+    <text x="20" y="28" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11.5" font-weight="700" fill="#dfd0ff" letter-spacing="1.2">READ-ONLY AI · PER-REQUEST AUTHORIZATION</text>
+    <text x="20" y="52" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13.5" fill="#ffffff">@name Snapshot  →  Selected Provider (Read-Only)</text>
+    <text x="410" y="52" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11.5" fill="#bfb5d6">LAN excluded</text>
+  </g>
+</svg>
