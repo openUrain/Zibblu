@@ -745,6 +745,8 @@ async fn video_derivatives_and_retention() -> Result<()> {
     let bob = sign_in(second.path(), &server, &format!("video_b_{suffix}"), password, true).await?;
     let outsider = sign_in(third.path(), &server, &format!("video_c_{suffix}"), password, true).await?;
     let chat = direct(&alice, &bob).await?;
+    alice.sync().await?;
+    bob.sync().await?;
     let source = first.path().join("sample.mp4");
     ensure!(Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30",
@@ -944,6 +946,9 @@ async fn video_derivatives_and_retention() -> Result<()> {
     let group = alice.create_conversation(ConversationRequest::Group {
         title: format!("video group {suffix}"), contact_ids: vec![bob.user.id, outsider.user.id],
     }).await?;
+    alice.sync().await?;
+    bob.sync().await?;
+    outsider.sync().await?;
     let group_id = alice.queue_upload(group, source.clone()).await?.attachment.id;
     wait_transfer(&alice, group_id, Direction::Upload, |job| job.status == TransferStatus::Complete).await?;
     assert!(zibblu_online::media::process_one(&db).await?);
