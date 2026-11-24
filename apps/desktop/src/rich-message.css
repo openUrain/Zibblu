@@ -2,10 +2,17 @@
   --rich-link: var(--blue);
   --rich-code-highlight: color-mix(in srgb, var(--ink) 8%, var(--soft));
 }
+/* Let vertical wheel scrolling chain back to the chat timeline across horizontal-only scrollers. */
+.rich-message, .rich-message * { overscroll-behavior-y: auto; }
 .private-chat .rich-message {
   --rich-link: #c8d8ff;
 }
 .bubble.rich-markdown { white-space: normal; }
+/* Re-enable synthesized oblique/bold-oblique for CJK fonts lacking dedicated italic faces. */
+.rich-markdown :where(em, i):not(.katex *) {
+  font-style: italic;
+  font-synthesis: style weight;
+}
 .rich-markdown > :first-child { margin-block-start: 0; }
 .rich-markdown > :last-child { margin-block-end: 0; }
 .rich-markdown :where(p, ul, ol, blockquote, hr, h1, h2, h3, h4, h5, h6, .rich-formula-block, .rich-code, .rich-scroll) {
