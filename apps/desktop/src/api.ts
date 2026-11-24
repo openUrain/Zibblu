@@ -121,6 +121,7 @@ export const api = {
     invoke<MessageReceipt | null>("read_update", { conversation, update: { through, sent: sent === undefined ? [] : [sent], viewed } }),
   setReadReceipts: (enabled: boolean) => invoke<void>("set_read_receipts", { enabled }),
   hideMessage: (conversation: string, seq: number) => invoke<void>("hide_message", { conversation, seq }),
+  hidePendingUpload: (conversation: string, id: string) => invoke<void>("hide_pending_upload", { conversation, id }),
   clearHistory: (conversation: string) => invoke<void>("clear_history", { conversation }),
   deleteConversation: (conversation: string) => invoke<void>("delete_conversation", { conversation }),
   takeSendFailureNotices: () => invoke<number>("take_send_failure_notices"),
