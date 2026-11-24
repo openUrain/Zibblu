@@ -144,6 +144,110 @@ async fn outbox_and_inbox_progress_independently_and_confirm_the_same_nonce() ->
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn deleted_conversation_detaches_sends_and_reopens_only_for_new_history() -> Result<()> {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let hold = Arc::new(AtomicU8::new(1));
+    let app = zibblu_online::router(test_db().await?).await?.layer(middleware::from_fn({
+        let started = started.clone();
+        let release = release.clone();
+        let hold = hold.clone();
+        move |request: Request, next: Next| {
+            let started = started.clone();
+            let release = release.clone();
+            let hold = hold.clone();
+            async move {
+                let wait = request.uri().path().ends_with("/complete")
+                    && hold.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst).is_ok();
+                let response = next.run(request).await;
+                if wait && response.status().is_success() {
+                    started.notify_one();
+                    release.notified().await;
+                }
+                response
+            }
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let server = format!("http://{}", listener.local_addr()?);
+    let task = tokio::spawn(async move { axum::serve(listener, app).await });
+    let a = tempfile::tempdir()?;
+    let b = tempfile::tempdir()?;
+    let suffix = &Uuid::new_v4().simple().to_string()[..10];
+    let alice_handle = format!("delete_a_{suffix}");
+    let bob_handle = format!("delete_b_{suffix}");
+    let alice = sign_in(a.path(), &server, &alice_handle, "fixture-password", true).await?;
+    let bob = sign_in(b.path(), &server, &bob_handle, "fixture-password", true).await?;
+    let chat = direct(&alice, &bob).await?;
+    alice.sync().await?;
+    bob.sync().await?;
+    bob.send_message(chat, SendMessage { nonce: Uuid::new_v4(), text: "old history".into(), reply_to: None }).await?;
+    alice.sync().await?;
+    alice.queue_message(chat, SendMessage { nonce: Uuid::new_v4(), text: "detached text".into(), reply_to: None }).await?;
+    alice.delete_conversation(chat).await?;
+    assert!(alice.messages(chat, None).await?.items.is_empty());
+    assert!(!alice.directory().await?.conversations.iter().any(|row| row.id == chat));
+    assert!(alice.membership_directory().await?.conversations.iter().any(|row| row.id == chat));
+    alice.close().await;
+    drop(alice);
+    let alice = sign_in(a.path(), &server, &alice_handle, "fixture-password", false).await?;
+    alice.sync().await?;
+    bob.sync().await?;
+    assert!(bob.messages(chat, None).await?.items.iter().any(|m| m.text.as_deref() == Some("detached text")));
+    assert!(alice.messages(chat, None).await?.items.is_empty());
+    assert!(!alice.directory().await?.conversations.iter().any(|row| row.id == chat));
+    assert_eq!(alice.take_send_failure_notices().await?, 0);
+
+    assert_eq!(alice.create_conversation(ConversationRequest::Direct { contact_id: bob.user.id }).await?, chat);
+    assert!(alice.directory().await?.conversations.iter().any(|row| row.id == chat));
+    let source = a.path().join("detached.txt");
+    std::fs::write(&source, b"detached attachment")?;
+    let upload = alice.queue_upload(chat, source).await?;
+    let id = upload.attachment.id;
+    tokio::time::timeout(Duration::from_secs(5), started.notified()).await?;
+    alice.delete_conversation(chat).await?;
+    alice.sync_inbox().await?;
+    assert!(alice.messages(chat, None).await?.items.is_empty());
+    assert!(!alice.directory().await?.conversations.iter().any(|row| row.id == chat));
+    release.notify_one();
+    let local = sqlite(a.path(), &server, alice.user.id).await?;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM transfers WHERE id = ? AND direction = 'upload')")
+                .bind(id.to_string()).fetch_one(&local).await?;
+            let spool = profile(a.path(), &server, alice.user.id).join("transfers").join(format!("upload-{id}.part"));
+            if !pending && !spool.exists() { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    }).await??;
+    bob.sync().await?;
+    assert!(bob.attachment(id).await.is_ok());
+    assert!(alice.attachment(id).await.is_err());
+    assert_eq!(alice.take_send_failure_notices().await?, 0);
+    bob.send_message(chat, SendMessage { nonce: Uuid::new_v4(), text: "new history".into(), reply_to: None }).await?;
+    alice.sync().await?;
+    let rows = alice.messages(chat, None).await?.items;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].text.as_deref(), Some("new history"));
+    assert!(alice.directory().await?.conversations.iter().any(|row| row.id == chat));
+
+    // Server definitively rejects a fresh nonce after the contact is removed.
+    alice.queue_message(chat, SendMessage { nonce: Uuid::new_v4(), text: "terminal failure".into(), reply_to: None }).await?;
+    alice.delete_conversation(chat).await?;
+    bob.remove_contact(alice.user.id).await?;
+    alice.flush_pending_messages().await?;
+    assert_eq!(alice.take_send_failure_notices().await?, 1);
+    assert_eq!(alice.take_send_failure_notices().await?, 0);
+    assert!(alice.messages(chat, None).await?.items.is_empty());
+    let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM outbox WHERE conversation_id = ?")
+        .bind(chat.to_string()).fetch_one(&local).await?;
+    assert_eq!(pending, 0);
+    task.abort();
+    Ok(())
+}
+
 #[cfg(windows)]
 #[tokio::test(flavor = "multi_thread")]
 async fn recovery_retries_earlier_text_before_later_text_in_the_same_chat() -> Result<()> {
