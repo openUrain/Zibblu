@@ -29,6 +29,9 @@ impl Client {
              CREATE TABLE IF NOT EXISTS hidden_messages (
                 seq INTEGER PRIMARY KEY REFERENCES inbox (seq), attachment_id TEXT UNIQUE
              );
+             CREATE TABLE IF NOT EXISTS local_deleted_messages (
+                seq INTEGER PRIMARY KEY, conversation_id TEXT NOT NULL, attachment_id TEXT UNIQUE
+             );
              CREATE TABLE IF NOT EXISTS directory (
                 id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL
              );
@@ -195,6 +198,11 @@ impl Client {
         }
         tx.commit().await?;
         Ok((re_registered, previous_device_id))
+    }
+
+    pub(super) async fn is_locally_deleted(&self, seq: i64) -> Result<bool> {
+        Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM local_deleted_messages WHERE seq = ?)")
+            .bind(seq).fetch_one(&self.db).await?)
     }
 
     pub(super) fn history_changed(&self) {
@@ -442,6 +450,9 @@ impl Client {
                 chat.preview_seq = Some(seq);
                 chat.preview = Some(preview);
                 chat.activity_at = time;
+            } else {
+                chat.preview_seq = None;
+                chat.preview = None;
             }
             chat.read_through = sqlx::query_scalar::<_, i64>(
                 "SELECT read_through FROM local_read_positions WHERE conversation_id = ?",
@@ -474,6 +485,14 @@ pub(super) async fn persist_message(
     db: &mut SqliteConnection,
     mut message: Message,
 ) -> Result<bool> {
+    let deleted: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM local_deleted_messages WHERE seq = ?)")
+            .bind(message.seq)
+            .fetch_one(&mut *db)
+            .await?;
+    if deleted {
+        return Ok(false);
+    }
     let recalled: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM recall_tombstones WHERE message_seq = ?)")
             .bind(message.seq)
