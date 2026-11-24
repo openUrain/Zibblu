@@ -14,7 +14,7 @@ use std::{
 use zibblu_core::{
     Attachment, AttachmentKind, ContentAck, DeviceSession, ExpiredPayload, ForwardRequest,
     ForwardResult, ForwardTarget, ForwardUploadProgress, ForwardUploadRequest, MAX_MESSAGE_BYTES,
-    SYNC_PAGE_SIZE,
+    MediaDescriptor, MediaVariant, SYNC_PAGE_SIZE,
 };
 use zibblu_online::retention::Retention;
 
@@ -759,7 +759,8 @@ async fn attachment_forwarding_retries_expiry_and_local_original() -> Result<()>
         async move {
             let forward = request.uri().path().ends_with("/forward");
             let response = next.run(request).await;
-            if forward && response.status() == StatusCode::OK && gate.swap(0, Ordering::SeqCst) == 1 {
+            if forward && response.status() == StatusCode::OK
+                && gate.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).ok() == Some(1) {
                 // The database has committed, but the client cannot know the outcome.
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
             }
@@ -853,8 +854,32 @@ async fn attachment_forwarding_retries_expiry_and_local_original() -> Result<()>
     let chunk = |id| format!("{server}/v1/files/{id}/chunks/0");
     assert_eq!(http.get(chunk(id)).bearer_auth(carol.session_token()).send().await?.status(), 404);
     assert_eq!(http.get(chunk(target_id)).bearer_auth(alice.session_token()).send().await?.status(), 404);
+    // Fill 255 logical slots and seven 256 MiB reservations. The eighth
+    // maximum-size reservation fits only once Alice's original grant expires.
+    let reserve: Vec<Uuid> = sqlx::query_scalar(
+        "INSERT INTO attachments (id, conversation_id, owner_id, name, kind, size, sha256)
+         SELECT gen_random_uuid(), $1, $2, 'quota-fixture.bin', 'file',
+                CASE WHEN n <= 7 THEN 268435456 ELSE 0 END, repeat('0',64)
+         FROM generate_series(1,255) n RETURNING id",
+    ).bind(source_chat).bind(alice.user.id).fetch_all(&db).await?;
+    let final_reservation = Attachment {
+        id: Uuid::new_v4(), name: "quota-boundary.bin".into(), kind: AttachmentKind::File,
+        size: 256 * CHUNK_SIZE, sha256: "0".repeat(64),
+    };
+    let begin = || http.post(format!("{server}/v1/conversations/{source_chat}/uploads"))
+        .bearer_auth(alice.session_token()).json(&final_reservation);
+    assert_eq!(begin().send().await?.status(), 507);
     expire_attachment(&db, id).await?;
     zibblu_online::retention::sweep(&db).await?;
+    assert_eq!(begin().send().await?.status(), 200);
+    let logical: (i64,i64) = sqlx::query_as(
+        "SELECT count(*), coalesce(sum(bytes),0)::BIGINT FROM m1_attachment_quota WHERE owner_id=$1",
+    ).bind(alice.user.id).fetch_one(&db).await?;
+    assert_eq!(logical, (256, 2 * 1024 * 1024 * 1024));
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachments WHERE id=$1")
+        .bind(id).fetch_one(&db).await?, 1);
+    sqlx::query("DELETE FROM attachments WHERE id=ANY($1) OR id=$2")
+        .bind(&reserve).bind(final_reservation.id).execute(&db).await?;
     assert_eq!(http.get(chunk(id)).bearer_auth(bob.session_token()).send().await?.status(), 410);
     assert_eq!(&http.get(chunk(target_id)).bearer_auth(carol.session_token()).send().await?.error_for_status()?.bytes().await?[..], bytes);
     let no_local = forwarding_request(&[target_chat]);
@@ -883,29 +908,79 @@ async fn attachment_forwarding_retries_expiry_and_local_original() -> Result<()>
     let fallback = forwarding_request(&chats[..2]);
     let forward_url = format!("{server}/v2/files/{expired_id}/forward");
     let upload_url = format!("{server}/v2/files/{expired_id}/forward-upload");
-    let local_path = profile(second.path(), &server, bob.user.id).join("files").join(expired_id.to_string());
+    let expired_seq = bob.attachment(expired_id).await?.seq;
+    let variant = MediaVariant::for_attachment(&second_upload);
+    let (_, local_path, _) = bob.verified_media_path(
+        source_chat, expired_seq, Some(expired_id), variant, &second_upload.sha256, true,
+    ).await?.context("verified source cache missing")?;
     std::fs::write(&local_path, vec![0; bytes.len()])?;
     assert!(bob.forward_attachment(expired_id, &fallback).await?.iter().all(|item| item.status == 422));
     assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE forward_batch=$1")
         .bind(fallback.batch_id).fetch_one(&db).await?, 0);
-    std::fs::write(&local_path, bytes)?;
+    // Integrity verification marks the index corrupted; restore through the
+    // same cache commit path used by transfers, not by reviving the old files layout.
+    let restored = second.path().join("saved.bin");
+    let desc = MediaDescriptor {
+        conversation_id: source_chat, message_seq: expired_seq, attachment_id: Some(expired_id),
+        variant, content_key: &second_upload.sha256, expected_sha256: &second_upload.sha256,
+        expected_size: second_upload.size, mime: "application/octet-stream", dimensions: None,
+    };
+    bob.commit_media_file(&desc, &restored).await?;
     let mut incorrect = second_upload.clone();
     incorrect.sha256 = "0".repeat(64);
     assert_eq!(http.post(&upload_url).bearer_auth(bob.session_token()).json(&ForwardUploadRequest {
         request: fallback.clone(), original: incorrect,
     }).send().await?.status(), 422);
+    // First forward returns 410, then the actual fallback publication commits
+    // but its response is lost. The same batch must recover caches without reuploading.
+    lose_response.store(2, Ordering::SeqCst);
+    assert!(bob.forward_attachment(expired_id, &fallback).await.is_err());
+    let committed_before: Vec<(Uuid, i64, i64)> = sqlx::query_as(
+        "SELECT attachment_id, seq, (extract(epoch FROM expires_at)*1000)::BIGINT
+         FROM messages WHERE forward_batch=$1 ORDER BY attachment_id",
+    ).bind(fallback.batch_id).fetch_all(&db).await?;
+    assert_eq!(committed_before.len(), 2);
+    let root_before: Uuid = sqlx::query_scalar("SELECT upload_id FROM m1_forward_batches WHERE id=$1")
+        .bind(fallback.batch_id).fetch_one(&db).await?;
     let results = bob.forward_attachment(expired_id, &fallback).await?;
-    assert!(results.iter().all(|item| item.status == 200));
+    assert!(results.iter().all(|item| item.status == 200 && item.cache_error.is_none()));
     let root: Uuid = sqlx::query_scalar("SELECT upload_id FROM m1_forward_batches WHERE id=$1")
         .bind(fallback.batch_id).fetch_one(&db).await?;
+    assert_eq!(root, root_before);
+    assert_eq!(sqlx::query_as::<_, (Uuid, i64, i64)>(
+        "SELECT attachment_id, seq, (extract(epoch FROM expires_at)*1000)::BIGINT
+         FROM messages WHERE forward_batch=$1 ORDER BY attachment_id",
+    ).bind(fallback.batch_id).fetch_all(&db).await?, committed_before);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM m1_attachment_quota WHERE id=$1")
+        .bind(root).fetch_one(&db).await?, 0);
+    assert_eq!(sqlx::query_as::<_, (i64,i64)>(
+        "SELECT count(*), coalesce(sum(bytes),0)::BIGINT FROM m1_attachment_quota WHERE owner_id=$1",
+    ).bind(bob.user.id).fetch_one(&db).await?, (11, 11 * bytes.len() as i64));
     assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachments WHERE payload_id=$1")
         .bind(root).fetch_one(&db).await?, 2);
     assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachment_chunks WHERE attachment_id=$1")
         .bind(root).fetch_one(&db).await?, 1);
+    let mut cached_paths = Vec::new();
     for target in &fallback.targets {
-        assert!(bob.attachment(target.attachment_id).await?.local_file);
-        assert_eq!(std::fs::read(profile(second.path(), &server, bob.user.id).join("files").join(target.attachment_id.to_string()))?, bytes);
+        let message = bob.attachment(target.attachment_id).await?;
+        assert!(message.local_file);
+        let file = message.attachment.context("target attachment missing")?;
+        let (_, path, _) = bob.verified_media_path(
+            target.conversation_id, message.seq, Some(target.attachment_id),
+            MediaVariant::for_attachment(&file), &file.sha256, true,
+        ).await?.context("target original cache missing")?;
+        assert_eq!(std::fs::read(&path)?, bytes);
+        assert_ne!(path, local_path);
+        cached_paths.push(path);
         assert_eq!(&http.get(chunk(target.attachment_id)).bearer_auth(carol.session_token()).send().await?.error_for_status()?.bytes().await?[..], bytes);
+    }
+    assert_ne!(cached_paths[0], cached_paths[1]);
+    bob.sync().await?;
+    for target in &fallback.targets {
+        assert!(sqlx::query_scalar::<_, bool>(
+            "SELECT content_verified FROM m1_recipients r JOIN messages m ON m.seq=r.message_seq
+             WHERE m.attachment_id=$1 AND r.account_id=$2",
+        ).bind(target.attachment_id).bind(bob.user.id).fetch_one(&db).await?);
     }
 
     // An upload begun while expired cannot be published after a later source recall.
