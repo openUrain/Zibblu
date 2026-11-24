@@ -614,9 +614,15 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                   action: () => void changeTransfer("resume"),
                 }] : []),
                 ...(transfer.status !== "complete" ? [{
-                  label: t("Delete", "删除"),
-                  icon: <Trash2 size={15} />,
+                  label: t("Cancel send", "取消发送"),
+                  icon: <X size={15} />,
                   action: () => void changeTransfer("discard"),
+                }, {
+                  label: t("Delete for me", "仅为我删除"),
+                  icon: <Trash2 size={15} />,
+                  action: () => void api.hidePendingUpload(chat.id, transfer.attachment.id)
+                    .then(() => { changed(); void refresh(); })
+                    .catch(error => setRecallError(errorMessage(error))),
                 }] : []),
               ] : []),
               ...(file && !transfer && !expiredFile && (!download || download.status === "complete") ? [{ label: ios
