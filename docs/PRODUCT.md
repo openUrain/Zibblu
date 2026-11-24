@@ -28,7 +28,7 @@ The [current cross-platform design system](DESIGN_SYSTEM.md) preserves Zibblu-sp
 
 ## 01 — Chat & Files (normal mode)
 
-普通聊天以当前 Windows 设备的本地历史为准。已登录时断网可以查阅本机历史，普通文本和已暂存的附件会排队。重连后使用原发送键继续。新设备只接收有效的账号积压及之后的投递。离线文字默认可投递 72 小时，错过期限时显示过期占位。文件下载期限由部署配置决定，保存并验证的本机文件可继续打开和另存。[D-018](DECISIONS.md#d-018--m1-local-first-与临时文件投递)
+普通聊天以当前 Windows 设备的本地历史为准。已登录时断网可以查阅本机历史，普通文本和已暂存的附件会排队。重连后使用原发送键继续。新设备只接收有效的账号积压及之后的投递。离线文字默认可投递 72 小时，错过期限时显示过期占位。文件下载期限由部署配置决定，保存并验证的本机文件可继续打开和另存。普通附件可直接转发至最多九个会话，各目标从首次发送成功起获得独立下载期限。自然过期且本机保有完整校验原片时可重新上传转发；已撤回或无权限的源不可通过此方式转发。[D-018](DECISIONS.md#d-018--m1-local-first-与临时文件投递)
 
 On Windows, the standalone client defaults to **Zibblu Online** on a fresh profile. Sign in or create an account directly. **Advanced** allows a custom server, and the app remembers the selected server. The v0.1.4 client opens a separate profile from earlier versions and requires a v2 service. The client uses local SQLite. PostgreSQL runs with the server.
 

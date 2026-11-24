@@ -3,8 +3,8 @@ use super::{
     local_sync::persist_message, media_store, read_limited, staging, unix_millis,
 };
 use crate::{
-    Attachment, CHUNK_SIZE, ContentAck, MAX_PASTED_IMAGE_BYTES, Message, Publication,
-    UploadProgress, User,
+    Attachment, CHUNK_SIZE, ContentAck, ForwardRequest, ForwardResult, ForwardUploadProgress,
+    ForwardUploadRequest, MAX_PASTED_IMAGE_BYTES, Message, Publication, UploadProgress, User,
 };
 use anyhow::{Context, Result, bail, ensure};
 use reqwest::{Method, StatusCode};
@@ -18,7 +18,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tempfile::NamedTempFile;
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom},
@@ -184,6 +183,165 @@ impl Client {
                 Ok(transfer)
             })
             .collect()
+    }
+
+    /// Keep the request and target UUIDs unchanged when retrying an uncertain result.
+    pub async fn forward_attachment(
+        self: &Arc<Self>,
+        source_id: Uuid,
+        request: &ForwardRequest,
+    ) -> Result<Vec<ForwardResult>> {
+        self.ensure_open()?;
+        let route = format!("/v2/files/{source_id}/forward");
+        let mut results = self.forward_results(&route, request).await?;
+        let needs_upload = results.iter().any(|item| item.status == 410);
+        if !needs_upload && !results.iter().any(|item| item.publication.is_some()) {
+            return Ok(results);
+        }
+        // A direct forward never downloads the original. A verified cached original can
+        // also restore target caches after an earlier publication response was lost.
+        let Ok(message) = self.attachment(source_id).await else { return Ok(results); };
+        let Some(original) = message.attachment else { return Ok(results); };
+        if message.recalled || !message.local_file {
+            return Ok(results);
+        }
+        // Use the media store's active-temp guard so cleanup skips the snapshot
+        // during forwarding, but can reclaim abandoned snapshots after a crash.
+        let prefix = format!("forward-{}-", Uuid::new_v4());
+        let _snapshot_guard = media_store::ActiveTempGuard::track(&self.active_tmp, prefix.clone());
+        let staged: Result<Option<tempfile::TempPath>> = async {
+            if !self.ensure_message_authorized_for_cache(message.conversation_id, message.seq).await? {
+                return Ok(None);
+            }
+            let cached = self.verified_media_path(
+                message.conversation_id, message.seq, Some(source_id),
+                MediaVariant::for_attachment(&original), &original.sha256, true,
+            ).await?;
+            let (_, path, _) = cached.filter(|(_, _, size)| *size == original.size)
+                .context("The local original failed verification.")?;
+            let expected = original.clone();
+            let destination = media_store::fs_path(&self.media_root().join("tmp").join("snapshot.part"));
+            let staged = tokio::task::spawn_blocking(move || {
+                stage_publication(&path, &destination, &expected, &prefix)
+            }).await??;
+            Ok(Some(staged))
+        }.await;
+        let staged = match staged {
+            Ok(Some(path)) => path,
+            Ok(None) => return Ok(results),
+            Err(error) => {
+                for item in &mut results {
+                    if item.status == 410 {
+                        item.status = 422;
+                        item.error = Some(error.to_string());
+                    } else if item.publication.is_some() {
+                        item.cache_error = Some(error.to_string());
+                    }
+                }
+                return Ok(results);
+            }
+        };
+        if needs_upload {
+            self.ensure_open()?;
+            let upload: ForwardUploadProgress = self.api.json(
+                self.api.request(Method::POST, &format!("/v2/files/{source_id}/forward-upload"))
+                    .json(&ForwardUploadRequest { request: request.clone(), original: original.clone() }),
+            ).await?;
+            let mut received = upload.progress.received;
+            ensure!(received <= original.size
+                && (received == original.size || received % CHUNK_SIZE == 0)
+                && (!upload.progress.complete || received == original.size), OnlineError::InvalidResponse);
+            if !upload.progress.complete {
+                let mut file = fs::File::open(&staged).await?;
+                file.seek(SeekFrom::Start(received)).await?;
+                while received < original.size {
+                    self.ensure_open()?;
+                    let len = (original.size - received).min(CHUNK_SIZE);
+                    let mut bytes = vec![0; len as usize];
+                    file.read_exact(&mut bytes).await?;
+                    let progress: UploadProgress = self.api.json(
+                        self.api.request(Method::PUT, &format!("/v1/files/{}/chunks/{received}", upload.id))
+                            .body(bytes),
+                    ).await?;
+                    ensure!(progress.received == received + len && !progress.complete,
+                        OnlineError::InvalidResponse);
+                    received = progress.received;
+                }
+            }
+            results = self.forward_results(&route, request).await?;
+
+        }
+        // Publication and cache recovery have separate outcomes. Never turn a known
+        // committed target into a failed send because its local cache could not converge.
+        if let Err(error) = self.sync_inbox().await {
+            for item in &mut results {
+                if item.publication.is_some() { item.cache_error = Some(error.to_string()); }
+            }
+            return Ok(results);
+        }
+        for item in &mut results {
+            if let Some(stamp) = item.publication.as_ref()
+                && let Err(error) = self.cache_forwarded_original(
+                    &item.target, stamp, &original, &staged,
+                ).await
+            {
+                item.cache_error = Some(error.to_string());
+            }
+        }
+        self.history_changed();
+        Ok(results)
+    }
+
+    async fn cache_forwarded_original(
+        &self, target: &crate::ForwardTarget, stamp: &Publication, original: &Attachment, source: &Path,
+    ) -> Result<()> {
+        if stamp.recalled || !self.ensure_message_authorized_for_cache(target.conversation_id, stamp.seq).await? {
+            return Ok(());
+        }
+        let message = self.attachment(target.attachment_id).await?;
+        let Some(file) = message.attachment else { return Ok(()); };
+        if message.recalled || message.seq != stamp.seq || message.conversation_id != target.conversation_id
+            || file.sha256 != original.sha256 || file.size != original.size {
+            return Ok(());
+        }
+        let desc = MediaDescriptor {
+            conversation_id: target.conversation_id,
+            message_seq: stamp.seq,
+            attachment_id: Some(file.id),
+            variant: MediaVariant::for_attachment(&file),
+            content_key: &file.sha256,
+            expected_sha256: &file.sha256,
+            expected_size: file.size,
+            mime: file.preview_mime().unwrap_or("application/octet-stream"),
+            dimensions: None,
+        };
+        self.commit_media_file(&desc, source).await?;
+        let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
+        let visible: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM preview_eligible WHERE seq = ? AND attachment_id = ? AND conversation_id = ?)",
+        ).bind(stamp.seq).bind(file.id.to_string()).bind(target.conversation_id.to_string())
+            .fetch_one(&mut *tx).await?;
+        let removed = if visible {
+            record_local_file(&mut tx, &file, stamp.seq, true).await?;
+            Vec::new()
+        } else {
+            media_store::release_media_refs_in_tx(&mut tx, "message", &stamp.seq.to_string()).await?
+        };
+        tx.commit().await?;
+        self.remove_rel_paths(removed).await;
+        Ok(())
+    }
+
+    async fn forward_results(&self, route: &str, request: &ForwardRequest) -> Result<Vec<ForwardResult>> {
+        let results: Vec<ForwardResult> = self.api.json(
+            self.api.request(Method::POST, route).json(request),
+        ).await?;
+        ensure!(results.len() == request.targets.len()
+            && results.iter().zip(&request.targets).all(|(item, target)| {
+                &item.target == target && ((item.status == 200) == item.publication.is_some())
+                    && item.publication.as_ref().is_none_or(|stamp| stamp.seq > 0)
+            }), OnlineError::InvalidResponse);
+        Ok(results)
     }
 
     pub async fn queue_upload(
@@ -1278,10 +1436,10 @@ fn verify_file(path: &std::path::Path, attachment: &Attachment) -> Result<()> {
     check_hash(path, attachment.size, &attachment.sha256)
 }
 
-fn stage_publication(source: &Path, destination: &Path, attachment: &Attachment) -> Result<tempfile::TempPath> {
+fn stage_publication(source: &Path, destination: &Path, attachment: &Attachment, prefix: &str) -> Result<tempfile::TempPath> {
     let parent = destination.parent().context("Choose a save folder")?;
     let input = open_verified_input(source, attachment.size)?;
-    let mut temp = NamedTempFile::new_in(parent).map_err(save_io_error)?;
+    let mut temp = tempfile::Builder::new().prefix(prefix).tempfile_in(parent).map_err(save_io_error)?;
     ensure!(
         staging::hash_copy(input, temp.as_file_mut()).map_err(|error| {
             error.downcast::<std::io::Error>().map_or_else(|error| error, save_io_error)
@@ -1303,7 +1461,7 @@ fn publish_download(
     if recovering && verify_file(destination, attachment).is_ok() {
         return Ok(true);
     }
-    let temp = stage_publication(source, destination, attachment)?;
+    let temp = stage_publication(source, destination, attachment, ".tmp")?;
     if stop.load(Ordering::Relaxed) {
         return Ok(false);
     }

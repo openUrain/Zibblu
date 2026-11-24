@@ -71,7 +71,9 @@ pub async fn sweep(db: &PgPool) -> anyhow::Result<()> {
          WITH removed AS (
              DELETE FROM attachments WHERE id IN (
                  SELECT f.id FROM attachments f LEFT JOIN messages m ON m.attachment_id = f.id
-                 WHERE f.expires_at <= clock_timestamp() OR m.recall_seq IS NOT NULL
+                 WHERE (f.expires_at <= clock_timestamp() OR m.recall_seq IS NOT NULL
+                        OR (f.complete AND m.seq IS NULL))
+                   AND NOT EXISTS (SELECT 1 FROM attachments alias WHERE alias.payload_id = f.id)
                  ORDER BY f.expires_at, f.id LIMIT 16 FOR UPDATE OF f SKIP LOCKED
              ) RETURNING id, owner_id, conversation_id, complete
          ) INSERT INTO m1_expired_uploads (id, owner_id, conversation_id, forget_at)
