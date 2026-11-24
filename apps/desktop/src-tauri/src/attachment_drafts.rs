@@ -257,6 +257,14 @@ impl AttachmentDrafts {
         store.remove_entry(id);
     }
 
+    pub(crate) fn remove_conversation(&self, client: &Arc<Client>, conversation: Uuid) {
+        let mut store = self.inner.lock().expect("attachment drafts");
+        store.bind(client);
+        for id in store.order.get(&conversation).cloned().unwrap_or_default() {
+            store.remove_entry(id);
+        }
+    }
+
     pub(crate) fn has_draft(&self, client: &Arc<Client>, id: Uuid) -> bool {
         let store = self.inner.lock().expect("attachment drafts");
         store
