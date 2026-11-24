@@ -631,7 +631,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
               } }] : []),
               ...(canRecall ? [{ label: "Recall message", icon: <Undo2 size={15} />, disabled: recalling !== undefined,
                 action: () => void recall(message.seq) }] : []),
-              ...(message && message.seq > 0 ? [{ label: "Delete for me", icon: <Trash2 size={15} />, action: () => void deleteForMe(message.seq) }] : []),
+              ...(message && !transfer && message.seq !== 0 ? [{ label: t("Delete for me", "仅为我删除"), icon: <Trash2 size={15} />, action: () => void deleteForMe(message.seq) }] : []),
             ];
           }
           return <Fragment key={key}>
