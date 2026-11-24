@@ -34,6 +34,7 @@ export function ImageViewer() {
       if (generation.current === request) {
         setSelection(undefined);
         setFailure(errorMessage(error));
+        void window.close().catch(() => {});
       }
     }
   }, []);
