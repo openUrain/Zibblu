@@ -26,7 +26,8 @@ struct Source {
 async fn source(db: &mut PgConnection, id: Uuid, account: Uuid) -> Result<Source> {
     let source: Source = sqlx::query_as(
         "SELECT v.conversation_id, coalesce(v.expires_at <= clock_timestamp(), false) AS expired,
-                CASE WHEN a.complete THEN coalesce(a.payload_id, a.id) END AS payload_id,
+                CASE WHEN a.complete AND coalesce(a.expires_at > clock_timestamp(), true)
+                     THEN coalesce(a.payload_id, a.id) END AS payload_id,
                 m.attachment_fingerprint AS fingerprint
          FROM m1_visible_messages v JOIN messages m ON m.seq = v.seq
          LEFT JOIN attachments a ON a.id = v.attachment_id
@@ -207,7 +208,11 @@ async fn verified_payload(db: &mut PgConnection, upload_id: Option<Uuid>, owner:
     if hash != digest {
         return Err(Error(StatusCode::UNPROCESSABLE_ENTITY, "The uploaded original failed verification."));
     }
-    sqlx::query("UPDATE attachments SET complete = true WHERE id = $1").bind(id).execute(&mut *db).await?;
+    let verified: Option<Uuid> = sqlx::query_scalar(
+        "UPDATE attachments SET complete = true WHERE id = $1
+         AND coalesce(expires_at > clock_timestamp(), true) RETURNING id",
+    ).bind(id).fetch_optional(&mut *db).await?;
+    if verified.is_none() { return Err(needs_original()); }
     if video_candidate { crate::media::enqueue(db, id).await?; }
     Ok(id)
 }

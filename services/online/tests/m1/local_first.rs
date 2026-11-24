@@ -750,9 +750,22 @@ async fn expire_attachment(db: &PgPool, id: Uuid) -> Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn attachment_forwarding_retries_expiry_and_local_original() -> Result<()> {
     let db = test_db().await?;
+    let lose_response = Arc::new(AtomicU8::new(0));
+    let response_gate = lose_response.clone();
     let app = zibblu_online::router_with_retention(db.clone(), Retention {
         file_secs: Some(604800), upload_secs: Some(86400), ..Retention::default()
-    }).await?;
+    }).await?.layer(middleware::from_fn(move |request: Request, next: Next| {
+        let gate = response_gate.clone();
+        async move {
+            let forward = request.uri().path().ends_with("/forward");
+            let response = next.run(request).await;
+            if forward && response.status() == StatusCode::OK && gate.swap(0, Ordering::SeqCst) == 1 {
+                // The database has committed, but the client cannot know the outcome.
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            }
+            response
+        }
+    }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let server = format!("http://{}", listener.local_addr()?);
     let task = tokio::spawn(async move { axum::serve(listener, app).await });
@@ -798,6 +811,10 @@ async fn attachment_forwarding_retries_expiry_and_local_original() -> Result<()>
     sqlx::query("UPDATE attachments SET expires_at=clock_timestamp()+interval '1 day' WHERE id=$1")
         .bind(id).execute(&db).await?;
     bob.remove_contact(carol.user.id).await?;
+    lose_response.store(1, Ordering::SeqCst);
+    assert!(bob.forward_attachment(id, &request).await.is_err());
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE forward_batch=$1")
+        .bind(request.batch_id).fetch_one(&db).await?, 8);
     let (first_results, replay) = tokio::join!(
         bob.forward_attachment(id, &request), bob.forward_attachment(id, &request)
     );
@@ -900,6 +917,14 @@ async fn attachment_forwarding_retries_expiry_and_local_original() -> Result<()>
         .body(bytes.to_vec()).send().await?.error_for_status()?;
     assert_eq!(http.post(format!("{server}/v1/files/{}/complete", staged.id))
         .bearer_auth(bob.session_token()).send().await?.status(), 404);
+    bob.remove_contact(alice.user.id).await?;
+    let denied_by_contact: Vec<ForwardResult> = http.post(&forward_url).bearer_auth(bob.session_token())
+        .json(&blocked).send().await?.error_for_status()?.json().await?;
+    assert_eq!(denied_by_contact[0].status, 409);
+    assert_eq!(http.post(&upload_url).bearer_auth(bob.session_token())
+        .json(&ForwardUploadRequest { request: blocked.clone(), original: second_upload.clone() })
+        .send().await?.status(), 409);
+    assert_eq!(direct(&alice, &bob).await?, source_chat);
     let seq = bob.attachment(expired_id).await?.seq;
     http.delete(format!("{server}/v1/conversations/{source_chat}/messages/{seq}"))
         .bearer_auth(alice.session_token()).send().await?.error_for_status()?;
