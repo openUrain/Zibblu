@@ -44,7 +44,7 @@ jobs:
         run: cargo test --locked -p zibblu-online --lib media::tests
 
       - name: Test local deletion sequence gaps
-        run: cargo test --locked -p zibblu-core --features client --lib local_deletion_preserves_unreceived_sequence_gaps_after_restart
+        run: cargo test --locked -p zibblu-core --features client --lib local_deletion_
 
       - name: Test real messaging and file transfer
         env:
