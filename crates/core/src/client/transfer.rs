@@ -126,11 +126,25 @@ impl Job {
 impl Client {
     pub(super) async fn delete_received_history(&self, conversation: Uuid, seq: Option<i64>, delete_chat: bool) -> Result<()> {
         self.ensure_open()?;
-        ensure!(seq.is_none_or(|seq| seq > 0), "This message is unavailable");
+        ensure!(seq != Some(0), "This message is unavailable");
         let _prepare = self.prepare_gate.lock().await;
         let workers = self.workers.lock().await;
         let chat = conversation.to_string();
         let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(seq) = seq.filter(|seq| *seq < 0) {
+            let id = seq.checked_neg().context("Invalid message ID")?;
+            let nonce: Option<String> = sqlx::query_scalar(
+                "SELECT nonce FROM outbox WHERE id = ? AND conversation_id = ?",
+            ).bind(id).bind(&chat).fetch_optional(&mut *tx).await?;
+            let nonce = nonce.context("This message is unavailable")?;
+            sqlx::query("INSERT OR IGNORE INTO local_suppressed_sends (kind, id, conversation_id) VALUES ('text', ?, ?)")
+                .bind(&nonce).bind(&chat).execute(&mut *tx).await?;
+            sqlx::query("DELETE FROM outbox WHERE id = ? AND blocked = 1")
+                .bind(id).execute(&mut *tx).await?;
+            tx.commit().await?;
+            self.history_changed();
+            return Ok(());
+        }
         let rows: Vec<(i64, Option<String>)> = sqlx::query_as(
             "SELECT i.seq, coalesce(i.attachment_id, h.attachment_id) FROM inbox i
                 LEFT JOIN hidden_messages h ON h.seq = i.seq
