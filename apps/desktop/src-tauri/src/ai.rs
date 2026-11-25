@@ -22,7 +22,7 @@ use zibblu_core::{
     },
     assistant_extract::{
         AuthorizedAiAttachment, ExtractError, ExtractedAttachment, attachment_type_label,
-        build_chunked_requests, check_supported_attachment, extract_attachment,
+        build_chunked_requests, check_supported_attachment_for_provider, extract_attachment,
     },
 };
 
@@ -271,6 +271,7 @@ struct Approval {
     conversation_id: Uuid,
     assistant: StoredAssistant,
     prompt: String,
+    message_seqs: Vec<i64>,
     messages: Vec<AiMessage>,
     files: Vec<AiFile>,
     attachments: Vec<ApprovedAttachment>,
@@ -614,10 +615,12 @@ pub(crate) async fn ai_prepare(
 
     let mut prepared_messages = Vec::with_capacity(context_messages.len());
     let mut encoded_messages = Vec::with_capacity(context_messages.len());
+    let mut approved_message_seqs = Vec::with_capacity(context_messages.len());
     let mut prepared_attachments = Vec::new();
     let mut approved_attachments = Vec::new();
 
     for msg in context_messages {
+        approved_message_seqs.push(msg.seq);
         let att_name = msg.attachment.as_ref().map(|a| a.name.clone());
         let display_text = msg.text.clone().unwrap_or_default();
         let encoded_text = match (msg.text, &msg.attachment) {
@@ -627,7 +630,8 @@ pub(crate) async fn ai_prepare(
             _ => String::new(),
         };
         if let Some(att) = msg.attachment {
-            check_supported_attachment(&att).map_err(|err| anyhow::anyhow!("{err}"))?;
+            check_supported_attachment_for_provider(&att, selection.provider)
+                .map_err(|err| anyhow::anyhow!("{err}"))?;
             let cached = client
                 .is_attachment_cached_for_ai(conversation, msg.seq, &att)
                 .await?;
@@ -700,6 +704,7 @@ pub(crate) async fn ai_prepare(
             conversation_id: conversation,
             assistant,
             prompt,
+            message_seqs: approved_message_seqs,
             messages: encoded_messages,
             files,
             attachments: approved_attachments,
@@ -1040,7 +1045,7 @@ async fn execute_ai_job(
     let mut answers = send_chunks(
         requests.requests,
         cancelled,
-        || client.ensure_ai_attachments_authorized(conversation_id, &granted),
+        || client.ensure_ai_authorized(conversation_id, &approved.message_seqs, &granted),
         |idx, total, parts| {
             let status_text = if total > 1 {
                 format!("{}/{}", idx + 1, total)
@@ -1064,7 +1069,14 @@ async fn execute_ai_job(
     let mut reply = if answers.len() == 1 {
         answers.pop().expect("single chunk answer")
     } else {
-        let mut combined = format!("已顺序处理全部 {} 个分块：", answers.len());
+        let mut combined = if uncovered.is_empty() {
+            format!("已顺序处理全部 {} 个分块：", answers.len())
+        } else {
+            format!(
+                "已顺序处理 {} 个已提取文本分块（部分视觉或非文本内容未覆盖，见末尾说明）：",
+                answers.len()
+            )
+        };
         for (idx, chunk_answer) in answers.iter().enumerate() {
             combined.push_str(&format!("\n\n[分块 {}/{}]\n{}", idx + 1, answers.len(), chunk_answer));
         }
@@ -1190,6 +1202,7 @@ mod tests {
                 protected_key: vec![],
             },
             prompt: "Summarize".into(),
+            message_seqs: vec![],
             messages: vec![],
             files: vec![],
             attachments: vec![],

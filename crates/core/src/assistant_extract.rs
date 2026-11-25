@@ -30,6 +30,8 @@ const MAX_CHUNK_TEXT_BYTES: usize = 160 * 1024;
 pub enum ExtractError {
     #[error("Unsupported file format: {0}")]
     UnsupportedFileFormat(String),
+    #[error("当前模型提供商不支持直接读取图片，请换用支持视觉能力的模型")]
+    VisionUnsupported,
     #[error("当前模型或接口不支持直接读取扫描版 PDF，请换用支持原生 PDF/视觉的模型")]
     ScannedPdfUnsupported,
     #[error("{0}")]
@@ -173,6 +175,24 @@ pub fn check_supported_attachment(attachment: &Attachment) -> Result<(), Extract
     Ok(())
 }
 
+pub fn check_supported_attachment_for_provider(
+    attachment: &Attachment,
+    provider: AiProvider,
+) -> Result<(), ExtractError> {
+    check_supported_attachment(attachment)?;
+    let kind = classify_attachment(attachment)?;
+    if matches!(
+        kind,
+        SupportedAttachmentKind::ImageJpeg
+            | SupportedAttachmentKind::ImagePng
+            | SupportedAttachmentKind::ImageWebp
+    ) && !provider.supports_image_input()
+    {
+        return Err(ExtractError::VisionUnsupported);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub enum ExtractedAttachment {
     Image {
@@ -202,7 +222,7 @@ pub fn extract_attachment(
     provider: AiProvider,
 ) -> Result<ExtractedAttachment, ExtractError> {
     let kind = classify_attachment(attachment)?;
-    check_supported_attachment(attachment)?;
+    check_supported_attachment_for_provider(attachment, provider)?;
 
     let file = File::open(path).with_context(|| format!("Could not open '{}'", attachment.name))?;
     let meta = file
@@ -267,7 +287,7 @@ pub fn extract_attachment(
             if !bytes.starts_with(b"%PDF-") {
                 return Err(ExtractError::UnsupportedFileFormat(attachment.name.clone()));
             }
-            if provider == AiProvider::OpenAi && bytes.len() as u64 <= MAX_AI_NATIVE_PDF_BYTES {
+            if provider.supports_native_pdf_input() && bytes.len() as u64 <= MAX_AI_NATIVE_PDF_BYTES {
                 return Ok(ExtractedAttachment::NativePdf {
                     name: attachment.name.clone(),
                     file_data: format!("data:application/pdf;base64,{}", STANDARD.encode(&bytes)),
@@ -1319,6 +1339,14 @@ fn has_pdf_type(body: &[u8], expected: &[u8]) -> bool {
     false
 }
 
+fn is_pdf_ref_marker(token: &str) -> bool {
+    token.starts_with('R')
+        && token
+            .as_bytes()
+            .get(1)
+            .is_none_or(|b| !b.is_ascii_alphanumeric())
+}
+
 fn parse_single_ref(body: &[u8], key: &[u8]) -> Option<u32> {
     let mut pos = 0;
     while let Some(idx) = find_subslice(body, pos, key) {
@@ -1335,7 +1363,7 @@ fn parse_single_ref(body: &[u8], key: &[u8]) -> Option<u32> {
         let text = String::from_utf8_lossy(slice);
         let tokens: Vec<&str> = text.split_whitespace().collect();
         if tokens.len() >= 3
-            && tokens[2] == "R"
+            && is_pdf_ref_marker(tokens[2])
             && let Ok(num) = tokens[0].parse::<u32>()
             && tokens[1].parse::<u16>().is_ok()
         {
@@ -1441,9 +1469,12 @@ fn page_references_image(
             if let Some(idx) = find_subslice(src, 0, b"/XObject") {
                 let tail = &src[idx..];
                 let text = String::from_utf8_lossy(tail);
-                let tokens: Vec<&str> = text.split_whitespace().collect();
+                let tokens: Vec<&str> = text
+                    .split(|c: char| c.is_ascii_whitespace() || matches!(c, '<' | '>' | '[' | ']' | '/'))
+                    .filter(|s| !s.is_empty())
+                    .collect();
                 for window in tokens.windows(3) {
-                    if window[2] == "R"
+                    if is_pdf_ref_marker(window[2])
                         && let Ok(num) = window[0].parse::<u32>()
                         && window[1].parse::<u16>().is_ok()
                         && let Some(target) = objects.get(&num)
@@ -1816,14 +1847,14 @@ mod tests {
     fn extracts_images_docx_xlsx_and_text_formats() -> Result<()> {
         let dir = tempfile::tempdir()?;
 
-        // PNG
+        // PNG succeeds for vision providers and fails explicitly for non-vision providers.
         let png_path = dir.path().join("pic.png");
         let png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
         std::fs::write(&png_path, png_bytes)?;
         let extracted = extract_attachment(
             &png_path,
             &fixture_attachment("pic.png", png_bytes.len() as u64),
-            AiProvider::DeepSeek,
+            AiProvider::OpenAi,
         )?;
         match extracted {
             ExtractedAttachment::Image { image_url, .. } => {
@@ -1831,6 +1862,13 @@ mod tests {
             }
             other => panic!("expected Image, got {other:?}"),
         }
+        let vision_err = extract_attachment(
+            &png_path,
+            &fixture_attachment("pic.png", png_bytes.len() as u64),
+            AiProvider::DeepSeek,
+        )
+        .unwrap_err();
+        assert!(matches!(vision_err, ExtractError::VisionUnsupported));
 
         // DOCX
         let docx_path = dir.path().join("report.docx");
@@ -1975,7 +2013,7 @@ mod tests {
         pdf.extend_from_slice(b"2 0 obj << /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >> endobj\n");
         pdf.extend_from_slice(b"3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R >> endobj\n");
         pdf.extend_from_slice(b"4 0 obj << /Length 60 >>\nstream\nBT /F1 12 Tf (Page one carries plenty of searchable words) Tj ET\nendstream\nendobj\n");
-        pdf.extend_from_slice(b"5 0 obj << /Type /Page /Parent 2 0 R /Contents 6 0 R >> endobj\n");
+        pdf.extend_from_slice(b"5 0 obj << /Type /Page /Parent 2 0 R /Resources<</XObject<</Im1 7 0 R>>>> /Contents 6 0 R >> endobj\n");
         pdf.extend_from_slice(b"6 0 obj << /Length 13 >>\nstream\nBT /Im1 Do ET\nendstream\nendobj\n");
         pdf.extend_from_slice(b"7 0 obj << /Type /XObject /Subtype /Image /Width 10 /Height 10 >> endobj\n%%EOF");
         let path = dir.path().join("mixed.pdf");
@@ -1985,7 +2023,7 @@ mod tests {
             &fixture_attachment("mixed.pdf", pdf.len() as u64),
             AiProvider::DeepSeek,
         );
-        assert!(result.is_err(), "a scanned page must not be silently dropped");
+        assert!(matches!(result, Err(ExtractError::ScannedPdfUnsupported)), "a scanned page must not be silently dropped");
         Ok(())
     }
 

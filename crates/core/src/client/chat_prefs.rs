@@ -116,20 +116,32 @@ impl Client {
 
     pub async fn hidden_group_conversations(&self) -> Result<Vec<Conversation>> {
         self.ensure_open()?;
-        let hidden: Vec<String> = sqlx::query_scalar(
-            "SELECT conversation_id FROM conversation_prefs WHERE hidden_at_seq IS NOT NULL",
-        )
-        .fetch_all(&self.db)
-        .await?;
+        let prefs = load_prefs_map(&self.db).await?;
+        let visible_ids: std::collections::HashSet<Uuid> = self
+            .directory()
+            .await?
+            .conversations
+            .into_iter()
+            .map(|chat| chat.id)
+            .collect();
         let mut groups: Vec<Conversation> = self
             .membership_directory()
             .await?
             .conversations
             .into_iter()
-            .filter(|chat| {
-                chat.title.is_some()
-                    && hidden.contains(&chat.id.to_string())
-                    && chat.members.iter().any(|member| member.id == self.user.id)
+            .filter_map(|mut chat| {
+                if chat.title.is_none()
+                    || visible_ids.contains(&chat.id)
+                    || !chat.members.iter().any(|member| member.id == self.user.id)
+                {
+                    return None;
+                }
+                let pref = prefs.get(&chat.id.to_string())?;
+                pref.hidden_at_seq?;
+                chat.pinned = pref.pinned_at.is_some();
+                chat.manual_unread = pref.manual_unread;
+                chat.muted = pref.muted;
+                Some(chat)
             })
             .collect();
         sort_conversations(&mut groups);
@@ -500,6 +512,11 @@ mod tests {
         team.title = Some("Team".into());
         seed_directory(&client, vec![team, make_conversation(direct, 1000, false, own, peer)]).await?;
 
+        let peer_user = User { id: peer, handle: "peer".into() };
+        let mut tx = client.db.begin().await?;
+        persist_message(&mut tx, sample_message(group, 1, peer_user, "group history 1")).await?;
+        tx.commit().await?;
+
         client.set_conversation_pinned(group, true).await?;
         client.hide_conversation(group).await?;
         client.hide_conversation(direct).await?;
@@ -510,6 +527,7 @@ mod tests {
         assert!(!reopened.directory().await?.conversations.iter().any(|chat| chat.id == group));
         let hidden = reopened.hidden_group_conversations().await?;
         assert_eq!(hidden.iter().map(|chat| chat.id).collect::<Vec<_>>(), vec![group]);
+        assert!(hidden[0].pinned);
 
         reopened.unhide_conversation(group).await?;
         assert!(reopened.hidden_group_conversations().await?.is_empty());
@@ -522,6 +540,9 @@ mod tests {
             .expect("group is open again");
         assert!(reopened_chat.pinned);
         assert_eq!(reopened_chat.members.len(), 2);
+        let history = reopened.messages(group, None).await?.items;
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].text.as_deref(), Some("group history 1"));
         Ok(())
     }
 }

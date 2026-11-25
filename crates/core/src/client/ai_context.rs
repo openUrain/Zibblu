@@ -68,21 +68,12 @@ impl Client {
         scope: AiScope,
     ) -> Result<Vec<AiContextMessage>> {
         self.ensure_open()?;
-        let recent = matches!(scope, AiScope::Recent { .. });
+        let now = self.server_now();
         let mut tx = self.db.begin().await?;
         let joined_after = ensure_normal_chat(&mut tx, self.user.id, conversation).await?;
-        let mut messages = scoped_context_messages(&mut tx, conversation, joined_after, scope).await?;
+        let messages =
+            scoped_context_messages(&mut tx, conversation, joined_after, scope, now).await?;
         tx.commit().await?;
-        let now = self.server_now();
-        let is_expired = |message: &AiContextMessage| message.expires_at.is_some_and(|at| at <= now);
-        if recent {
-            messages.retain(|message| !is_expired(message));
-        } else {
-            ensure!(
-                !messages.iter().any(is_expired),
-                "Some selected messages are unavailable in this chat"
-            );
-        }
         Ok(messages)
     }
 
@@ -239,7 +230,7 @@ impl Client {
         }
 
         // Re-check DB authorization in case the message was recalled or deleted mid-download.
-        self.ensure_ai_attachments_authorized(conversation, &[(seq, attachment.clone())])
+        self.ensure_ai_authorized(conversation, &[seq], &[(seq, attachment.clone())])
             .await?;
 
         let path = cleanup.disarm().expect("disarmed temp path");
@@ -250,16 +241,20 @@ impl Client {
     }
 
     /// Final gate before any content leaves for the AI provider.
-    pub async fn ensure_ai_attachments_authorized(
+    pub async fn ensure_ai_authorized(
         &self,
         conversation: Uuid,
-        items: &[(i64, Attachment)],
+        message_seqs: &[i64],
+        attachments: &[(i64, Attachment)],
     ) -> Result<()> {
         self.ensure_open()?;
         let now = self.server_now();
         let mut tx = self.db.begin().await?;
         let joined_after = ensure_normal_chat(&mut tx, self.user.id, conversation).await?;
-        for (seq, attachment) in items {
+        for &seq in message_seqs {
+            verify_visible_message_in_tx(&mut tx, conversation, joined_after, seq, now).await?;
+        }
+        for (seq, attachment) in attachments {
             verify_message_attachment_in_tx(
                 &mut tx,
                 conversation,
@@ -300,14 +295,13 @@ pub(super) async fn ensure_normal_chat(
     }
 }
 
-async fn verify_message_attachment_in_tx(
+async fn verify_visible_message_in_tx(
     db: &mut SqliteConnection,
     conversation: Uuid,
     joined_after: Option<i64>,
     seq: i64,
-    attachment: &Attachment,
     now: i64,
-) -> Result<()> {
+) -> Result<Message> {
     let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
         "SELECT payload FROM inbox
          WHERE seq = ",
@@ -316,30 +310,47 @@ async fn verify_message_attachment_in_tx(
     query
         .push(" AND conversation_id = ")
         .push_bind(conversation.to_string());
-    query
-        .push(" AND attachment_id = ")
-        .push_bind(attachment.id.to_string());
     if let Some(cutoff) = joined_after {
         query.push(" AND seq > ").push_bind(cutoff);
     }
-    query.push(
-        " AND seq NOT IN (SELECT seq FROM hidden_messages)
-          AND seq NOT IN (SELECT seq FROM local_deleted_messages)
-          AND coalesce(json_extract(payload, '$.recalled'), 0) = 0
-          AND json_extract(payload, '$.expired') IS NULL",
-    );
+    query
+        .push(
+            " AND seq NOT IN (SELECT seq FROM hidden_messages)
+              AND seq NOT IN (SELECT seq FROM local_deleted_messages)
+              AND coalesce(json_extract(payload, '$.recalled'), 0) = 0
+              AND json_extract(payload, '$.expired') IS NULL
+              AND (json_extract(payload, '$.expires_at') IS NULL OR json_extract(payload, '$.expires_at') > ",
+        )
+        .push_bind(now)
+        .push(")");
 
     let payload: Option<String> = query.build_query_scalar().fetch_optional(db).await?;
-    let payload = payload.context("This attachment is no longer available in the chat")?;
+    let payload = payload.context("Some authorized messages are no longer available in the chat")?;
     let message: Message =
-        serde_json::from_str(&payload).context("Could not read the attachment message")?;
+        serde_json::from_str(&payload).context("Could not read the authorized message")?;
     ensure!(
-        message.attachment.as_ref() == Some(attachment),
-        "Attachment metadata does not match the authorized message"
+        !message.recalled && message.expired.is_none(),
+        "Some authorized messages are no longer available in the chat"
     );
     ensure!(
         message.expires_at.is_none_or(|expires_at| expires_at > now),
-        "This attachment has expired and can no longer be sent to AI"
+        "This content has expired and can no longer be sent to AI"
+    );
+    Ok(message)
+}
+
+async fn verify_message_attachment_in_tx(
+    db: &mut SqliteConnection,
+    conversation: Uuid,
+    joined_after: Option<i64>,
+    seq: i64,
+    attachment: &Attachment,
+    now: i64,
+) -> Result<()> {
+    let message = verify_visible_message_in_tx(db, conversation, joined_after, seq, now).await?;
+    ensure!(
+        message.attachment.as_ref() == Some(attachment),
+        "Attachment metadata does not match the authorized message"
     );
     Ok(())
 }
@@ -349,6 +360,7 @@ async fn scoped_context_messages(
     conversation: Uuid,
     joined_after: Option<i64>,
     scope: AiScope,
+    now: i64,
 ) -> Result<Vec<AiContextMessage>> {
     if matches!(scope, AiScope::Prompt) {
         return Ok(Vec::new());
@@ -359,6 +371,11 @@ async fn scoped_context_messages(
          WHERE (json_type(payload, '$.text') = 'text' OR attachment_id IS NOT NULL)
            AND coalesce(json_extract(payload, '$.recalled'), 0) = 0
            AND json_extract(payload, '$.expired') IS NULL
+           AND (json_extract(payload, '$.expires_at') IS NULL OR json_extract(payload, '$.expires_at') > ",
+    );
+    query.push_bind(now);
+    query.push(
+        ")
            AND seq NOT IN (SELECT seq FROM hidden_messages)
            AND seq NOT IN (SELECT seq FROM local_deleted_messages)
            AND conversation_id = ",
@@ -418,6 +435,10 @@ async fn scoped_context_messages(
             ensure!(
                 !message.recalled && message.expired.is_none(),
                 "Some selected messages are unavailable in this chat"
+            );
+            ensure!(
+                message.expires_at.is_none_or(|expires_at| expires_at > now),
+                "Some selected messages have expired"
             );
             ensure!(
                 message.text.as_deref().is_some_and(|t| !t.is_empty())
@@ -557,6 +578,7 @@ mod tests {
             chat,
             cutoff,
             AiScope::Selected { sequences: vec![2] },
+            100_000,
         )
         .await?;
         assert_eq!(chosen.len(), 1);
@@ -570,6 +592,7 @@ mod tests {
             chat,
             cutoff,
             AiScope::Selected { sequences: vec![5] },
+            100_000,
         )
         .await?;
         assert_eq!(chosen_att.len(), 1);
@@ -586,6 +609,7 @@ mod tests {
                     AiScope::Selected {
                         sequences: vec![2, forbidden]
                     },
+                    100_000,
                 )
                 .await
                 .is_err(),
@@ -594,21 +618,282 @@ mod tests {
         }
 
         // Recent respects cutoff and excludes recalled/expired/hidden/deleted while preserving attachments.
-        let recent = scoped_context_messages(&mut db, chat, cutoff, AiScope::Recent { limit: 3 }).await?;
+        let recent = scoped_context_messages(
+            &mut db,
+            chat,
+            cutoff,
+            AiScope::Recent { limit: 3 },
+            100_000,
+        )
+        .await?;
         assert_eq!(
             recent.iter().map(|m| m.seq).collect::<Vec<_>>(),
             vec![4, 5, 6]
         );
         assert!(
-            scoped_context_messages(&mut db, chat, cutoff, AiScope::Prompt)
+            scoped_context_messages(&mut db, chat, cutoff, AiScope::Prompt, 100_000)
                 .await?
                 .is_empty()
         );
         assert!(
-            scoped_context_messages(&mut db, chat, cutoff, AiScope::Recent { limit: 61 })
+            scoped_context_messages(&mut db, chat, cutoff, AiScope::Recent { limit: 61 }, 100_000)
                 .await
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cached_attachment_expires_by_server_clock_without_expired_flag() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let own = Uuid::new_v4();
+        let peer = Uuid::new_v4();
+        let chat = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        let session = DeviceSession {
+            user: User {
+                id: own,
+                handle: "alice".into(),
+            },
+            device_id,
+            cursor: Uuid::new_v4(),
+        };
+        let client = Client::open(dir.path(), Api::new("http://127.0.0.1:1")?, session, false).await?;
+        let directory = serde_json::json!({
+            "contacts": [],
+            "conversations": [{
+                "id": chat,
+                "title": null,
+                "members": [{ "id": own, "handle": "alice" }, { "id": peer, "handle": "bob" }],
+                "joined_after": null,
+                "activity_at": 1000,
+                "preview": null,
+                "preview_seq": null,
+                "latest_seq": 1,
+                "unread": 0,
+                "read_through": 1,
+                "pinned": false,
+                "manual_unread": false,
+                "muted": false
+            }],
+            "pending_contacts": [],
+            "remarks": {},
+            "names": {},
+            "avatars": {},
+            "read_receipts": false,
+            "server_now": client.server_now()
+        });
+        sqlx::query("INSERT INTO directory (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload")
+            .bind(directory.to_string())
+            .execute(&client.db)
+            .await?;
+
+        let bytes = b"cached document payload";
+        let sha256 = format!("{:x}", Sha256::digest(bytes));
+        let att = Attachment {
+            id: Uuid::new_v4(),
+            name: "ttl.txt".into(),
+            kind: AttachmentKind::File,
+            size: bytes.len() as u64,
+            sha256: sha256.clone(),
+        };
+        let mut msg = make_message(
+            1,
+            chat,
+            User { id: peer, handle: "bob".into() },
+            None,
+            Some(att.clone()),
+            false,
+            None,
+        );
+        let base_now = client.server_now();
+        msg.expires_at = Some(base_now + 60_000);
+        let mut tx = client.db.begin().await?;
+        super::super::local_sync::persist_message(&mut tx, msg).await?;
+        tx.commit().await?;
+
+        let rel_path = format!("media/{device_id}/conversations/{chat}/files/{}", att.id);
+        let cached_file = client.profile_dir().join(&rel_path);
+        std::fs::create_dir_all(cached_file.parent().unwrap())?;
+        std::fs::write(&cached_file, bytes)?;
+        let variant = MediaVariant::for_attachment(&att).as_str();
+        let file_id: i64 = sqlx::query_scalar(
+            "INSERT INTO media_files (device_id, conversation_id, variant, content_key, sha256, size, mime, rel_path, status, created_at, updated_at)
+             VALUES (?1, ?2, ?8, ?3, ?4, ?5, 'text/plain', ?6, 'available', ?7, ?7)
+             RETURNING id",
+        )
+        .bind(device_id.to_string())
+        .bind(chat.to_string())
+        .bind(&sha256)
+        .bind(&sha256)
+        .bind(bytes.len() as i64)
+        .bind(&rel_path)
+        .bind(base_now)
+        .bind(variant)
+        .fetch_one(&client.db)
+        .await?;
+        sqlx::query(
+            "INSERT INTO media_refs (file_id, ref_kind, ref_id, conversation_id, attachment_id, variant, created_at)
+             VALUES (?1, 'message', '1', ?2, ?3, ?5, ?4)",
+        )
+        .bind(file_id)
+        .bind(chat.to_string())
+        .bind(att.id.to_string())
+        .bind(base_now)
+        .bind(variant)
+        .execute(&client.db)
+        .await?;
+
+        assert!(client.is_attachment_cached_for_ai(chat, 1, &att).await?);
+        let authorized = client
+            .fetch_authorized_attachment_for_ai(chat, 1, &att, Arc::new(Notify::new()), |_, _| {})
+            .await?;
+        assert!(authorized.is_cached());
+        client.ensure_ai_authorized(chat, &[1], &[(1, att.clone())]).await?;
+
+        // Advance ONLY server_clock_offset past TTL without touching inbox payload.expired.
+        client
+            .server_clock_offset
+            .fetch_add(120_000, std::sync::atomic::Ordering::Relaxed);
+
+        assert!(!client.is_attachment_cached_for_ai(chat, 1, &att).await?);
+        assert!(
+            client
+                .ai_context_messages(chat, AiScope::Selected { sequences: vec![1] })
+                .await
+                .is_err()
+        );
+        assert!(
+            client
+                .ai_context_messages(chat, AiScope::Recent { limit: 10 })
+                .await?
+                .is_empty()
+        );
+        assert!(
+            client
+                .fetch_authorized_attachment_for_ai(chat, 1, &att, Arc::new(Notify::new()), |_, _| {})
+                .await
+                .is_err()
+        );
+        assert!(
+            client
+                .ensure_ai_authorized(chat, &[1], &[(1, att.clone())])
+                .await
+                .is_err()
+        );
+        // Ordinary cached file remains on disk untouched for offline non-AI history viewing.
+        assert!(cached_file.exists());
+
+        client.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recalled_message_after_approval_stops_ai_recheck_before_send() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let own = Uuid::new_v4();
+        let peer = Uuid::new_v4();
+        let chat = Uuid::new_v4();
+        let session = DeviceSession {
+            user: User { id: own, handle: "alice".into() },
+            device_id: Uuid::new_v4(),
+            cursor: Uuid::new_v4(),
+        };
+        let client = Client::open(dir.path(), Api::new("http://127.0.0.1:1")?, session, false).await?;
+        let directory = serde_json::json!({
+            "contacts": [],
+            "conversations": [{
+                "id": chat,
+                "title": null,
+                "members": [{ "id": own, "handle": "alice" }, { "id": peer, "handle": "bob" }],
+                "joined_after": null,
+                "activity_at": 1000,
+                "preview": null,
+                "preview_seq": null,
+                "latest_seq": 1,
+                "unread": 0,
+                "read_through": 1,
+                "pinned": false,
+                "manual_unread": false,
+                "muted": false
+            }],
+            "pending_contacts": [],
+            "remarks": {},
+            "names": {},
+            "avatars": {},
+            "read_receipts": false,
+            "server_now": client.server_now()
+        });
+        sqlx::query("INSERT INTO directory (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload")
+            .bind(directory.to_string())
+            .execute(&client.db)
+            .await?;
+
+        let att = Attachment {
+            id: Uuid::new_v4(),
+            name: "secret.txt".into(),
+            kind: AttachmentKind::File,
+            size: 10,
+            sha256: "d".repeat(64),
+        };
+        let att2 = Attachment {
+            id: Uuid::new_v4(),
+            name: "secret2.txt".into(),
+            kind: AttachmentKind::File,
+            size: 10,
+            sha256: "e".repeat(64),
+        };
+        let msg = make_message(
+            1,
+            chat,
+            User { id: peer, handle: "bob".into() },
+            Some("confidential"),
+            Some(att.clone()),
+            false,
+            None,
+        );
+        let msg2 = make_message(
+            2,
+            chat,
+            User { id: peer, handle: "bob".into() },
+            Some("second chunk"),
+            Some(att2.clone()),
+            false,
+            None,
+        );
+        let mut tx = client.db.begin().await?;
+        super::super::local_sync::persist_message(&mut tx, msg).await?;
+        super::super::local_sync::persist_message(&mut tx, msg2).await?;
+        tx.commit().await?;
+
+        // Recall before first chunk leaves -> 0 provider requests.
+        client.ensure_ai_authorized(chat, &[1], &[(1, att.clone())]).await?;
+        sqlx::query("UPDATE inbox SET payload = json_set(payload, '$.recalled', json('true')) WHERE seq = 1")
+            .execute(&client.db)
+            .await?;
+
+        let mock_provider_requests = std::sync::atomic::AtomicUsize::new(0);
+        if client.ensure_ai_authorized(chat, &[1], &[(1, att)]).await.is_ok() {
+            mock_provider_requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        assert_eq!(mock_provider_requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // Multi-chunk flow: seq 2 is revoked between chunk 1 and chunk 2 -> stops at 1 request.
+        mock_provider_requests.store(0, std::sync::atomic::Ordering::SeqCst);
+        for chunk_idx in 0..2 {
+            if client.ensure_ai_authorized(chat, &[2], &[(2, att2.clone())]).await.is_err() {
+                break;
+            }
+            mock_provider_requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if chunk_idx == 0 {
+                sqlx::query("UPDATE inbox SET payload = json_set(payload, '$.recalled', json('true')) WHERE seq = 2")
+                    .execute(&client.db)
+                    .await?;
+            }
+        }
+        assert_eq!(mock_provider_requests.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        client.close().await;
         Ok(())
     }
 

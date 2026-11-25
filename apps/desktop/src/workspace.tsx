@@ -15,7 +15,7 @@ import { StorageSettings } from "./storage-settings";
 import { api, errorMessage, isExpired } from "./api";
 import type { AddDraftsResult, CloseAction, Conversation, ConversationRequest, Device, Directory, Draft, DropOffer, Profile, Session, SyncUpdate, Transfer, User } from "./api";
 import { mediaKind } from "./attachment-media";
-import { Blank, Brand, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName } from "./common";
+import { Avatar, Blank, Brand, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName } from "./common";
 import { orderContacts } from "./contact-order";
 import { actions, t } from "./locale";
 import { ChatList, ChatView } from "./chat";
@@ -829,7 +829,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           : <section className="chat-blank"><Blank icon={<MessageCircle size={28} />} title={t("Select a chat", "选择会话")} /></section>}
         {chatProfile && profilePage}
       </div>}
-      {(windows || nav === "Contacts") && <Contacts active={nav === "Contacts"} details={openDetails} directory={directory} own={session.user.id} refresh={refresh} create={create} reopenGroup={reopenHiddenGroup}
+      {(windows || nav === "Contacts") && <Contacts active={nav === "Contacts"} details={openDetails} directory={directory} own={session.user.id}
+        selected={windows ? directoryContact?.id : profile?.id} refresh={refresh} create={create} reopenGroup={reopenHiddenGroup}
         openAvatar={openContactCard} addContact={() => setNewContact(true)} />}
       {nav === "Files" && <FilesView revision={revision} recalled={recalled} hidden={hidden} transfers={transfers} onChanged={changed} />}
       {nav === "Me" && <section className="settings-page phone-me">
@@ -1071,11 +1072,14 @@ function Contacts({ active, directory, own, selected, refresh, create, reopenGro
     else groups.set(entry.letter, [entry]);
   }
   const emptyText = query ? t("No matching contacts", "没有匹配的联系人") : t("No contacts yet", "暂无联系人");
+  const matchingHiddenGroups = hiddenGroups
+    .map(chat => ({ chat, name: chatName(chat, own, remarks) }))
+    .filter(({ name }) => !query || matches(name));
   return <section className="settings-page contacts-screen">
     {ios && <header className="workspace-heading"><h1>{tabLabels.Contacts}</h1></header>}
     <form className="chat-list-head" role={windows ? "search" : undefined} onSubmit={event => {
       event.preventDefault();
-      if (query && filtered.length === 1) details(filtered[0].user);
+      if (query && filtered.length === 1 && matchingHiddenGroups.length === 0) details(filtered[0].user);
     }}>
       <WorkspaceSearchField label={t("Search contacts", "搜索联系人")} otherIconSize={17}
         value={search} onChange={event => {
@@ -1092,14 +1096,15 @@ function Contacts({ active, directory, own, selected, refresh, create, reopenGro
     <div className="contacts-list" ref={list}
       onScroll={windows ? event => { scrollTop.current = event.currentTarget.scrollTop; } : undefined}>
     {failure && <p className="inline-error" role="alert">{failure}</p>}
-    {!query && hiddenGroups.length > 0 && <section>
+    {matchingHiddenGroups.length > 0 && <section>
       <h2 className="section-title">{t("Hidden group chats", "已隐藏的群聊")}</h2>
       <div className="contact-requests">
-        {hiddenGroups.map(chat => <div className="contact-row" key={chat.id}>
-          <button className="person-link contact-name" disabled={busy}
+        {matchingHiddenGroups.map(({ chat, name }) => <div className="contact-row" key={chat.id}>
+          <button type="button" className="person-link contact-name" disabled={busy}
             onClick={() => void perform(() => reopenGroup(chat.id))}>
-            <UsersRound size={20} aria-hidden="true" />
-            <span><strong>{chatName(chat, own, remarks)}</strong></span>
+            <Avatar name={name} group />
+            <span><strong>{name}</strong></span>
+            {ios && <ChevronRight size={20} aria-hidden />}
           </button>
         </div>)}
       </div>
@@ -1145,8 +1150,8 @@ function Contacts({ active, directory, own, selected, refresh, create, reopenGro
           </button>
         </div>)}
       </div>)}
-    </div> : <p className="list-empty muted" role={windows ? "status" : undefined}>{windows ? emptyText
-      : query ? t("No matching contacts.", "没有匹配的联系人。") : t("No contacts yet.", "暂无联系人。")}</p>}
+    </div> : matchingHiddenGroups.length === 0 ? <p className="list-empty muted" role={windows ? "status" : undefined}>{windows ? emptyText
+      : query ? t("No matching contacts.", "没有匹配的联系人。") : t("No contacts yet.", "暂无联系人。")}</p> : null}
     </div>
   </section>;
 }

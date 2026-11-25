@@ -42,6 +42,14 @@ pub struct ModelDiscovery {
 }
 
 impl AiProvider {
+    pub fn supports_image_input(self) -> bool {
+        matches!(self, Self::OpenAi | Self::Grok)
+    }
+
+    pub fn supports_native_pdf_input(self) -> bool {
+        matches!(self, Self::OpenAi)
+    }
+
     pub fn default_base(self) -> &'static str {
         match self {
             Self::OpenAi => "https://api.openai.com/v1/",
