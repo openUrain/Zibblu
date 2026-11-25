@@ -1,5 +1,6 @@
 mod ai;
 mod attachment_drafts;
+mod chat_window;
 mod clipboard;
 mod commands;
 #[cfg(windows)]
@@ -135,10 +136,13 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() != "main" {
+            let label = window.label().to_owned();
+            let is_main = label == "main";
+            let is_chat = chat_window::is_chat_window(&label);
+            if !is_main && !is_chat {
                 return;
             }
-            if let WindowEvent::CloseRequested { api, .. } = event {
+            if is_main && let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 #[cfg(windows)]
                 windows_shell::request_close(window);
@@ -152,7 +156,7 @@ pub fn run() {
             let state = window.state::<Desktop>();
             if paths.is_empty() || paths.len() > attachment_drafts::MAX_DRAFT_ATTACHMENTS {
                 let _ = window.emit_to(
-                    "main",
+                    &label,
                     "attachment-drop-error",
                     format!(
                         "Drop up to {} files or folders at a time.",
@@ -162,7 +166,7 @@ pub fn run() {
                 return;
             }
             let offer = state.offer_attachments(paths.clone());
-            let _ = window.emit_to("main", "attachment-drop", offer);
+            let _ = window.emit_to(&label, "attachment-drop", offer);
         })
         .invoke_handler(restrict_viewer(tauri::generate_handler![
             clipboard::copy_text,
@@ -176,6 +180,7 @@ pub fn run() {
             commands::logout,
             commands::sync,
             commands::directory,
+            commands::membership_conversations,
             commands::local_update,
             commands::devices,
             commands::retire_device,
@@ -204,6 +209,15 @@ pub fn run() {
             commands::hide_pending_upload,
             commands::clear_history,
             commands::delete_conversation,
+            commands::set_conversation_pinned,
+            commands::set_conversation_manual_unread,
+            commands::set_conversation_muted,
+            commands::hide_conversation,
+            commands::unhide_conversation,
+            commands::hidden_group_conversations,
+            commands::mark_conversation_read_local,
+            commands::open_chat_window,
+            chat_window::chat_window_session,
             commands::take_send_failure_notices,
             commands::quoted_message,
             commands::create_conversation,
@@ -230,6 +244,12 @@ pub fn run() {
             ai::ai_remove_file,
             ai::ai_prepare,
             ai::ai_send,
+            ai::ai_prompts,
+            ai::ai_jobs,
+            ai::ai_replies,
+            ai::ai_cancel_job,
+            ai::ai_dismiss_job,
+            ai::ai_dismiss_reply,
             commands::private_start,
             commands::private_nearby,
             commands::private_invite_nearby,
@@ -275,6 +295,7 @@ pub fn run() {
             commands::resume_transfer,
             commands::discard_transfer,
             commands::clear_cache,
+            commands::storage_stats,
         ]))
         .run(tauri::generate_context!())
         .expect("Could not start Zibblu");

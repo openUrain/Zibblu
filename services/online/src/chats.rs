@@ -113,6 +113,9 @@ pub(crate) async fn directory(db: &mut PgConnection, account: Uuid) -> Result<Di
                 latest_seq: 0,
                 unread: 0,
                 read_through: 0,
+                pinned: false,
+                manual_unread: false,
+                muted: false,
             })
             .collect(),
     })

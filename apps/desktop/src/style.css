@@ -1091,10 +1091,10 @@ button.profile-row:hover { background: var(--hover); }
   .signin-form { padding: 25px 25px 31px; }
 }
 @media (forced-colors: active) {
-  .chat-row.selected, .contact-row:has(.contact-name[aria-current]) {
+  .chat-row.selected, .chat-row.pinned.selected, .contact-row:has(.contact-name[aria-current]) {
     forced-color-adjust: none; background: Highlight; color: HighlightText;
   }
-  .chat-row.selected :is(small, time) { color: HighlightText; }
+  .chat-row.selected :is(small, time, .chat-pinned-icon, .chat-muted-icon) { color: HighlightText; }
   .windows .contact-group .contact-name[aria-current] small { color: HighlightText; }
   .windows .contacts-screen .contact-name[aria-current]:hover { background: Highlight; color: HighlightText; }
   .windows .contact-row:has(.contact-name[aria-current]) > button:focus-visible { outline-color: HighlightText; }
@@ -1441,4 +1441,70 @@ body.windows :is(button, a[href], summary, .choice, .zibblu-selector, .close-act
   border: 1px solid var(--line);
   box-shadow: 0 2px 8px rgba(0, 0, 0, .12);
   pointer-events: none;
+}
+
+.menu-separator {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--line);
+}
+.app-menu button.danger {
+  color: var(--danger);
+}
+.app-menu:not([data-navigation="keyboard"]) button.danger:enabled:hover,
+.app-menu:not([data-navigation="pointer"]) button.danger:enabled:focus-visible {
+  --menu-row-highlight: var(--danger-bg);
+  color: var(--danger);
+}
+.app-menu button.danger:focus-visible::before {
+  outline-color: var(--danger);
+}
+.chat-row.pinned {
+  background: color-mix(in srgb, var(--tint) 42%, transparent);
+}
+.chat-row.pinned:hover {
+  background: color-mix(in srgb, var(--tint) 68%, var(--hover));
+}
+.chat-row.pinned.selected {
+  background: var(--tint);
+}
+.chat-row-badges {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-height: 17px;
+}
+.chat-pinned-icon,
+.chat-muted-icon {
+  color: var(--muted);
+  flex: none;
+}
+.unread-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--primary);
+}
+.standalone-chat-shell .window-drag {
+  min-width: 0;
+  overflow: hidden;
+}
+.standalone-window-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.standalone-chat-shell .workspace-content {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.standalone-chat-shell .chat-view,
+.standalone-chat-shell .chat-blank {
+  flex: 1;
+  min-height: 0;
 }

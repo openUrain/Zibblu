@@ -252,10 +252,17 @@ pub(crate) async fn open_draft_image_viewer(
 ) -> CommandResult<()> {
     #[cfg(windows)]
     {
-        require(window.label() == "main", "Open an image from chat")?;
+        require(
+            crate::chat_window::is_chat_or_main_window(window.label()),
+            "Open an image from chat",
+        )?;
         let _opening = state.image_window.lock().await;
         let client = state.client().await?;
         let (conversation, _) = state.drafts.draft_image_entry(&client, id)?;
+        require(
+            crate::chat_window::window_allows_conversation(window.label(), conversation),
+            "Open this draft image from its own chat window",
+        )?;
         let (_, bytes) = state.drafts.preview_image(&client, id, false).await?;
         let dimensions = bytes_dimensions(bytes).await;
         require(state.is_current(&client).await, "The session has ended")?;
@@ -285,10 +292,17 @@ pub(crate) async fn open_image_viewer(
 ) -> CommandResult<()> {
     #[cfg(windows)]
     {
-        require(window.label() == "main", "Open an image from chat")?;
+        require(
+            crate::chat_window::is_chat_or_main_window(window.label()),
+            "Open an image from chat",
+        )?;
         let _opening = state.image_window.lock().await;
         let client = state.client().await?;
         let message = client.attachment(id).await?;
+        require(
+            crate::chat_window::window_allows_conversation(window.label(), message.conversation_id),
+            "Open this attachment from its own chat window",
+        )?;
         let scope = ImageScope {
             client: Arc::downgrade(&client),
             conversation: message.conversation_id,

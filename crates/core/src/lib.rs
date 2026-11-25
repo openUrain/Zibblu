@@ -1,5 +1,7 @@
 #[cfg(feature = "client")]
 pub mod assistant;
+#[cfg(feature = "client")]
+pub mod assistant_extract;
 
 #[cfg(feature = "client")]
 mod client;

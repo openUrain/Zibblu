@@ -1,21 +1,37 @@
 import { FloatingField } from "./floating-field";
 import { Selector } from "./selector";
 import {
-  AtSign, Bot, ChevronRight, CircleCheck, Clock3, FileText, ListChecks,
+  AtSign, Bot, ChevronRight, CircleAlert, CircleCheck, Clock3, FileText, ListChecks,
   LockKeyhole, MessageSquare, Paperclip, Send, X,
 } from "lucide-react";
 import { useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ai, aiProviders } from "./ai-api";
-import type { AiFile, AiPreview, AiProvider, AiReply, AiScope, Assistant } from "./ai-api";
+import type {
+  AiFile, AiJob, AiPreview, AiPrompt, AiProvider, AiReply, AiScope, Assistant,
+} from "./ai-api";
 import { api, errorMessage } from "./api";
-import { actions } from "./locale";
-import type { Message, User } from "./api";
+import { decimalSize, splitFileName } from "./file-labels";
+import { actions, t } from "./locale";
+import type { Attachment, Message, User } from "./api";
 import { bytes, Choice, Dialog, People, displayName } from "./common";
 import "./ai.css";
 
 const MAX_MESSAGES = 60;
 const MAX_FILES = 3;
+
+function attachmentTypeDisplay(file: Attachment): string {
+  if (file.kind === "folder") return t("Folder", "文件夹");
+  const ext = file.name.split(".").pop()?.toUpperCase();
+  return ext && ext !== file.name.toUpperCase() ? ext : t("File", "文件");
+}
+
+function FileLabel({ name }: { name: string }) {
+  const [stem, ext] = splitFileName(name);
+  return <span className="ai-file-name file-name" title={name} dir="ltr">
+    <strong dir="auto">{stem}</strong>{ext && <strong>{ext}</strong>}
+  </span>;
+}
 
 export function ProviderLogo({ provider }: { provider: AiProvider }) {
   const { label, icon } = aiProviders[provider];
@@ -140,10 +156,12 @@ const scopes = [
   { kind: "recent", label: "Recent", Icon: Clock3 },
 ] as const;
 
-export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, loading, older, conversation, close, answered }: {
+export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, loading, older, conversation: _conversation, close, sent, answered }: {
   view: string; draft: string; assistant: Assistant; prompt: string;
   messages: Message[]; hasMore: boolean; loading: boolean; older: () => Promise<void>;
-  conversation: string; close: () => void; answered: (reply: AiReply) => void;
+  conversation: string; close: () => void;
+  sent?: (result: { id: string; created_at: number }) => void;
+  answered?: (reply: AiReply) => void;
 }) {
   const [kind, setKind] = useState<AiScope["kind"]>("prompt");
   const [sequences, setSequences] = useState<number[]>([]);
@@ -159,6 +177,10 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
   const { remarks } = useContext(People);
   const chosenAssistant = preview?.assistant ?? assistant;
   const provider = aiProviders[chosenAssistant.provider].label;
+  const selectableMessages = useMemo(
+    () => messages.filter(message => message.seq > 0 && !message.recalled && !message.expired && (message.text !== null || message.attachment !== null)),
+    [messages],
+  );
   const selection = useMemo(() => {
     const scope: AiScope = kind === "selected" ? { kind, sequences }
       : kind === "recent" ? { kind, limit } : { kind };
@@ -208,10 +230,15 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
     setSpent(true);
     setFailure("");
     try {
-      const answer = await ai.send(view, draft, preview.id);
-      answered({ id: preview.id, conversation, provider: preview.assistant.provider, text: answer.text, createdAt: answer.created_at });
-    } catch (error) { setFailure(errorMessage(error) + ". Start a new request to retry."); }
-    finally { setBusy(undefined); }
+      const result = await ai.send(view, draft, preview.id);
+      sent?.(result);
+      void answered;
+      close();
+    } catch (error) {
+      setFailure(errorMessage(error) + ". Start a new request to retry.");
+    } finally {
+      setBusy(undefined);
+    }
   }
 
   const disabled = !!busy || spent;
@@ -222,7 +249,7 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
     change();
   }
 
-  return <Dialog className="ai-request" title={"Ask @" + assistant.name} mobilePage closeDisabled={!!busy} close={close}>
+  return <Dialog className="ai-request" title={t(`Ask @${assistant.name}`, `向 @${assistant.name} 提问`)} mobilePage closeDisabled={!!busy} close={close}>
     <div className="ai-request-model">
       <ProviderLogo provider={chosenAssistant.provider} />
       <div><strong>{provider}</strong><span>{chosenAssistant.model}</span></div>
@@ -235,21 +262,30 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
         </div>
         {kind === "recent" && <label className="ai-recent">Include the latest
           <Selector value={limit} onChange={event => updateSelection(() => setLimit(Number(event.target.value)))} disabled={disabled}>
-            {[5, 10, 20, 40, 60].map(count => <option key={count} value={count}>{count} text messages</option>)}
+            {[5, 10, 20, 40, 60].map(count => <option key={count} value={count}>{count} messages</option>)}
           </Selector>
         </label>}
         {kind === "selected" && <div className="ai-pick-messages">
           <p className="muted">{sequences.length} of {MAX_MESSAGES} selected</p>
           <div className="ai-message-options">
-            {messages.filter(message => message.text !== null).map(message => {
+            {selectableMessages.map(message => {
               const checked = sequences.includes(message.seq);
+              const att = message.attachment;
               return <Choice key={message.seq} className="ai-message-option" checked={checked}
                 disabled={disabled || (!checked && sequences.length >= MAX_MESSAGES)}
                 onChange={() => updateSelection(() => setSequences(current => checked ? current.filter(seq => seq !== message.seq) : [...current, message.seq]))}>
-                <span><strong>{displayName(message.sender, remarks)}</strong><span>{message.text}</span></span>
+                <span>
+                  <strong>{displayName(message.sender, remarks)}</strong>
+                  {message.text && <span>{message.text}</span>}
+                  {att && <span className="ai-message-attachment">
+                    <Paperclip size={13} aria-hidden="true" />
+                    <FileLabel name={att.name} />
+                    <small>{attachmentTypeDisplay(att)} · {decimalSize(att.size)}</small>
+                  </span>}
+                </span>
               </Choice>;
             })}
-            {!messages.some(message => message.text !== null) && <p className="muted">No text messages to select.</p>}
+            {selectableMessages.length === 0 && <p className="muted">No messages to select.</p>}
             {hasMore && <button className="button subtle" type="button" disabled={loading || disabled}
               onClick={() => void older()}>{loading ? "Loading…" : "Load older messages"}</button>}
           </div>
@@ -263,7 +299,7 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
           </button>
         </div>
         {files.length > 0 ? <ul className="ai-file-chips">
-          {files.map(file => <li key={file.id}><FileText size={15} /><span className="ai-file-name" title={file.name}>{file.name}</span>
+          {files.map(file => <li key={file.id}><FileText size={15} /><FileLabel name={file.name} />
             <small>{bytes(file.bytes)}</small>
             <button className="icon-button" type="button" disabled={disabled} aria-label={"Remove " + file.name}
               onClick={() => void remove(file)}><X size={14} /></button>
@@ -271,7 +307,7 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
         </ul> : null}
       </div>
       {preview && <div className="ai-snapshot">
-        <header className="ai-disclosure"><strong>Content sent to {provider}</strong><small>{preview.endpoint}</small></header>
+        <header className="ai-disclosure"><strong>{t(`Content sent to ${provider}`, `将发送给 ${provider} 的内容`)}</strong><small>{preview.endpoint}</small></header>
         <details open>
           <summary><MessageSquare size={15} /> Prompt</summary>
           <p>{preview.snapshot.prompt}</p>
@@ -279,11 +315,28 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
         {preview.snapshot.messages.length > 0 && <details open>
           <summary><ListChecks size={15} /> Messages <span>{preview.snapshot.messages.length}</span></summary>
           {preview.snapshot.messages.map((message, index) => <div className="ai-excerpt" key={index}>
-            <strong>@{message.sender}</strong><p>{message.text}</p>
+            <strong>@{message.sender}</strong>
+            {message.text && <p>{message.text}</p>}
+            {message.attachment && <p className="ai-excerpt-attachment"><Paperclip size={12} aria-hidden="true" /> {message.attachment}</p>}
           </div>)}
         </details>}
+        {preview.snapshot.attachments.length > 0 && <details open>
+          <summary><Paperclip size={15} /> {t("Outbound attachments", "外发附件列表")} <span>{preview.snapshot.attachments.length}</span></summary>
+          <ul className="ai-attachment-disclosure">
+            {preview.snapshot.attachments.map(att => <li key={`${att.seq}-${att.id}`}>
+              <FileLabel name={att.name} />
+              <span className="ai-attachment-meta">
+                <span>{att.file_type}</span>
+                <span>{decimalSize(att.size)}</span>
+                <span className={att.cached ? "ai-cache-badge cached" : "ai-cache-badge"}>
+                  {att.cached ? t("Cached locally", "本地已缓存") : t("Will download on send", "将按需下载")}
+                </span>
+              </span>
+            </li>)}
+          </ul>
+        </details>}
         {preview.snapshot.files.map((file, index) => <details key={index}>
-          <summary><FileText size={15} /> <span className="ai-file-name">{file.name}</span></summary>
+          <summary><FileText size={15} /> <FileLabel name={file.name} /></summary>
           <p>{file.text}</p>
         </details>)}
       </div>}
@@ -291,11 +344,73 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
       <p className="ai-visibility-note"><LockKeyhole size={15} /> One-time, read-only request. Reply visible only to you.</p>
       {(failure || previewFailure) && <p className="inline-error" role="alert">{failure || previewFailure}</p>}
       <div className="dialog-actions">
-        <button className="button subtle" onClick={close} disabled={!!busy}>{spent ? "Close" : "Cancel"}</button>
+        <button className="button subtle" onClick={close} disabled={!!busy}>{spent ? t("Close", "关闭") : t("Cancel", "取消")}</button>
         <button className="button primary" disabled={disabled || preparing || !preview}
-          onClick={() => void send()}>{busy === "send" ? "Waiting for reply…" : "Send to " + provider} <Send size={16} /></button>
+          onClick={() => void send()}>{busy === "send" ? t("Sending…", "发送中…") : t(`Send to ${provider}`, `发送给 ${provider}`)} <Send size={16} /></button>
       </div>
   </Dialog>;
+}
+
+export function AiPromptBubble({ prompt, assistantName }: {
+  prompt: AiPrompt; assistantName?: string;
+}) {
+  const target = assistantName ? `@${assistantName}` : aiProviders[prompt.provider].label;
+  return <div className="message-row mine ai-prompt-row">
+    <div className="message-body">
+      <div className="message-content">
+        <div className="bubble ai-prompt-bubble">
+          <span className="ai-prompt-target">{target}</span>{" "}
+          <span>{prompt.prompt_text}</span>
+        </div>
+      </div>
+      <div className="message-meta">
+        <small className="ai-only-you-badge">
+          <LockKeyhole size={12} aria-hidden="true" />
+          <span>{t("Only visible to you", "仅自己可见")}</span>
+        </small>
+      </div>
+    </div>
+  </div>;
+}
+
+export function AiJobBubble({ job, onCancel, onDismiss }: {
+  job: AiJob; onCancel: (jobId: string) => void; onDismiss?: (jobId: string) => void;
+}) {
+  const failed = job.phase === "failed";
+  const progressLabel = job.phase === "downloading" && job.progress
+    ? `${decimalSize(job.progress[0])} / ${decimalSize(job.progress[1])}`
+    : job.phase === "generating" && job.status_text
+      ? t(`Chunk ${job.status_text}`, `分块 ${job.status_text}`)
+      : undefined;
+
+  return <div className="message-row ai-job-row">
+    <ProviderLogo provider={job.provider} />
+    <div className="message-body">
+      <div className="message-content">
+        {failed ? <div className="bubble ai-job-bubble ai-job-failed" role="alert">
+          <CircleAlert className="ai-job-error-icon" size={16} aria-hidden="true" />
+          <div className="ai-job-copy">
+            <strong>{t("AI request failed", "AI 生成失败")}</strong>
+            <span className="ai-job-error-text">{job.error || t("Could not complete the request.", "请求未能完成。")}</span>
+          </div>
+          {onDismiss && <button type="button" className="icon-button ai-job-cancel"
+            aria-label={t("Dismiss failed AI status", "关闭失败提示")} title={t("Dismiss", "关闭")}
+            onClick={() => onDismiss(job.id)}><X size={15} /></button>}
+        </div> : <div className="bubble ai-job-bubble">
+          <span className="ai-dot-spinner" aria-hidden="true">
+            <i /><i /><i /><i /><i /><i /><i /><i />
+          </span>
+          <div className="ai-job-copy" role="status" aria-live="polite">
+            <span className="ai-job-primary">{t("Generating reply...", "生成回复中...")}</span>
+            {progressLabel && <small className="ai-job-progress">{progressLabel}</small>}
+          </div>
+          <button type="button" className="icon-button ai-job-cancel"
+            aria-label={t("Cancel AI generation", "取消生成")} title={t("Cancel", "取消")}
+            onClick={() => onCancel(job.id)}><X size={15} /></button>
+        </div>}
+      </div>
+    </div>
+  </div>;
 }
 
 export function ShareAiReply({ reply, members, close, published }: {
@@ -313,8 +428,8 @@ export function ShareAiReply({ reply, members, close, published }: {
     setFailure("");
     try {
       lockedReaders.current ??= readers;
-      await api.publishAiReply(reply.conversation, {
-        nonce: reply.id, provider: reply.provider, text: reply.text, created_at: reply.createdAt, readers: lockedReaders.current,
+      await api.publishAiReply(reply.conversation_id, {
+        nonce: reply.id, provider: reply.provider, text: reply.text, created_at: reply.created_at, readers: lockedReaders.current,
       });
       await published();
     } catch (error) { setFailure(errorMessage(error)); }

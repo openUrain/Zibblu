@@ -119,8 +119,16 @@ impl Client {
         ).bind(&nonce_key).bind(&chat).bind(&serialized).fetch_optional(&mut *tx).await?;
         if let Some(id) = inserted {
             if let Some(conversation_id) = conversation {
+                let conv = conversation_id.to_string();
                 sqlx::query("DELETE FROM local_deleted_chats WHERE conversation_id = ?")
-                    .bind(conversation_id.to_string()).execute(&mut *tx).await?;
+                    .bind(&conv).execute(&mut *tx).await?;
+                sqlx::query(
+                    "UPDATE conversation_prefs SET hidden_at_seq = NULL
+                     WHERE conversation_id = ? AND hidden_at_seq IS NOT NULL",
+                )
+                .bind(&conv)
+                .execute(&mut *tx)
+                .await?;
                 let (text, created_at, reply_to, ai_provider) = match work {
                     Work::Text(input) => (input.text, unix_millis(), input.reply_to, None),
                     Work::Ai(input) => (input.text, input.created_at, None, Some(input.provider)),

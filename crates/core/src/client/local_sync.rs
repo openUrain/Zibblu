@@ -63,6 +63,22 @@ impl Client {
              CREATE TABLE IF NOT EXISTS local_read_positions (
                 conversation_id TEXT PRIMARY KEY, read_through INTEGER NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS conversation_prefs (
+                conversation_id TEXT PRIMARY KEY,
+                pinned_at INTEGER,
+                manual_unread INTEGER NOT NULL DEFAULT 0,
+                muted INTEGER NOT NULL DEFAULT 0,
+                hidden_at_seq INTEGER
+             );
+             CREATE TABLE IF NOT EXISTS ai_local_prompts (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                prompt_text TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS ai_local_prompts_chat
+                ON ai_local_prompts (conversation_id, created_at, id);
              CREATE TABLE IF NOT EXISTS outbox (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, nonce TEXT NOT NULL UNIQUE, conversation_id TEXT,
                 work TEXT NOT NULL, draft TEXT, blocked INTEGER NOT NULL DEFAULT 0,
@@ -490,8 +506,23 @@ impl Client {
         let deleted_chats: Vec<String> = sqlx::query_scalar("SELECT conversation_id FROM local_deleted_chats")
             .fetch_all(&self.db).await?;
         directory.conversations.retain(|chat| !deleted_chats.contains(&chat.id.to_string()));
-        for chat in &mut directory.conversations {
+        let prefs = super::chat_prefs::load_prefs_map(&self.db).await?;
+        let mut visible_conversations = Vec::with_capacity(directory.conversations.len());
+        for mut chat in directory.conversations {
             let id = chat.id.to_string();
+            let pref = prefs.get(&id).cloned().unwrap_or_default();
+            let max_inbox_seq: i64 = sqlx::query_scalar(
+                "SELECT coalesce(max(seq), 0) FROM inbox WHERE conversation_id = ?",
+            )
+            .bind(&id)
+            .fetch_one(&self.db)
+            .await?;
+            if super::chat_prefs::is_conversation_hidden(pref.hidden_at_seq, max_inbox_seq) {
+                continue;
+            }
+            chat.pinned = pref.pinned_at.is_some();
+            chat.manual_unread = pref.manual_unread;
+            chat.muted = pref.muted;
             let latest: Option<(i64, String, i64)> = sqlx::query_as(
                 "SELECT seq,
                     CASE WHEN json_extract(payload, '$.recalled') = 1 THEN 'Message recalled'
@@ -530,10 +561,10 @@ impl Client {
             .bind(id)
             .fetch_one(&self.db)
             .await?;
+            visible_conversations.push(chat);
         }
-        directory
-            .conversations
-            .sort_by_key(|chat| (std::cmp::Reverse(chat.activity_at), chat.id));
+        directory.conversations = visible_conversations;
+        super::chat_prefs::sort_conversations(&mut directory.conversations);
         Ok(directory)
     }
 }
@@ -601,8 +632,19 @@ pub(super) async fn persist_message(
         .await?;
     }
     if changed.rows_affected() != 0 {
+        let conv = message.conversation_id.to_string();
         sqlx::query("DELETE FROM local_deleted_chats WHERE conversation_id = ?")
-            .bind(message.conversation_id.to_string()).execute(&mut *db).await?;
+            .bind(&conv).execute(&mut *db).await?;
+        if !message.recalled {
+            sqlx::query(
+                "UPDATE conversation_prefs SET hidden_at_seq = NULL
+                 WHERE conversation_id = ?1 AND hidden_at_seq IS NOT NULL AND ?2 > hidden_at_seq",
+            )
+            .bind(&conv)
+            .bind(message.seq)
+            .execute(&mut *db)
+            .await?;
+        }
     }
     Ok(changed.rows_affected() != 0)
 }

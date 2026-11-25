@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ClipboardPaste, Copy, TextCursorInput } from "lucide-react";
@@ -12,7 +12,7 @@ export function copyText(text: string) {
   return ios || windows ? api.copyText(text) : navigator.clipboard.writeText(text);
 }
 
-export type MenuItem = { label: string; action: () => void; disabled?: boolean; icon?: ReactNode };
+export type MenuItem = { label: string; action: () => void; disabled?: boolean; icon?: ReactNode; divider?: boolean; danger?: boolean };
 type Menu = { x: number; y: number; anchor: HTMLElement; items: MenuItem[]; restoreFocus: HTMLElement | null };
 const OpenMenu = createContext<(anchor: HTMLElement, items: MenuItem[], point?: { x: number; y: number }) => void>(() => {});
 const OpenEditMenu = createContext<(event: MouseEvent<HTMLElement>, pasteAttachment: () => Promise<void>) => void>(() => {});
@@ -193,8 +193,11 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
           items[next]?.focus();
         }
       }}>
-      {menu.items.map(item => <button type="button" role="menuitem" key={item.label} disabled={item.disabled}
-        onClick={() => { close(true); if (menu.anchor.isConnected) item.action(); }}>{item.icon}{item.label}</button>)}
+      {menu.items.map(item => <Fragment key={item.label}>
+        {item.divider && <div className="menu-separator" role="separator" />}
+        <button type="button" role="menuitem" className={item.danger ? "danger" : undefined} disabled={item.disabled}
+          onClick={() => { close(true); if (menu.anchor.isConnected) item.action(); }}>{item.icon}{item.label}</button>
+      </Fragment>)}
     </div>, menu.anchor.closest("dialog, .private-chat") ?? document.body)}
   </div></MenuAnchor.Provider></OpenEditMenu.Provider></OpenMenu.Provider>;
 }

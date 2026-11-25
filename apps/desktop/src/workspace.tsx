@@ -2,19 +2,20 @@ import { FloatingField } from "./floating-field";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import {
-  ArrowRight, CircleUserRound, FolderOpen, Info, LogOut, Menu, MessageCircle, MessageSquare,
+  ArrowRight, CircleUserRound, FolderOpen, HardDrive, Info, LogOut, Menu, MessageCircle, MessageSquare,
   Radar, Search, Settings, Shield, UserRoundPlus, UsersRound, X,
   ChevronLeft, ChevronRight, UserRound,
 } from "lucide-react";
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { ai } from "./ai-api";
-import type { AiReply, Assistant } from "./ai-api";
+import type { AiJob, AiPrompt, AiReply, Assistant } from "./ai-api";
 import { AssistantSettings } from "./ai";
+import { StorageSettings } from "./storage-settings";
 import { api, errorMessage, isExpired } from "./api";
 import type { AddDraftsResult, CloseAction, Conversation, ConversationRequest, Device, Directory, Draft, DropOffer, Profile, Session, SyncUpdate, Transfer, User } from "./api";
 import { mediaKind } from "./attachment-media";
-import { Blank, Brand, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName } from "./common";
+import { Avatar, Blank, Brand, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName } from "./common";
 import { orderContacts } from "./contact-order";
 import { actions, t } from "./locale";
 import { ChatList, ChatView } from "./chat";
@@ -54,7 +55,13 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [about, setAbout] = useState(false);
   const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [assistantFailure, setAssistantFailure] = useState("");
+  const [aiPrompts, setAiPrompts] = useState<AiPrompt[]>([]);
+  const [aiJobs, setAiJobs] = useState<AiJob[]>([]);
   const [aiReplies, setAiReplies] = useState<AiReply[]>([]);
+  const [deletingChat, setDeletingChat] = useState<Conversation>();
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+  const [allConversations, setAllConversations] = useState<Conversation[]>([]);
   const [directory, setDirectory] = useState<Directory>({ contacts: [], conversations: [], pending_contacts: [], remarks: {}, names: {}, avatars: {}, read_receipts: false });
   const [historyCache] = useState(() => new ChatHistoryCache());
   const [profiles] = useState(() => new ProfileCache());
@@ -364,6 +371,63 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }, []);
 
   useEffect(() => {
+    const updated = listen("zibblu-chat-changed", () => {
+      void refreshLocal();
+      void changed();
+    });
+    return () => { void updated.then(unlisten => unlisten()); };
+  }, [refreshLocal, changed]);
+
+  const loadAiForChat = useCallback(async (convId: string) => {
+    try {
+      const [prompts, jobs, replies] = await Promise.all([
+        ai.prompts(convId),
+        ai.jobs(convId),
+        ai.replies(convId),
+      ]);
+      return { prompts, jobs, replies };
+    } catch {
+      return undefined;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!selected) {
+      setAiPrompts([]);
+      setAiJobs([]);
+      setAiReplies([]);
+      return;
+    }
+    const target = selected;
+    let current = true;
+    const syncAi = () => {
+      void loadAiForChat(target).then(state => {
+        if (!current || !state) return;
+        setAiPrompts(state.prompts);
+        setAiJobs(state.jobs);
+        setAiReplies(state.replies);
+      });
+    };
+    syncAi();
+    const unlisten = listen<string | undefined>("zibblu-ai-changed", event => {
+      if (!event.payload || event.payload === target) syncAi();
+    });
+    return () => {
+      current = false;
+      void unlisten.then(fn => fn());
+    };
+  }, [selected, loadAiForChat]);
+
+  useEffect(() => {
+    if (nav !== "Settings") return;
+    let current = true;
+    void api.membershipConversations()
+      .then(list => { if (current) setAllConversations(list); })
+      .catch(() => {});
+    return () => { current = false; };
+  }, [nav, revision]);
+
+  useEffect(() => {
     let closed = false;
     let polling = false;
     let poll: number | undefined;
@@ -454,6 +518,10 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       setMobileChat(true);
       return;
     }
+    const target = directory.conversations.find(chat => chat.id === id);
+    if (target?.manual_unread) {
+      void api.setConversationManualUnread(id, false).then(() => refreshLocal()).catch(() => {});
+    }
     privateSelection.current += 1;
     setProfile(undefined);
     setPrivateView(undefined);
@@ -537,6 +605,12 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     await refresh();
   }
 
+  async function reopenHiddenGroup(id: string) {
+    await api.unhideConversation(id);
+    await refresh();
+    selectChat(id);
+  }
+
   async function hide(conversation: string, seq: number) {
     await api.hideMessage(conversation, seq);
     setHidden(previous => new Set(previous).add(seq));
@@ -550,8 +624,10 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     else await api.clearHistory(conversation);
     historyCache.discard(conversation);
     setDraft(conversation, previous => entire ? { text: "" } : { ...previous, quote: undefined, nonce: undefined });
+    setAiPrompts(previous => previous.filter(item => item.conversation_id !== conversation));
+    setAiJobs(previous => previous.filter(item => item.conversation_id !== conversation));
+    setAiReplies(previous => previous.filter(reply => reply.conversation_id !== conversation));
     if (entire) {
-      setAiReplies(previous => previous.filter(reply => reply.conversation !== conversation));
       setSelected(previous => previous === conversation ? undefined : previous);
       setChatPage(undefined);
       setMobileChat(false);
@@ -599,7 +675,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const connected = connection === "Connected";
   const invitation = privateRooms.find(room => room.id === prompt && room.id !== privateId);
   const attention: Partial<Record<Navigation, string>> = {
-    Chats: directory.conversations.some(chat => chat.unread > 0) ? "Unread messages" : undefined,
+    Chats: directory.conversations.some(chat => chat.unread > 0 || chat.manual_unread) ? "Unread messages" : undefined,
     Contacts: directory.pending_contacts.some(request => request.incoming) ? "Pending contact requests" : undefined,
     Files: transfers.some(transfer => transfer.status !== "complete" && !mediaKind(transfer.attachment)) ? "Unfinished transfers" : undefined,
   };
@@ -711,7 +787,18 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           open={selectChat} newChat={() => setNewChat(true)} addContact={() => setNewContact(true)}
           rooms={privateRooms} activePrivate={privateId}
           openPrivate={selectPrivate} createQr={() => void createPrivateCode()}
-          scan={() => setScanning(true)} openNearby={() => setNearby(true)} />
+          scan={() => setScanning(true)} openNearby={() => setNearby(true)}
+          onPin={(id, pinned) => void api.setConversationPinned(id, pinned).then(() => refreshLocal()).catch(error => setFailure(errorMessage(error)))}
+          onToggleRead={(id, unread) => void (unread ? api.setConversationManualUnread(id, true) : api.markConversationReadLocal(id)).then(() => refreshLocal()).catch(error => setFailure(errorMessage(error)))}
+          onMute={(id, muted) => void api.setConversationMuted(id, muted).then(() => refreshLocal()).catch(error => setFailure(errorMessage(error)))}
+          onPopout={id => void api.openChatWindow(id).catch(error => setFailure(errorMessage(error)))}
+          onHide={id => void api.hideConversation(id).then(() => {
+            setSelected(current => current === id ? undefined : current);
+            setChatPage(current => current?.id === id ? undefined : current);
+            setMobileChat(false);
+            return refreshLocal();
+          }).catch(error => setFailure(errorMessage(error)))}
+          onDelete={chat => { setDeleteError(""); setDeletingChat(chat); }} />
         {privateId ? <PrivateChatView key={privateId} id={privateId} own={session.user}
             isContact={id => directory.contacts.some(person => person.id === id)}
             draft={drafts["private/" + privateId]?.text ?? ""}
@@ -731,15 +818,19 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             pasteFiles={() => pasteFiles(active.id)}
             pickAttachments={kind => pickAttachments(active.id, kind)} openPrivate={() => void invitePrivate(active)}
             aiChat={{
-              assistants, settings: () => navigate("Settings", true), replies: aiReplies.filter(reply => reply.conversation === active.id),
-              answered: reply => setAiReplies(current => [...current, reply]),
-              dismiss: id => setAiReplies(current => current.filter(reply => reply.id !== id)),
+              assistants, settings: () => navigate("Settings", true),
+              prompts: aiPrompts.filter(prompt => prompt.conversation_id === active.id),
+              jobs: aiJobs.filter(job => job.conversation_id === active.id),
+              replies: aiReplies.filter(reply => reply.conversation_id === active.id),
+              cancelJob: id => void ai.cancelJob(id).catch(error => setFailure(errorMessage(error))),
+              dismissJob: id => void ai.dismissJob(id).catch(error => setFailure(errorMessage(error))),
+              dismiss: id => void ai.dismissReply(id).catch(error => setFailure(errorMessage(error))),
             }} />
           : <section className="chat-blank"><Blank icon={<MessageCircle size={28} />} title={t("Select a chat", "选择会话")} /></section>}
         {chatProfile && profilePage}
       </div>}
-      {(windows || nav === "Contacts") && <Contacts active={nav === "Contacts"} details={openDetails} directory={directory}
-        selected={windows ? directoryContact?.id : profile?.id} refresh={refresh} create={create}
+      {(windows || nav === "Contacts") && <Contacts active={nav === "Contacts"} details={openDetails} directory={directory} own={session.user.id}
+        selected={windows ? directoryContact?.id : profile?.id} refresh={refresh} create={create} reopenGroup={reopenHiddenGroup}
         openAvatar={openContactCard} addContact={() => setNewContact(true)} />}
       {nav === "Files" && <FilesView revision={revision} recalled={recalled} hidden={hidden} transfers={transfers} onChanged={changed} />}
       {nav === "Me" && <section className="settings-page phone-me">
@@ -763,6 +854,19 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           setDirectory(previous => ({ ...previous, read_receipts: enabled }));
           await refresh();
         }}
+        storageSettings={<StorageSettings
+          ownId={session.user.id}
+          conversations={allConversations.length ? allConversations : directory.conversations}
+          remarks={names}
+          avatars={directory.avatars}
+          revision={revision}
+          loadStats={api.storageStats}
+          clearCache={async () => {
+            const report = await api.clearCache();
+            void refreshLocal();
+            return report;
+          }}
+        />}
         assistantSettings={<AssistantSettings assistants={assistants} failure={assistantFailure} changed={next => {
           setAssistants(next);
           setAssistantFailure("");
@@ -810,6 +914,30 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       setNewContact(false);
       openProfile(user);
     }} />}
+    {deletingChat && <Dialog title={t("Delete chat", "删除聊天")} close={() => setDeletingChat(undefined)} closeDisabled={deleteBusy}>
+      <p>{t(
+        `Delete local chat history for ${chatName(deletingChat, session.user.id, names)}? Contacts, group membership, and unsent messages are preserved.`,
+        `确认删除「${chatName(deletingChat, session.user.id, names)}」在本设备的聊天记录？联系人关系、群成员身份和尚未发送的待发消息不会丢失。`,
+      )}</p>
+      {deleteError && <p className="inline-error" role="alert">{deleteError}</p>}
+      <div className="dialog-actions">
+        <button type="button" className="button subtle" disabled={deleteBusy} onClick={() => setDeletingChat(undefined)}>
+          {t("Cancel", "取消")}
+        </button>
+        <button type="button" className="button danger" disabled={deleteBusy || sendingChats.has(deletingChat.id)} onClick={async () => {
+          setDeleteBusy(true);
+          setDeleteError("");
+          try {
+            await removeHistory(deletingChat.id, true);
+            setDeletingChat(undefined);
+          } catch (error) {
+            setDeleteError(errorMessage(error));
+          } finally {
+            setDeleteBusy(false);
+          }
+        }}>{t("Delete", "删除")}</button>
+      </div>
+    </Dialog>}
     {invitation && <PrivateInvitationOverlay key={invitation.id} room={invitation} />}
   </main></People.Provider></WorkspaceImages.Provider>;
 }
@@ -889,10 +1017,11 @@ function AddContact({ session, close, open }: { session: Session; close: () => v
   </Dialog>;
 }
 
-function Contacts({ active, directory, selected, refresh, create, addContact, details, openAvatar }: {
-  active: boolean; openAvatar: (user: User) => void;
+function Contacts({ active, directory, own, selected, refresh, create, reopenGroup, addContact, details, openAvatar }: {
+  active: boolean; openAvatar: (user: User) => void; own: string;
   details: (user: User) => void;
   directory: Directory; selected?: string; refresh: () => Promise<void>; create: (request: ConversationRequest) => Promise<void>;
+  reopenGroup: (id: string) => Promise<void>;
   addContact: () => void;
 }) {
   const { contacts, pending_contacts } = directory;
@@ -903,6 +1032,16 @@ function Contacts({ active, directory, selected, refresh, create, addContact, de
   const scrollTop = useRef(0);
   const [failure, setFailure] = useState("");
   const [busy, setBusy] = useState(false);
+  const [hiddenGroups, setHiddenGroups] = useState<Conversation[]>([]);
+
+  useEffect(() => {
+    if (!active) return;
+    let current = true;
+    void api.hiddenGroupConversations()
+      .then(groups => { if (current) setHiddenGroups(groups); })
+      .catch(() => { if (current) setHiddenGroups([]); });
+    return () => { current = false; };
+  }, [active, directory]);
 
   useLayoutEffect(() => {
     if (windows && active && list.current) list.current.scrollTop = scrollTop.current;
@@ -933,11 +1072,14 @@ function Contacts({ active, directory, selected, refresh, create, addContact, de
     else groups.set(entry.letter, [entry]);
   }
   const emptyText = query ? t("No matching contacts", "没有匹配的联系人") : t("No contacts yet", "暂无联系人");
+  const matchingHiddenGroups = hiddenGroups
+    .map(chat => ({ chat, name: chatName(chat, own, remarks) }))
+    .filter(({ name }) => !query || matches(name));
   return <section className="settings-page contacts-screen">
     {ios && <header className="workspace-heading"><h1>{tabLabels.Contacts}</h1></header>}
     <form className="chat-list-head" role={windows ? "search" : undefined} onSubmit={event => {
       event.preventDefault();
-      if (query && filtered.length === 1) details(filtered[0].user);
+      if (query && filtered.length === 1 && matchingHiddenGroups.length === 0) details(filtered[0].user);
     }}>
       <WorkspaceSearchField label={t("Search contacts", "搜索联系人")} otherIconSize={17}
         value={search} onChange={event => {
@@ -954,6 +1096,19 @@ function Contacts({ active, directory, selected, refresh, create, addContact, de
     <div className="contacts-list" ref={list}
       onScroll={windows ? event => { scrollTop.current = event.currentTarget.scrollTop; } : undefined}>
     {failure && <p className="inline-error" role="alert">{failure}</p>}
+    {matchingHiddenGroups.length > 0 && <section>
+      <h2 className="section-title">{t("Hidden group chats", "已隐藏的群聊")}</h2>
+      <div className="contact-requests">
+        {matchingHiddenGroups.map(({ chat, name }) => <div className="contact-row" key={chat.id}>
+          <button type="button" className="person-link contact-name" disabled={busy}
+            onClick={() => void perform(() => reopenGroup(chat.id))}>
+            <Avatar name={name} group />
+            <span><strong>{name}</strong></span>
+            {ios && <ChevronRight size={20} aria-hidden />}
+          </button>
+        </div>)}
+      </div>
+    </section>}
     {!query && pending_contacts.length > 0 && <section>
       <h2 className="section-title">{t("Contact requests", "新的朋友")}</h2>
       <div className="contact-requests">
@@ -995,8 +1150,8 @@ function Contacts({ active, directory, selected, refresh, create, addContact, de
           </button>
         </div>)}
       </div>)}
-    </div> : <p className="list-empty muted" role={windows ? "status" : undefined}>{windows ? emptyText
-      : query ? t("No matching contacts.", "没有匹配的联系人。") : t("No contacts yet.", "暂无联系人。")}</p>}
+    </div> : matchingHiddenGroups.length === 0 ? <p className="list-empty muted" role={windows ? "status" : undefined}>{windows ? emptyText
+      : query ? t("No matching contacts.", "没有匹配的联系人。") : t("No contacts yet.", "暂无联系人。")}</p> : null}
     </div>
   </section>;
 }
@@ -1055,11 +1210,12 @@ function NewChat({ contacts, create, close, findPeople }: {
   </Dialog>;
 }
 
-function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, setReadReceipts, closeAction, setCloseAction, assistantSettings, back, openAssistants }: {
+function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, setReadReceipts, closeAction, setCloseAction, storageSettings, assistantSettings, back, openAssistants }: {
   session: Session;
   closeAction?: CloseAction; setCloseAction: (action: CloseAction) => Promise<void>;
   privateQuiet: boolean; setPrivateQuiet: (quiet: boolean) => Promise<void>;
   readReceipts: boolean; setReadReceipts: (enabled: boolean) => Promise<void>;
+  storageSettings: ReactNode;
   assistantSettings: ReactNode;
   back?: () => void;
   openAssistants: boolean;
@@ -1070,6 +1226,7 @@ function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, se
     ...(windows ? [{ id: "general" as const, label: t("General", "通用"), Icon: Settings }] : []),
     { id: "chat", label: t("Chat", "聊天"), Icon: MessageCircle },
     { id: "privacy", label: t("Privacy", "隐私"), Icon: Shield },
+    { id: "storage", label: t("Storage", "存储空间"), Icon: HardDrive },
     { id: "assistants", label: t("AI assistants", "AI 助理"), Icon: MessageSquare },
   ] as const;
   type Section = typeof sections[number]["id"];
@@ -1187,6 +1344,7 @@ function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, se
         </div>
         {retryError("preferences")}
       </>}
+      {section === "storage" && storageSettings}
       {section === "assistants" && assistantSettings}
     </div>
     {deviceList && <Dialog title={t("Devices", "设备管理")} mobilePage close={() => {

@@ -275,6 +275,12 @@ impl AttachmentDrafts {
             && store.entries.contains_key(&id)
     }
 
+    pub(crate) fn draft_conversation(&self, client: &Arc<Client>, id: Uuid) -> Option<Uuid> {
+        let mut store = self.inner.lock().expect("attachment drafts");
+        store.bind(client);
+        store.entries.get(&id).map(|entry| entry.conversation)
+    }
+
     pub(crate) fn draft_image_entry(
         &self,
         client: &Arc<Client>,

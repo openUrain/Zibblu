@@ -10,6 +10,7 @@ import { Avatar, Brand } from "./common";
 import { DesktopMenus } from "./context-menu";
 import { setupIosLayout } from "./ios";
 import { Workspace } from "./workspace";
+import { ChatWindow } from "./chat-window";
 import { PrivateInvitationWindow } from "./private-chat";
 import { ImageViewer } from "./image-viewer";
 import { WindowControls, WindowClosePrompt, WindowDrag, windows } from "./window-chrome";
@@ -237,6 +238,7 @@ function SignIn({ initialServer, officialServer, initialAccount, notice, signedI
 document.body.classList.toggle("windows", windows);
 setupIosLayout();
 const label = getCurrentWindow().label;
+const isChatWindow = /^chat-[0-9a-f]{32}$/i.test(label);
 createRoot(document.getElementById("root")!).render(label === "image-viewer" ? <ImageViewer /> : <DesktopMenus>
-  {label === "private-invitation" ? <PrivateInvitationWindow /> : <App />}
+  {label === "private-invitation" ? <PrivateInvitationWindow /> : isChatWindow ? <ChatWindow /> : <App />}
 </DesktopMenus>);

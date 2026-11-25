@@ -2213,3 +2213,263 @@ async fn viewer_discarded_batch_target_not_republished_on_sibling_retry() -> Res
     server_task.abort();
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn issues_133_130_123_cross_client_and_isolation() -> Result<()> {
+    let app = zibblu_online::router(test_db().await?).await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let server = format!("http://{}", listener.local_addr()?);
+    let server_task = tokio::spawn(async move { axum::serve(listener, app).await });
+    let a = tempfile::tempdir()?;
+    let b = tempfile::tempdir()?;
+    let c = tempfile::tempdir()?;
+    let suffix = &Uuid::new_v4().simple().to_string()[..10];
+    let alice_handle = format!("iso_a_{suffix}");
+    let bob_handle = format!("iso_b_{suffix}");
+    let carol_handle = format!("iso_c_{suffix}");
+    let alice = sign_in(a.path(), &server, &alice_handle, "fixture-password", true).await?;
+    let bob = sign_in(b.path(), &server, &bob_handle, "fixture-password", true).await?;
+    let carol = sign_in(c.path(), &server, &carol_handle, "fixture-password", true).await?;
+
+    let chat = direct(&alice, &bob).await?;
+    let second_chat = direct(&alice, &carol).await?;
+    alice.sync().await?;
+    bob.sync().await?;
+    carol.sync().await?;
+
+    // #133: pinned sorting, manual unread isolation, mute preservation, hide & new_seq wake
+    send(&alice, chat, "initial ping").await?;
+    bob.sync().await?;
+    bob.mark_conversation_read_local(chat).await?;
+    bob.set_conversation_pinned(chat, true).await?;
+    bob.set_conversation_muted(chat, true).await?;
+    bob.set_conversation_manual_unread(chat, true).await?;
+    let bob_dir = bob.directory().await?;
+    let chat_entry = bob_dir
+        .conversations
+        .iter()
+        .find(|row| row.id == chat)
+        .context("missing chat in Bob directory")?;
+    assert!(chat_entry.pinned);
+    assert!(chat_entry.muted);
+    assert!(chat_entry.manual_unread);
+    assert_eq!(chat_entry.unread, 0);
+
+    bob.mark_conversation_read_local(chat).await?;
+    assert!(
+        !bob.directory()
+            .await?
+            .conversations
+            .iter()
+            .find(|row| row.id == chat)
+            .context("missing chat after local read")?
+            .manual_unread
+    );
+
+    bob.hide_conversation(chat).await?;
+    assert!(!bob.directory().await?.conversations.iter().any(|row| row.id == chat));
+    assert!(!bob.messages(chat, None).await?.items.is_empty());
+    bob.sync().await?;
+    assert!(!bob.directory().await?.conversations.iter().any(|row| row.id == chat));
+    bob.close().await;
+    drop(bob);
+    let bob = sign_in(b.path(), &server, &bob_handle, "fixture-password", false).await?;
+    bob.sync().await?;
+    assert!(!bob.directory().await?.conversations.iter().any(|row| row.id == chat));
+
+    send(&alice, chat, "wake hidden chat").await?;
+    bob.sync().await?;
+    let woke_entry = bob
+        .directory()
+        .await?
+        .conversations
+        .into_iter()
+        .find(|row| row.id == chat)
+        .context("chat should reappear on new seq > hidden_at_seq")?;
+    assert!(woke_entry.pinned);
+    assert!(woke_entry.muted);
+
+    // #133 pinned sorting on Alice across two chats even when unpinned chat has newer activity
+    alice.set_conversation_pinned(chat, true).await?;
+    send(&alice, second_chat, "newer unpinned activity").await?;
+    alice.sync().await?;
+    let alice_dir = alice.directory().await?;
+    let first_idx = alice_dir
+        .conversations
+        .iter()
+        .position(|row| row.id == chat)
+        .context("missing pinned chat")?;
+    let second_idx = alice_dir
+        .conversations
+        .iter()
+        .position(|row| row.id == second_chat)
+        .context("missing second chat")?;
+    assert!(first_idx < second_idx);
+
+    // #130: multimodal attachment snapshot, local-only prompt isolation, outsider denial, recall fail-closed
+    let doc_path = a.path().join("spec.txt");
+    let doc_bytes = b"Issue 130 attachment body";
+    std::fs::write(&doc_path, doc_bytes)?;
+    let upload = alice.queue_upload(chat, doc_path).await?;
+    wait_transfer(&alice, upload.attachment.id, Direction::Upload, |t| {
+        t.status == TransferStatus::Complete
+    })
+    .await?;
+    alice.sync().await?;
+    bob.sync().await?;
+
+    let bob_msgs = bob.messages(chat, None).await?.items;
+    let att_msg = bob_msgs
+        .iter()
+        .find(|m| m.attachment.as_ref().map(|att| att.id) == Some(upload.attachment.id))
+        .cloned()
+        .context("Bob did not sync attachment message")?;
+    let att = att_msg.attachment.clone().context("missing attachment payload")?;
+    assert!(
+        !bob.is_attachment_cached_for_ai(chat, att_msg.seq, &att)
+            .await?
+    );
+
+    let ctx_msgs = bob
+        .ai_context_messages(
+            chat,
+            zibblu_core::AiScope::Selected {
+                sequences: vec![att_msg.seq],
+            },
+        )
+        .await?;
+    assert_eq!(ctx_msgs.len(), 1);
+    assert_eq!(ctx_msgs[0].seq, att_msg.seq);
+    assert_eq!(
+        ctx_msgs[0].attachment.as_ref().map(|a| a.id),
+        Some(att.id)
+    );
+
+    let prompt = zibblu_core::AiLocalPrompt {
+        id: Uuid::new_v4(),
+        conversation_id: chat,
+        provider: zibblu_core::AiProvider::OpenAi,
+        prompt_text: "Summarize spec.txt strictly for me".to_string(),
+        created_at: 1_700_000_000,
+    };
+    bob.insert_ai_prompt(&prompt).await?;
+    bob.publish_ai_reply(
+        chat,
+        zibblu_core::PublishAiReply {
+            nonce: Uuid::new_v4(),
+            provider: zibblu_core::AiProvider::OpenAi,
+            text: "Shared AI summary from Bob".to_string(),
+            created_at: 1_700_000_001,
+            readers: vec![alice.user.id],
+        },
+    )
+    .await?;
+    bob.sync().await?;
+    alice.sync().await?;
+
+    assert_eq!(bob.list_ai_prompts(chat).await?.len(), 1);
+    assert!(alice.list_ai_prompts(chat).await?.is_empty());
+    assert!(
+        alice
+            .messages(chat, None)
+            .await?
+            .items
+            .iter()
+            .any(|m| m.text.as_deref() == Some("Shared AI summary from Bob"))
+    );
+    assert!(
+        !alice
+            .messages(chat, None)
+            .await?
+            .items
+            .iter()
+            .any(|m| m.text.as_deref().is_some_and(|t| t.contains(&prompt.prompt_text)))
+    );
+
+    bob.close().await;
+    drop(bob);
+    let bob = sign_in(b.path(), &server, &bob_handle, "fixture-password", false).await?;
+    assert_eq!(bob.list_ai_prompts(chat).await?, vec![prompt]);
+
+    let authorized = bob
+        .fetch_authorized_attachment_for_ai(
+            chat,
+            att_msg.seq,
+            &att,
+            Arc::new(tokio::sync::Notify::new()),
+            |_, _| {},
+        )
+        .await?;
+    assert!(!authorized.is_cached());
+    let temp_path = authorized.path().to_path_buf();
+    assert_eq!(std::fs::read(&temp_path)?, doc_bytes);
+    drop(authorized);
+    assert!(!temp_path.exists());
+
+    // Non-member Carol is denied AI context & AI attachment fetch for Alice<->Bob chat
+    assert!(
+        carol
+            .ai_context_messages(
+                chat,
+                zibblu_core::AiScope::Selected {
+                    sequences: vec![att_msg.seq],
+                },
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        carol
+            .fetch_authorized_attachment_for_ai(
+                chat,
+                att_msg.seq,
+                &att,
+                Arc::new(tokio::sync::Notify::new()),
+                |_, _| {},
+            )
+            .await
+            .is_err()
+    );
+
+    // Recalled attachment cannot be used in subsequent AI authorization
+    alice.recall_message(chat, att_msg.seq).await?;
+    bob.sync().await?;
+    assert!(
+        bob.ai_context_messages(
+            chat,
+            zibblu_core::AiScope::Selected {
+                sequences: vec![att_msg.seq],
+            },
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        bob.fetch_authorized_attachment_for_ai(
+            chat,
+            att_msg.seq,
+            &att,
+            Arc::new(tokio::sync::Notify::new()),
+            |_, _| {},
+        )
+        .await
+        .is_err()
+    );
+
+    // #123: storage_stats counts hidden conversations and updates on delete_conversation + clear_cache
+    alice.hide_conversation(chat).await?;
+    let stats_hidden = alice.storage_stats(None).await?;
+    assert!(stats_hidden.conversation_media_bytes >= doc_bytes.len() as u64);
+    assert!(stats_hidden.conversations.iter().any(|row| row.conversation_id == chat));
+
+    alice.delete_conversation(chat).await?;
+    let stats_deleted = alice.storage_stats(None).await?;
+    assert!(!stats_deleted.conversations.iter().any(|row| row.conversation_id == chat));
+    assert!(alice.clear_cache().await.is_ok());
+
+    alice.close().await;
+    bob.close().await;
+    carol.close().await;
+    server_task.abort();
+    Ok(())
+}

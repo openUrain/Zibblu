@@ -1,4 +1,6 @@
 mod ai_context;
+mod ai_prompts;
+mod chat_prefs;
 mod device;
 mod local_sync;
 mod media_store;
@@ -6,9 +8,12 @@ mod outbox;
 mod preview_cache;
 mod profile_cache;
 mod staging;
+mod storage_stats;
 mod transfer;
 
-pub use ai_context::AiScope;
+pub use ai_context::{AiContextMessage, AiScope, AuthorizedAiAttachment};
+pub use ai_prompts::AiLocalPrompt;
+pub use chat_prefs::{ConversationPrefState, sort_conversations};
 pub use media_store::{
     CacheCleanupReport, ConsistencyReport, MediaDescriptor, MediaVariant, PublicResourceKind,
     TempFileGuard,
@@ -19,6 +24,7 @@ pub use staging::{
     FileIdentity, FolderEntrySnapshot, SourceChangedError, SourceSnapshot,
     capture_source_snapshot, open_verified_local_file, verify_file_sample, verify_open_handle,
 };
+pub use storage_stats::{ConversationStorage, StorageStats};
 pub use transfer::{Direction, OriginalDownloadStatus, Transfer, TransferStatus, ViewerForwardItem};
 
 use crate::protocol::*;
@@ -727,7 +733,15 @@ impl Client {
             {
                 let reopened = sqlx::query("DELETE FROM local_deleted_chats WHERE conversation_id = ?")
                     .bind(chat.id.to_string()).execute(&self.db).await?.rows_affected();
-                if reopened != 0 {
+                let unhidden = sqlx::query(
+                    "UPDATE conversation_prefs SET hidden_at_seq = NULL
+                     WHERE conversation_id = ? AND hidden_at_seq IS NOT NULL",
+                )
+                .bind(chat.id.to_string())
+                .execute(&self.db)
+                .await?
+                .rows_affected();
+                if reopened != 0 || unhidden != 0 {
                     self.history_changed();
                     return Ok(chat.id);
                 }
@@ -743,6 +757,13 @@ impl Client {
             .await?;
         sqlx::query("DELETE FROM local_deleted_chats WHERE conversation_id = ?")
             .bind(result.id.to_string()).execute(&self.db).await?;
+        sqlx::query(
+            "UPDATE conversation_prefs SET hidden_at_seq = NULL
+             WHERE conversation_id = ? AND hidden_at_seq IS NOT NULL",
+        )
+        .bind(result.id.to_string())
+        .execute(&self.db)
+        .await?;
         self.history_changed();
         Ok(result.id)
     }

@@ -7,17 +7,52 @@ export type AiScope =
   | { kind: "prompt" }
   | { kind: "selected"; sequences: number[] }
   | { kind: "recent"; limit: number };
+export type AiAttachmentPreview = {
+  seq: number;
+  id: string;
+  name: string;
+  kind: "file" | "folder";
+  file_type: string;
+  size: number;
+  cached: boolean;
+};
 export type AiPreview = {
   id: string;
   endpoint: string;
   assistant: Assistant;
   snapshot: {
     prompt: string;
-    messages: { sender: string; text: string }[];
+    messages: { sender: string; text: string; attachment?: string }[];
+    attachments: AiAttachmentPreview[];
     files: { name: string; text: string }[];
   };
 };
-export type AiReply = { id: string; conversation: string; provider: AiProvider; text: string; createdAt: number };
+export type AiPrompt = {
+  id: string;
+  conversation_id: string;
+  provider: AiProvider;
+  prompt_text: string;
+  created_at: number;
+};
+export type AiJob = {
+  id: string;
+  prompt_id: string;
+  conversation_id: string;
+  provider: AiProvider;
+  phase: "downloading" | "preparing" | "generating" | "failed";
+  status_text: string;
+  progress?: [number, number] | null;
+  error?: string | null;
+  created_at: number;
+};
+export type AiReply = {
+  id: string;
+  prompt_id: string;
+  conversation_id: string;
+  provider: AiProvider;
+  text: string;
+  created_at: number;
+};
 
 export const aiProviders = {
   open_ai: { label: "OpenAI", name: "openai", model: "gpt-5.4-mini", base: "https://api.openai.com/v1/", icon: "openai.svg" },
@@ -42,5 +77,11 @@ export const ai = {
   prepare: (view: string, draft: string, selection: { provider: AiProvider; prompt: string; scope: AiScope; files: string[] }) =>
     invoke<AiPreview>("ai_prepare", { view, draft, selection }),
   send: (view: string, draft: string, approval: string) =>
-    invoke<{ text: string; created_at: number }>("ai_send", { view, draft, approval }),
+    invoke<{ id: string; created_at: number }>("ai_send", { view, draft, approval }),
+  prompts: (conversation: string) => invoke<AiPrompt[]>("ai_prompts", { conversation }),
+  jobs: (conversation: string) => invoke<AiJob[]>("ai_jobs", { conversation }),
+  replies: (conversation: string) => invoke<AiReply[]>("ai_replies", { conversation }),
+  cancelJob: (jobId: string) => invoke<void>("ai_cancel_job", { jobId }),
+  dismissJob: (jobId: string) => invoke<void>("ai_dismiss_job", { jobId }),
+  dismissReply: (id: string) => invoke<void>("ai_dismiss_reply", { id }),
 };
