@@ -953,88 +953,6 @@ async fn execute_ai_job(
     let provider = approved.assistant.info.provider;
     let base = provider.base_url(approved.assistant.info.base_url.as_deref())?;
 
-    let mut extracted: Vec<ExtractedAttachment> = Vec::with_capacity(approved.attachments.len());
-    for item in &approved.attachments {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(AiCancelledError.into());
-        }
-        let att_name = item.attachment.name.clone();
-        if !item.cached {
-            update_job_status(
-                app,
-                job_id,
-                conversation_id,
-                "downloading",
-                att_name.clone(),
-                Some((0, item.attachment.size)),
-            );
-        }
-        let last_emit = StdMutex::new(0u64);
-        let authorized: AuthorizedAiAttachment = run_with_cancel(
-            cancel_rx,
-            cancelled,
-            client.fetch_authorized_attachment_for_ai(
-                conversation_id,
-                item.seq,
-                &item.attachment,
-                Arc::clone(cancel_notify),
-                |received, total| {
-                    if !item.cached {
-                        let mut prev = last_emit.lock().expect("progress emit");
-                        if received == total || received.saturating_sub(*prev) >= 256 * 1024 {
-                            *prev = received;
-                            update_job_status(
-                                app,
-                                job_id,
-                                conversation_id,
-                                "downloading",
-                                att_name.clone(),
-                                Some((received, total)),
-                            );
-                        }
-                    }
-                },
-            ),
-        )
-        .await?;
-
-        if cancelled.load(Ordering::Acquire) {
-            return Err(AiCancelledError.into());
-        }
-        update_job_status(
-            app,
-            job_id,
-            conversation_id,
-            "preparing",
-            att_name,
-            None,
-        );
-        let attachment = item.attachment.clone();
-        let extracted_item = run_with_cancel(cancel_rx, cancelled, async move {
-            let result = tauri::async_runtime::spawn_blocking(move || {
-                // Keep RAII guard alive inside the blocking extraction scope and drop after closing file handles.
-                let _authorized = authorized;
-                let path = _authorized.path().to_path_buf();
-                extract_attachment(&path, &attachment, provider)
-            })
-            .await
-            .context("Attachment extraction was interrupted")?;
-            result.map_err(|err| match err {
-                ExtractError::Other(inner) => inner,
-                other => anyhow::anyhow!("{other}"),
-            })
-        })
-        .await?;
-        extracted.push(extracted_item);
-    }
-
-    let requests = build_chunked_requests(
-        &approved.prompt,
-        &approved.messages,
-        &approved.files,
-        &extracted,
-    )?;
-    let uncovered = requests.uncovered;
     let granted: Vec<(i64, zibblu_core::Attachment)> = approved
         .attachments
         .iter()
@@ -1042,9 +960,91 @@ async fn execute_ai_job(
         .collect();
     let model = &approved.assistant.info.model;
     let base_ref = &base;
-    let mut answers = send_chunks(
-        requests.requests,
+    let mut extract_cancel_rx = cancel_rx.clone();
+    extract_and_send(
+        &approved.prompt,
+        &approved.messages,
+        &approved.files,
         cancelled,
+        || async {
+            let mut extracted: Vec<ExtractedAttachment> =
+                Vec::with_capacity(approved.attachments.len());
+            for item in &approved.attachments {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(AiCancelledError.into());
+                }
+                let att_name = item.attachment.name.clone();
+                if !item.cached {
+                    update_job_status(
+                        app,
+                        job_id,
+                        conversation_id,
+                        "downloading",
+                        att_name.clone(),
+                        Some((0, item.attachment.size)),
+                    );
+                }
+                let last_emit = StdMutex::new(0u64);
+                let authorized: AuthorizedAiAttachment = run_with_cancel(
+                    &mut extract_cancel_rx,
+                    cancelled,
+                    client.fetch_authorized_attachment_for_ai(
+                        conversation_id,
+                        item.seq,
+                        &item.attachment,
+                        Arc::clone(cancel_notify),
+                        |received, total| {
+                            if !item.cached {
+                                let mut prev = last_emit.lock().expect("progress emit");
+                                if received == total || received.saturating_sub(*prev) >= 256 * 1024
+                                {
+                                    *prev = received;
+                                    update_job_status(
+                                        app,
+                                        job_id,
+                                        conversation_id,
+                                        "downloading",
+                                        att_name.clone(),
+                                        Some((received, total)),
+                                    );
+                                }
+                            }
+                        },
+                    ),
+                )
+                .await?;
+
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(AiCancelledError.into());
+                }
+                update_job_status(
+                    app,
+                    job_id,
+                    conversation_id,
+                    "preparing",
+                    att_name,
+                    None,
+                );
+                let attachment = item.attachment.clone();
+                let extracted_item = run_with_cancel(&mut extract_cancel_rx, cancelled, async move {
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        // Keep RAII guard alive inside the blocking extraction scope and drop after closing file handles.
+                        let _authorized = authorized;
+                        let path = _authorized.path().to_path_buf();
+                        extract_attachment(&path, &attachment, provider)
+                    })
+                    .await
+                    .context("Attachment extraction was interrupted")?;
+                    result.map_err(|err| match err {
+                        ExtractError::Other(inner) => inner,
+                        other => anyhow::anyhow!("{other}"),
+                    })
+                })
+                .await?;
+                extracted.push(extracted_item);
+            }
+            Ok(extracted)
+        },
         || client.ensure_ai_authorized(conversation_id, &approved.message_seqs, &granted),
         |idx, total, parts| {
             let status_text = if total > 1 {
@@ -1064,28 +1064,41 @@ async fn execute_ai_job(
             }
         },
     )
-    .await?;
+    .await
+}
 
-    let mut reply = if answers.len() == 1 {
-        answers.pop().expect("single chunk answer")
+async fn extract_and_send<EFut, RFut, SFut>(
+    prompt: &str,
+    messages: &[AiMessage],
+    files: &[AiFile],
+    cancelled: &AtomicBool,
+    extract_all: impl FnOnce() -> EFut,
+    recheck: impl FnMut() -> RFut,
+    send: impl FnMut(usize, usize, Vec<zibblu_core::assistant::AiInputPart>) -> SFut,
+) -> Result<String>
+where
+    EFut: std::future::Future<Output = Result<Vec<ExtractedAttachment>>>,
+    RFut: std::future::Future<Output = Result<()>>,
+    SFut: std::future::Future<Output = Result<String>>,
+{
+    let extracted = extract_all().await?;
+    let requests = build_chunked_requests(prompt, messages, files, &extracted)?;
+    let mut answers = send_chunks(requests.requests, cancelled, recheck, send).await?;
+
+    if answers.len() == 1 {
+        Ok(answers.pop().expect("single chunk answer"))
     } else {
-        let mut combined = if uncovered.is_empty() {
-            format!("已顺序处理全部 {} 个分块：", answers.len())
-        } else {
-            format!(
-                "已顺序处理 {} 个已提取文本分块（部分视觉或非文本内容未覆盖，见末尾说明）：",
-                answers.len()
-            )
-        };
+        let mut combined = format!("已顺序处理全部 {} 个分块：", answers.len());
         for (idx, chunk_answer) in answers.iter().enumerate() {
-            combined.push_str(&format!("\n\n[分块 {}/{}]\n{}", idx + 1, answers.len(), chunk_answer));
+            combined.push_str(&format!(
+                "\n\n[分块 {}/{}]\n{}",
+                idx + 1,
+                answers.len(),
+                chunk_answer
+            ));
         }
-        combined
-    };
-    if !uncovered.is_empty() {
-        reply.push_str(&format!("\n\n[未读取的内容：{}]", uncovered.join("；")));
+        Ok(combined)
     }
-    Ok(reply)
 }
 
 /// Re-checks authorization immediately before every provider request so a recall or
@@ -1370,5 +1383,175 @@ mod tests {
         // Clear conversation c2 removes j2 only.
         ai.clear_conversation(c2);
         assert!(!ai.jobs.contains_key(&j2));
+    }
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &b in data {
+            crc ^= b as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    fn build_store_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut central = Vec::new();
+        for &(name, data) in entries {
+            let offset = out.len() as u32;
+            let crc = crc32(data);
+            let size = data.len() as u32;
+            let name_bytes = name.as_bytes();
+            let name_len = name_bytes.len() as u16;
+
+            out.extend_from_slice(&0x0403_4B50u32.to_le_bytes());
+            out.extend_from_slice(&20u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&crc.to_le_bytes());
+            out.extend_from_slice(&size.to_le_bytes());
+            out.extend_from_slice(&size.to_le_bytes());
+            out.extend_from_slice(&name_len.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(name_bytes);
+            out.extend_from_slice(data);
+
+            central.extend_from_slice(&0x0201_4B50u32.to_le_bytes());
+            central.extend_from_slice(&20u16.to_le_bytes());
+            central.extend_from_slice(&20u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&crc.to_le_bytes());
+            central.extend_from_slice(&size.to_le_bytes());
+            central.extend_from_slice(&size.to_le_bytes());
+            central.extend_from_slice(&name_len.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u32.to_le_bytes());
+            central.extend_from_slice(&offset.to_le_bytes());
+            central.extend_from_slice(name_bytes);
+        }
+        let cd_offset = out.len() as u32;
+        let cd_size = central.len() as u32;
+        let count = entries.len() as u16;
+        out.extend_from_slice(&central);
+        out.extend_from_slice(&0x0605_4B50u32.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&count.to_le_bytes());
+        out.extend_from_slice(&count.to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn incomplete_attachment_fails_before_any_provider_request() -> Result<()> {
+        use std::sync::atomic::AtomicUsize;
+
+        let dir = tempfile::tempdir()?;
+        let make_att = |name: &str, bytes: &[u8]| -> Result<(std::path::PathBuf, Attachment)> {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes)?;
+            let att = Attachment {
+                id: Uuid::new_v4(),
+                name: name.into(),
+                kind: AttachmentKind::File,
+                size: bytes.len() as u64,
+                sha256: "a".repeat(64),
+            };
+            Ok((path, att))
+        };
+
+        let pictured_docx = build_store_zip(&[
+            (
+                "word/document.xml",
+                br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Body text</w:t></w:r></w:p><w:p><w:r><w:drawing/></w:r></w:p></w:body></w:document>"#,
+            ),
+            ("word/media/image1.png", b"\x89PNG"),
+        ]);
+        let footnoted_docx = build_store_zip(&[
+            (
+                "word/document.xml",
+                br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Body text</w:t></w:r></w:p></w:body></w:document>"#,
+            ),
+            (
+                "word/footnotes.xml",
+                br#"<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>"#,
+            ),
+        ]);
+        let form_pdf = b"%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+            2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
+            3 0 obj << /Type /Page /Parent 2 0 R /Resources << /XObject << /Fm1 5 0 R >> >> /Contents 4 0 R >> endobj\n\
+            4 0 obj << /Length 73 >>\nstream\nBT /F1 12 Tf (Searchable paragraph with plenty of characters) Tj ET /Fm1 Do\nendstream\nendobj\n\
+            5 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Length 0 >>\nstream\n\nendstream\nendobj\n%%EOF";
+
+        let cases = [
+            make_att("pictured.docx", &pictured_docx)?,
+            make_att("footnoted.docx", &footnoted_docx)?,
+            make_att("form.pdf", form_pdf)?,
+        ];
+
+        for (path, att) in &cases {
+            let cancelled = AtomicBool::new(false);
+            let sends = AtomicUsize::new(0);
+            let res = tauri::async_runtime::block_on(extract_and_send(
+                "Summarize",
+                &[],
+                &[],
+                &cancelled,
+                || async {
+                    let extracted = extract_attachment(path, att, AiProvider::DeepSeek)
+                        .map_err(|err| anyhow::anyhow!("{err}"))?;
+                    Ok(vec![extracted])
+                },
+                || async { Ok(()) },
+                |_, _, _| {
+                    sends.fetch_add(1, Ordering::SeqCst);
+                    async { Ok("should not run".into()) }
+                },
+            ));
+            assert!(res.is_err(), "{} must fail before sending", att.name);
+            assert_eq!(
+                sends.load(Ordering::SeqCst),
+                0,
+                "provider call count must be zero for {}",
+                att.name
+            );
+        }
+
+        // Complete UTF-8 text attachment still reaches provider once.
+        let (ok_path, ok_att) = make_att("notes.txt", b"Complete readable text")?;
+        let cancelled = AtomicBool::new(false);
+        let sends = AtomicUsize::new(0);
+        let reply = tauri::async_runtime::block_on(extract_and_send(
+            "Summarize",
+            &[],
+            &[],
+            &cancelled,
+            || async {
+                let extracted = extract_attachment(&ok_path, &ok_att, AiProvider::DeepSeek)
+                    .map_err(|err| anyhow::anyhow!("{err}"))?;
+                Ok(vec![extracted])
+            },
+            || async { Ok(()) },
+            |_, _, _| {
+                sends.fetch_add(1, Ordering::SeqCst);
+                async { Ok("ok".into()) }
+            },
+        ))?;
+        assert_eq!(reply, "ok");
+        assert_eq!(sends.load(Ordering::SeqCst), 1);
+        Ok(())
     }
 }

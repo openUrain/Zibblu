@@ -34,6 +34,8 @@ pub enum ExtractError {
     VisionUnsupported,
     #[error("当前模型或接口不支持直接读取扫描版 PDF，请换用支持原生 PDF/视觉的模型")]
     ScannedPdfUnsupported,
+    #[error("附件 '{name}' 包含本地提取无法完整读取的内容（{}），已终止发送，请换用支持完整读取该文件的模型或转为纯文本", reasons.join("；"))]
+    IncompleteExtraction { name: String, reasons: Vec<String> },
     #[error("{0}")]
     Other(#[from] anyhow::Error),
 }
@@ -206,14 +208,12 @@ pub enum ExtractedAttachment {
     TextChunks {
         name: String,
         chunks: Vec<String>,
-        uncovered: Vec<String>,
     },
 }
 
 #[derive(Clone, Debug)]
 pub struct ChunkedAiRequests {
     pub requests: Vec<Vec<AiInputPart>>,
-    pub uncovered: Vec<String>,
 }
 
 pub fn extract_attachment(
@@ -261,7 +261,6 @@ pub fn extract_attachment(
             Ok(ExtractedAttachment::TextChunks {
                 name: attachment.name.clone(),
                 chunks,
-                uncovered: Vec::new(),
             })
         }
         SupportedAttachmentKind::Docx => {
@@ -270,7 +269,6 @@ pub fn extract_attachment(
             Ok(ExtractedAttachment::TextChunks {
                 name: attachment.name.clone(),
                 chunks,
-                uncovered: docx.uncovered,
             })
         }
         SupportedAttachmentKind::Xlsx => {
@@ -279,7 +277,6 @@ pub fn extract_attachment(
             Ok(ExtractedAttachment::TextChunks {
                 name: attachment.name.clone(),
                 chunks,
-                uncovered: xlsx.uncovered,
             })
         }
         SupportedAttachmentKind::Pdf => {
@@ -293,12 +290,11 @@ pub fn extract_attachment(
                     file_data: format!("data:application/pdf;base64,{}", STANDARD.encode(&bytes)),
                 });
             }
-            let pdf = extract_pdf_pages(&bytes)?;
+            let pdf = extract_pdf_pages(&bytes, &attachment.name)?;
             let chunks = pack_sections_into_chunks(&pdf.pages, MAX_CHUNK_TEXT_BYTES)?;
             Ok(ExtractedAttachment::TextChunks {
                 name: attachment.name.clone(),
                 chunks,
-                uncovered: pdf.uncovered,
             })
         }
     }
@@ -312,7 +308,6 @@ pub fn build_chunked_requests(
 ) -> Result<ChunkedAiRequests> {
     let mut text_docs: Vec<(String, Vec<String>)> = Vec::new();
     let mut media_parts: Vec<AiInputPart> = Vec::new();
-    let mut all_uncovered: Vec<String> = Vec::new();
     for item in extracted {
         match item {
             ExtractedAttachment::Image { image_url, .. } => {
@@ -326,27 +321,8 @@ pub fn build_chunked_requests(
                     file_data: file_data.clone(),
                 });
             }
-            ExtractedAttachment::TextChunks {
-                name,
-                chunks,
-                uncovered,
-            } => {
-                let mut doc_chunks = chunks.clone();
-                if !uncovered.is_empty() {
-                    let note = format!(
-                        "[注意：以下视觉或非文本内容未能通过纯文本提取读取，请勿推测或假装可见：{}]",
-                        uncovered.join("；")
-                    );
-                    if let Some(first) = doc_chunks.first_mut() {
-                        *first = format!("{note}\n\n{first}");
-                    } else {
-                        doc_chunks.push(note);
-                    }
-                    for entry in uncovered {
-                        all_uncovered.push(format!("{name}: {entry}"));
-                    }
-                }
-                text_docs.push((name.clone(), doc_chunks));
+            ExtractedAttachment::TextChunks { name, chunks } => {
+                text_docs.push((name.clone(), chunks.clone()));
             }
         }
     }
@@ -362,7 +338,6 @@ pub fn build_chunked_requests(
         parts.extend(media_parts);
         return Ok(ChunkedAiRequests {
             requests: vec![parts],
-            uncovered: all_uncovered,
         });
     }
 
@@ -386,7 +361,6 @@ pub fn build_chunked_requests(
         parts.extend(media_parts);
         return Ok(ChunkedAiRequests {
             requests: vec![parts],
-            uncovered: all_uncovered,
         });
     }
 
@@ -482,10 +456,7 @@ pub fn build_chunked_requests(
         requests.len() <= MAX_AI_CHUNKS,
         "Selected content exceeds the maximum of {MAX_AI_CHUNKS} sequential AI chunks. Choose fewer files or messages."
     );
-    Ok(ChunkedAiRequests {
-        requests,
-        uncovered: all_uncovered,
-    })
+    Ok(ChunkedAiRequests { requests })
 }
 
 fn read_bounded(file: File, max_bytes: u64, name: &str) -> Result<Vec<u8>, ExtractError> {
@@ -641,17 +612,14 @@ fn append_general_ref(out: &mut String, reference: &quick_xml::events::BytesRef<
 
 struct DocxExtraction {
     text: String,
-    uncovered: Vec<String>,
 }
 
 struct XlsxExtraction {
     sections: Vec<String>,
-    uncovered: Vec<String>,
 }
 
 struct PdfExtraction {
     pages: Vec<String>,
-    uncovered: Vec<String>,
 }
 
 fn collect_zip_visual_entries(archive: &ZipArchive<BufReader<File>>, prefix: &str) -> Vec<String> {
@@ -675,10 +643,82 @@ fn collect_zip_visual_entries(archive: &ZipArchive<BufReader<File>>, prefix: &st
     uncovered
 }
 
+fn collect_docx_uncovered_entries(archive: &ZipArchive<BufReader<File>>) -> Vec<String> {
+    let mut uncovered = collect_zip_visual_entries(archive, "word/");
+    for entry in archive.file_names() {
+        if entry.ends_with('/') {
+            continue;
+        }
+        let Some(rest) = entry.strip_prefix("word/") else {
+            continue;
+        };
+        if rest.starts_with("media/")
+            || rest.starts_with("charts/")
+            || rest.starts_with("diagrams/")
+            || rest.starts_with("embeddings/")
+            || rest.starts_with("drawings/")
+            || rest.starts_with("_rels/")
+            || rest.starts_with("theme/")
+            || matches!(
+                rest,
+                "document.xml"
+                    | "styles.xml"
+                    | "stylesWithEffects.xml"
+                    | "settings.xml"
+                    | "webSettings.xml"
+                    | "fontTable.xml"
+                    | "numbering.xml"
+                    | "people.xml"
+            )
+        {
+            continue;
+        }
+        let reason = if rest.starts_with("header") {
+            format!("未解析的页眉 ({entry})")
+        } else if rest.starts_with("footer") {
+            format!("未解析的页脚 ({entry})")
+        } else if rest.starts_with("footnotes") {
+            format!("未解析的脚注 ({entry})")
+        } else if rest.starts_with("endnotes") {
+            format!("未解析的尾注 ({entry})")
+        } else if rest.starts_with("comments") {
+            format!("未解析的批注 ({entry})")
+        } else {
+            format!("未解析的文档部件 ({entry})")
+        };
+        uncovered.push(reason);
+    }
+    uncovered.sort();
+    uncovered.dedup();
+    uncovered
+}
+
+fn collect_xlsx_uncovered_entries(archive: &ZipArchive<BufReader<File>>) -> Vec<String> {
+    let mut uncovered = collect_zip_visual_entries(archive, "xl/");
+    for entry in archive.file_names() {
+        if entry.ends_with('/') {
+            continue;
+        }
+        let Some(rest) = entry.strip_prefix("xl/") else {
+            continue;
+        };
+        if rest.starts_with("comments")
+            || rest.starts_with("threadedComments/")
+            || rest.starts_with("pivotTables/")
+            || rest.starts_with("chartsheets/")
+        {
+            uncovered.push(format!("未解析的工作簿附加内容 ({entry})"));
+        }
+    }
+    uncovered.sort();
+    uncovered.dedup();
+    uncovered
+}
+
 fn extract_docx_text(file: File, doc_name: &str) -> Result<DocxExtraction, ExtractError> {
     let mut archive = ZipArchive::new(BufReader::new(file))
         .map_err(|_| ExtractError::UnsupportedFileFormat(doc_name.to_owned()))?;
-    let mut uncovered = collect_zip_visual_entries(&archive, "word/");
+    let mut uncovered = collect_docx_uncovered_entries(&archive);
     let xml = read_zip_entry_utf8(&mut archive, "word/document.xml", doc_name)?;
     let mut reader = Reader::from_str(&xml);
     reader.config_mut().trim_text(false);
@@ -688,7 +728,7 @@ fn extract_docx_text(file: File, doc_name: &str) -> Result<DocxExtraction, Extra
     let mut in_cell = false;
     let mut cell_has_para = false;
     let mut row_has_cell = false;
-    let mut has_inline_drawing = false;
+    let mut has_inline_unsupported = false;
 
     loop {
         match reader.read_event() {
@@ -707,16 +747,16 @@ fn extract_docx_text(file: File, doc_name: &str) -> Result<DocxExtraction, Extra
                         out.push(' ');
                     }
                 }
-                "drawing" | "pict" | "blip" | "imagedata" | "chart" => {
-                    has_inline_drawing = true;
+                "drawing" | "pict" | "blip" | "imagedata" | "chart" | "object" | "altChunk" => {
+                    has_inline_unsupported = true;
                 }
                 _ => {}
             },
             Ok(Event::Empty(ref e)) => match e.local_name().as_ref() {
                 "tab" => out.push('\t'),
                 "br" | "cr" => out.push('\n'),
-                "drawing" | "pict" | "blip" | "imagedata" | "chart" => {
-                    has_inline_drawing = true;
+                "drawing" | "pict" | "blip" | "imagedata" | "chart" | "object" | "altChunk" => {
+                    has_inline_unsupported = true;
                 }
                 _ => {}
             },
@@ -759,23 +799,29 @@ fn extract_docx_text(file: File, doc_name: &str) -> Result<DocxExtraction, Extra
             _ => {}
         }
     }
-    if has_inline_drawing && uncovered.is_empty() {
-        uncovered.push("文档正文包含未提取的图像或图表元素".into());
+    if has_inline_unsupported && uncovered.is_empty() {
+        uncovered.push("文档正文包含未提取的图像、图表或嵌入对象".into());
+    }
+    if !uncovered.is_empty() {
+        return Err(ExtractError::IncompleteExtraction {
+            name: doc_name.to_owned(),
+            reasons: uncovered,
+        });
     }
     let text = out.trim().to_owned();
-    if text.is_empty() && !uncovered.is_empty() {
-        return Err(ExtractError::Other(anyhow::anyhow!(
-            "DOCX '{doc_name}' 仅包含图片或图表等视觉内容（{}），当前纯文本提取无法读取",
-            uncovered.join("、")
-        )));
-    }
-    Ok(DocxExtraction { text, uncovered })
+    Ok(DocxExtraction { text })
 }
 
 fn extract_xlsx_sheets(file: File, doc_name: &str) -> Result<XlsxExtraction, ExtractError> {
     let mut archive = ZipArchive::new(BufReader::new(file))
         .map_err(|_| ExtractError::UnsupportedFileFormat(doc_name.to_owned()))?;
-    let uncovered = collect_zip_visual_entries(&archive, "xl/");
+    let uncovered = collect_xlsx_uncovered_entries(&archive);
+    if !uncovered.is_empty() {
+        return Err(ExtractError::IncompleteExtraction {
+            name: doc_name.to_owned(),
+            reasons: uncovered,
+        });
+    }
 
     let shared_strings = if archive.by_name("xl/sharedStrings.xml").is_ok() {
         let xml = read_zip_entry_utf8(&mut archive, "xl/sharedStrings.xml", doc_name)?;
@@ -784,15 +830,16 @@ fn extract_xlsx_sheets(file: File, doc_name: &str) -> Result<XlsxExtraction, Ext
         Vec::new()
     };
 
-    let rels = if archive.by_name("xl/_rels/workbook.xml.rels").is_ok() {
-        let xml = read_zip_entry_utf8(&mut archive, "xl/_rels/workbook.xml.rels", doc_name)?;
-        parse_xlsx_rels(&xml)?
-    } else {
-        HashMap::new()
-    };
+    if archive.by_name("xl/_rels/workbook.xml.rels").is_err() {
+        return Err(ExtractError::Other(anyhow::anyhow!(
+            "Missing xl/_rels/workbook.xml.rels in '{doc_name}'"
+        )));
+    }
+    let rels_xml = read_zip_entry_utf8(&mut archive, "xl/_rels/workbook.xml.rels", doc_name)?;
+    let rels = parse_xlsx_rels(&rels_xml)?;
 
     let workbook_xml = read_zip_entry_utf8(&mut archive, "xl/workbook.xml", doc_name)?;
-    let sheets = parse_xlsx_workbook(&workbook_xml, &rels);
+    let sheets = parse_xlsx_workbook(&workbook_xml, &rels, doc_name)?;
     if sheets.is_empty() {
         return Err(ExtractError::Other(anyhow::anyhow!(
             "No worksheets declared in '{doc_name}'"
@@ -800,8 +847,7 @@ fn extract_xlsx_sheets(file: File, doc_name: &str) -> Result<XlsxExtraction, Ext
     }
 
     let mut sections = Vec::new();
-    for (idx, (sheet_name, target_path)) in sheets.into_iter().enumerate() {
-        let entry_path = target_path.unwrap_or_else(|| format!("xl/worksheets/sheet{}.xml", idx + 1));
+    for (sheet_name, entry_path) in sheets {
         if archive.by_name(&entry_path).is_err() {
             return Err(ExtractError::Other(anyhow::anyhow!(
                 "Worksheet '{sheet_name}' ({entry_path}) declared in workbook.xml is missing from '{doc_name}'"
@@ -816,10 +862,7 @@ fn extract_xlsx_sheets(file: File, doc_name: &str) -> Result<XlsxExtraction, Ext
         }
     }
 
-    Ok(XlsxExtraction {
-        sections,
-        uncovered,
-    })
+    Ok(XlsxExtraction { sections })
 }
 
 fn parse_xlsx_shared_strings(xml: &str) -> Result<Vec<String>, ExtractError> {
@@ -839,6 +882,9 @@ fn parse_xlsx_shared_strings(xml: &str) -> Result<Vec<String>, ExtractError> {
                 "t" if in_si => in_t = true,
                 _ => {}
             },
+            Ok(Event::Empty(ref e)) if e.local_name().as_ref() == "si" => {
+                strings.push(String::new());
+            }
             Ok(Event::Text(ref e)) if in_t => current.push_str(e.as_ref()),
             Ok(Event::GeneralRef(ref e)) if in_t => append_general_ref(&mut current, e),
             Ok(Event::End(ref e)) => match e.local_name().as_ref() {
@@ -872,11 +918,20 @@ fn parse_xlsx_rels(xml: &str) -> Result<HashMap<String, String>, ExtractError> {
                 let mut id = None;
                 let mut target = None;
                 let mut external = false;
-                for attr in e.attributes().flatten() {
+                for attr in e.attributes() {
+                    let attr = attr.map_err(|err| {
+                        ExtractError::Other(anyhow::anyhow!(
+                            "Invalid attribute in workbook.xml.rels: {err}"
+                        ))
+                    })?;
                     let key = attr.key.local_name();
                     let val = attr
                         .normalized_value(quick_xml::XmlVersion::Explicit1_0)
-                        .unwrap_or_default()
+                        .map_err(|err| {
+                            ExtractError::Other(anyhow::anyhow!(
+                                "Invalid attribute value in workbook.xml.rels: {err}"
+                            ))
+                        })?
                         .into_owned();
                     match key.as_ref() {
                         "Id" => id = Some(val),
@@ -888,9 +943,16 @@ fn parse_xlsx_rels(xml: &str) -> Result<HashMap<String, String>, ExtractError> {
                 if !external
                     && let (Some(id), Some(target)) = (id, target)
                     && !target.contains("..")
-                    && !target.starts_with('/')
+                    && !target.contains('\\')
                 {
-                    let normalized = if target.starts_with("xl/") {
+                    let normalized = if let Some(abs) = target.strip_prefix('/') {
+                        if !abs.starts_with("xl/") {
+                            return Err(ExtractError::Other(anyhow::anyhow!(
+                                "Unsupported workbook relationship target '{target}'"
+                            )));
+                        }
+                        abs.to_owned()
+                    } else if target.starts_with("xl/") {
                         target
                     } else {
                         format!("xl/{}", target.trim_start_matches("./"))
@@ -899,7 +961,11 @@ fn parse_xlsx_rels(xml: &str) -> Result<HashMap<String, String>, ExtractError> {
                 }
             }
             Ok(Event::Eof) => break,
-            Err(_) => break,
+            Err(err) => {
+                return Err(ExtractError::Other(anyhow::anyhow!(
+                    "Invalid workbook.xml.rels: {err}"
+                )));
+            }
             _ => {}
         }
     }
@@ -909,7 +975,8 @@ fn parse_xlsx_rels(xml: &str) -> Result<HashMap<String, String>, ExtractError> {
 fn parse_xlsx_workbook(
     xml: &str,
     rels: &HashMap<String, String>,
-) -> Vec<(String, Option<String>)> {
+    doc_name: &str,
+) -> Result<Vec<(String, String)>, ExtractError> {
     let mut reader = Reader::from_str(xml);
     let mut sheets = Vec::new();
     loop {
@@ -919,11 +986,20 @@ fn parse_xlsx_workbook(
             {
                 let mut name = None;
                 let mut rid = None;
-                for attr in e.attributes().flatten() {
+                for attr in e.attributes() {
+                    let attr = attr.map_err(|err| {
+                        ExtractError::Other(anyhow::anyhow!(
+                            "Invalid attribute in workbook.xml of '{doc_name}': {err}"
+                        ))
+                    })?;
                     let key = attr.key.local_name();
                     let val = attr
                         .normalized_value(quick_xml::XmlVersion::Explicit1_0)
-                        .unwrap_or_default()
+                        .map_err(|err| {
+                            ExtractError::Other(anyhow::anyhow!(
+                                "Invalid attribute value in workbook.xml of '{doc_name}': {err}"
+                            ))
+                        })?
                         .into_owned();
                     match key.as_ref() {
                         "name" => name = Some(val),
@@ -931,17 +1007,73 @@ fn parse_xlsx_workbook(
                         _ => {}
                     }
                 }
-                if let Some(name) = name {
-                    let path = rid.and_then(|id| rels.get(&id).cloned());
-                    sheets.push((name, path));
-                }
+                let sheet_name = name.ok_or_else(|| {
+                    ExtractError::Other(anyhow::anyhow!(
+                        "Worksheet element in '{doc_name}' is missing its name"
+                    ))
+                })?;
+                let rel_id = rid.ok_or_else(|| {
+                    ExtractError::Other(anyhow::anyhow!(
+                        "Worksheet '{sheet_name}' in '{doc_name}' is missing relationship id"
+                    ))
+                })?;
+                let path = rels.get(&rel_id).cloned().ok_or_else(|| {
+                    ExtractError::Other(anyhow::anyhow!(
+                        "Worksheet '{sheet_name}' ({rel_id}) in '{doc_name}' has no valid relationship in workbook.xml.rels"
+                    ))
+                })?;
+                sheets.push((sheet_name, path));
             }
             Ok(Event::Eof) => break,
-            Err(_) => break,
+            Err(err) => {
+                return Err(ExtractError::Other(anyhow::anyhow!(
+                    "Invalid workbook.xml in '{doc_name}': {err}"
+                )));
+            }
             _ => {}
         }
     }
-    sheets
+    Ok(sheets)
+}
+
+fn parse_xlsx_cell_col(cell_ref: &str) -> Result<usize, ExtractError> {
+    let trimmed = cell_ref.trim();
+    let split_idx = trimmed
+        .bytes()
+        .position(|b| !b.is_ascii_alphabetic())
+        .unwrap_or(trimmed.len());
+    let (col_part, row_part) = trimmed.split_at(split_idx);
+    if col_part.is_empty()
+        || row_part.is_empty()
+        || !row_part.bytes().all(|b| b.is_ascii_digit())
+        || row_part.parse::<usize>().ok().is_none_or(|r| r == 0)
+    {
+        return Err(ExtractError::Other(anyhow::anyhow!(
+            "Invalid XLSX cell reference '{cell_ref}'"
+        )));
+    }
+    let mut col_num = 0usize;
+    for b in col_part.bytes() {
+        let upper = b.to_ascii_uppercase();
+        if !upper.is_ascii_uppercase() {
+            return Err(ExtractError::Other(anyhow::anyhow!(
+                "Invalid XLSX cell reference '{cell_ref}'"
+            )));
+        }
+        col_num = col_num
+            .checked_mul(26)
+            .and_then(|n| n.checked_add((upper - b'A') as usize + 1))
+            .ok_or_else(|| {
+                ExtractError::Other(anyhow::anyhow!("XLSX column '{cell_ref}' is out of range"))
+            })?;
+    }
+    let zero_based = col_num - 1;
+    if zero_based > 16_383 {
+        return Err(ExtractError::Other(anyhow::anyhow!(
+            "XLSX column '{cell_ref}' exceeds maximum worksheet columns"
+        )));
+    }
+    Ok(zero_based)
 }
 
 fn parse_xlsx_sheet(xml: &str, shared_strings: &[String]) -> Result<Vec<String>, ExtractError> {
@@ -949,6 +1081,8 @@ fn parse_xlsx_sheet(xml: &str, shared_strings: &[String]) -> Result<Vec<String>,
     reader.config_mut().trim_text(false);
     let mut rows = Vec::new();
     let mut current_row: Vec<String> = Vec::new();
+    let mut next_col = 0usize;
+    let mut cell_col = 0usize;
     let mut cell_type = String::new();
     let mut cell_value = String::new();
     let mut in_cell = false;
@@ -958,24 +1092,89 @@ fn parse_xlsx_sheet(xml: &str, shared_strings: &[String]) -> Result<Vec<String>,
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e)) => match e.local_name().as_ref() {
-                "row" => current_row.clear(),
+                "row" => {
+                    current_row.clear();
+                    next_col = 0;
+                }
                 "c" => {
                     in_cell = true;
                     cell_type.clear();
                     cell_value.clear();
-                    for attr in e.attributes().flatten() {
-                        if attr.key.local_name().as_ref() == "t" {
-                            cell_type = attr
-                                .normalized_value(quick_xml::XmlVersion::Explicit1_0)
-                                .unwrap_or_default()
-                                .into_owned();
+                    let mut cell_ref = None;
+                    for attr in e.attributes() {
+                        let attr = attr.map_err(|err| {
+                            ExtractError::Other(anyhow::anyhow!(
+                                "Invalid attribute in worksheet XML: {err}"
+                            ))
+                        })?;
+                        let key = attr.key.local_name();
+                        let val = attr
+                            .normalized_value(quick_xml::XmlVersion::Explicit1_0)
+                            .map_err(|err| {
+                                ExtractError::Other(anyhow::anyhow!(
+                                    "Invalid attribute value in worksheet XML: {err}"
+                                ))
+                            })?
+                            .into_owned();
+                        match key.as_ref() {
+                            "t" => cell_type = val,
+                            "r" => cell_ref = Some(val),
+                            _ => {}
                         }
                     }
+                    cell_col = match cell_ref {
+                        Some(r) => {
+                            let col = parse_xlsx_cell_col(&r)?;
+                            next_col = col + 1;
+                            col
+                        }
+                        None => {
+                            let col = next_col;
+                            next_col += 1;
+                            col
+                        }
+                    };
                 }
                 "v" if in_cell => in_value = true,
                 "t" if in_cell => in_inline_t = true,
                 _ => {}
             },
+            Ok(Event::Empty(ref e)) if e.local_name().as_ref() == "c" => {
+                let mut empty_type = String::new();
+                let mut cell_ref = None;
+                for attr in e.attributes() {
+                    let attr = attr.map_err(|err| {
+                        ExtractError::Other(anyhow::anyhow!(
+                            "Invalid attribute in worksheet XML: {err}"
+                        ))
+                    })?;
+                    let key = attr.key.local_name();
+                    let val = attr
+                        .normalized_value(quick_xml::XmlVersion::Explicit1_0)
+                        .map_err(|err| {
+                            ExtractError::Other(anyhow::anyhow!(
+                                "Invalid attribute value in worksheet XML: {err}"
+                            ))
+                        })?
+                        .into_owned();
+                    match key.as_ref() {
+                        "t" => empty_type = val,
+                        "r" => cell_ref = Some(val),
+                        _ => {}
+                    }
+                }
+                if let Some(r) = cell_ref {
+                    let col = parse_xlsx_cell_col(&r)?;
+                    next_col = col + 1;
+                } else {
+                    next_col += 1;
+                }
+                if empty_type == "s" {
+                    return Err(ExtractError::Other(anyhow::anyhow!(
+                        "XLSX shared string cell is missing string index"
+                    )));
+                }
+            }
             Ok(Event::Text(ref e)) if in_value || in_inline_t => {
                 cell_value.push_str(e.as_ref());
             }
@@ -988,13 +1187,20 @@ fn parse_xlsx_sheet(xml: &str, shared_strings: &[String]) -> Result<Vec<String>,
                 "c" if in_cell => {
                     in_cell = false;
                     let resolved = match cell_type.as_str() {
-                        "s" => cell_value
-                            .trim()
-                            .parse::<usize>()
-                            .ok()
-                            .and_then(|idx| shared_strings.get(idx))
-                            .cloned()
-                            .unwrap_or_default(),
+                        "s" => {
+                            let idx = cell_value.trim().parse::<usize>().map_err(|_| {
+                                ExtractError::Other(anyhow::anyhow!(
+                                    "Invalid XLSX shared string index '{}'",
+                                    cell_value.trim()
+                                ))
+                            })?;
+                            shared_strings.get(idx).cloned().ok_or_else(|| {
+                                ExtractError::Other(anyhow::anyhow!(
+                                    "XLSX shared string index {idx} is out of bounds (len {})",
+                                    shared_strings.len()
+                                ))
+                            })?
+                        }
                         "b" => match cell_value.trim() {
                             "1" => "TRUE".into(),
                             "0" => "FALSE".into(),
@@ -1003,7 +1209,10 @@ fn parse_xlsx_sheet(xml: &str, shared_strings: &[String]) -> Result<Vec<String>,
                         _ => cell_value.clone(),
                     };
                     if !resolved.is_empty() {
-                        current_row.push(resolved);
+                        if current_row.len() <= cell_col {
+                            current_row.resize(cell_col + 1, String::new());
+                        }
+                        current_row[cell_col] = resolved;
                     }
                 }
                 "row" => {
@@ -1032,14 +1241,14 @@ struct PdfStream<'a> {
     data: &'a [u8],
 }
 
-fn extract_pdf_pages(bytes: &[u8]) -> Result<PdfExtraction, ExtractError> {
+fn extract_pdf_pages(bytes: &[u8], doc_name: &str) -> Result<PdfExtraction, ExtractError> {
     if contains_pdf_name(bytes, b"/Encrypt") {
         return Err(ExtractError::Other(anyhow::anyhow!(
             "Encrypted PDFs are not supported for local text extraction"
         )));
     }
 
-    let pdf_has_any_image = contains_pdf_subtype_image(bytes);
+    let pdf_has_any_image = contains_pdf_subtype(bytes, b"/Image");
     let objects = parse_pdf_objects(bytes);
     let page_entries = collect_ordered_pages(&objects, bytes)?;
 
@@ -1056,6 +1265,7 @@ fn extract_pdf_pages(bytes: &[u8]) -> Result<PdfExtraction, ExtractError> {
         let content_refs = parse_contents_refs(page_body);
         let mut page_text = String::new();
         let mut stream_has_inline_image = false;
+        let mut stream_has_do = false;
 
         for obj_ref in content_refs {
             let obj_body = objects.get(&obj_ref).copied().ok_or_else(|| {
@@ -1064,8 +1274,12 @@ fn extract_pdf_pages(bytes: &[u8]) -> Result<PdfExtraction, ExtractError> {
                 ))
             })?;
             let decoded = extract_stream_bytes(obj_body, page_num)?;
-            if has_inline_image(&decoded) {
+            let (has_inline, has_do) = scan_content_stream_xobjects(&decoded);
+            if has_inline {
                 stream_has_inline_image = true;
+            }
+            if has_do {
+                stream_has_do = true;
             }
             let extracted = extract_text_from_pdf_content_stream(&decoded);
             if !extracted.trim().is_empty() {
@@ -1076,8 +1290,9 @@ fn extract_pdf_pages(bytes: &[u8]) -> Result<PdfExtraction, ExtractError> {
             }
         }
 
-        let page_has_image = stream_has_inline_image
-            || page_references_image(page_body, &entry.inherited_resources, &objects);
+        let (xobj_has_image, xobj_reasons) =
+            inspect_page_xobjects(page_body, &entry.inherited_resources, &objects, page_num);
+        let page_has_image = stream_has_inline_image || xobj_has_image;
         let meaningful_chars = page_text
             .chars()
             .filter(|c| c.is_alphanumeric())
@@ -1092,13 +1307,34 @@ fn extract_pdf_pages(bytes: &[u8]) -> Result<PdfExtraction, ExtractError> {
             )));
         }
 
-        if page_has_image {
-            uncovered.push(format!("第 {page_num} 页包含未提取的图像内容"));
+        if stream_has_inline_image {
+            let reason = format!("第 {page_num} 页包含未提取的图像内容");
+            if !uncovered.contains(&reason) {
+                uncovered.push(reason);
+            }
+        }
+        for reason in &xobj_reasons {
+            if !uncovered.contains(reason) {
+                uncovered.push(reason.clone());
+            }
+        }
+        if stream_has_do && xobj_reasons.is_empty() {
+            let reason = format!("第 {page_num} 页包含未提取的 XObject 绘制操作 (Do)");
+            if !uncovered.contains(&reason) {
+                uncovered.push(reason);
+            }
         }
         pages.push(format!("[Page {page_num}]\n{}", page_text.trim()));
     }
 
-    Ok(PdfExtraction { pages, uncovered })
+    if !uncovered.is_empty() {
+        return Err(ExtractError::IncompleteExtraction {
+            name: doc_name.to_owned(),
+            reasons: uncovered,
+        });
+    }
+
+    Ok(PdfExtraction { pages })
 }
 
 fn contains_pdf_name(haystack: &[u8], name: &[u8]) -> bool {
@@ -1113,15 +1349,15 @@ fn contains_pdf_name(haystack: &[u8], name: &[u8]) -> bool {
     false
 }
 
-fn contains_pdf_subtype_image(body: &[u8]) -> bool {
+fn contains_pdf_subtype(body: &[u8], subtype: &[u8]) -> bool {
     let mut pos = 0;
     while let Some(idx) = find_subslice(body, pos, b"/Subtype") {
         let mut after = idx + 8;
         while after < body.len() && body[after].is_ascii_whitespace() {
             after += 1;
         }
-        if body[after..].starts_with(b"/Image") {
-            let next = after + 6;
+        if body[after..].starts_with(subtype) {
+            let next = after + subtype.len();
             if next >= body.len() || !body[next].is_ascii_alphabetic() {
                 return true;
             }
@@ -1296,6 +1532,8 @@ fn walk_pages_node(
     let mut resources = parent_resources.to_vec();
     if let Some(res_ref) = parse_single_ref(body, b"/Resources") {
         resources.push(res_ref);
+    } else if contains_pdf_name(body, b"/Resources") {
+        resources.push(node_num);
     }
     let kids = parse_array_refs(body, b"/Kids");
     if kids.is_empty() {
@@ -1436,60 +1674,155 @@ fn parse_contents_refs(body: &[u8]) -> Vec<u32> {
     parse_array_refs(body, b"/Contents")
 }
 
-fn page_references_image(
+fn extract_balanced_pdf_dict(slice: &[u8]) -> Option<&[u8]> {
+    let mut i = 0;
+    while i < slice.len() && slice[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if !slice[i..].starts_with(b"<<") {
+        return None;
+    }
+    let start = i;
+    i += 2;
+    let mut depth = 1usize;
+    while i < slice.len() && depth > 0 {
+        if slice[i] == b'(' {
+            let (_, next) = parse_pdf_literal_string(slice, i);
+            i = next;
+            continue;
+        }
+        if slice[i..].starts_with(b"<<") {
+            depth += 1;
+            i += 2;
+            continue;
+        }
+        if slice[i..].starts_with(b">>") {
+            depth -= 1;
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    Some(&slice[start..i])
+}
+
+fn extract_all_pdf_refs(slice: &[u8]) -> Vec<u32> {
+    let text = String::from_utf8_lossy(slice);
+    let tokens: Vec<&str> = text
+        .split(|c: char| c.is_ascii_whitespace() || matches!(c, '<' | '>' | '[' | ']' | '/'))
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut refs = Vec::new();
+    for window in tokens.windows(3) {
+        if is_pdf_ref_marker(window[2])
+            && let Ok(num) = window[0].parse::<u32>()
+            && window[1].parse::<u16>().is_ok()
+        {
+            refs.push(num);
+        }
+    }
+    refs
+}
+
+fn inspect_page_xobjects(
     page_body: &[u8],
     inherited_resources: &[u32],
     objects: &HashMap<u32, &[u8]>,
-) -> bool {
-    if contains_pdf_subtype_image(page_body) {
-        return true;
+    page_num: usize,
+) -> (bool, Vec<String>) {
+    let mut has_image = false;
+    let mut reasons = Vec::new();
+    let mut push_reason = |reason: String| {
+        if !reasons.contains(&reason) {
+            reasons.push(reason);
+        }
+    };
+
+    if contains_pdf_subtype(page_body, b"/Image") {
+        has_image = true;
+        push_reason(format!("第 {page_num} 页包含未提取的图像内容"));
     }
+    if contains_pdf_subtype(page_body, b"/Form") {
+        push_reason(format!(
+            "第 {page_num} 页包含未提取的 Form XObject（可能含正文、图表或嵌入图像）"
+        ));
+    }
+
     let mut res_bodies = vec![page_body];
-    if let Some(res_ref) = parse_single_ref(page_body, b"/Resources")
-        && let Some(res_body) = objects.get(&res_ref)
-    {
-        res_bodies.push(res_body);
+    if let Some(res_ref) = parse_single_ref(page_body, b"/Resources") {
+        if let Some(res_body) = objects.get(&res_ref) {
+            res_bodies.push(res_body);
+        } else {
+            push_reason(format!("第 {page_num} 页引用了缺失的资源字典 ({res_ref})"));
+        }
     }
     for res_ref in inherited_resources {
         if let Some(res_body) = objects.get(res_ref) {
             res_bodies.push(res_body);
+        } else {
+            push_reason(format!("第 {page_num} 页继承了缺失的资源字典 ({res_ref})"));
         }
     }
+
     for res_body in res_bodies {
-        if contains_pdf_subtype_image(res_body) {
-            return true;
+        if contains_pdf_subtype(res_body, b"/Image") {
+            has_image = true;
+            push_reason(format!("第 {page_num} 页包含未提取的图像内容"));
         }
-        let mut xobj_sources: Vec<&[u8]> = vec![res_body];
-        if let Some(xobj_ref) = parse_single_ref(res_body, b"/XObject")
-            && let Some(xobj_dict) = objects.get(&xobj_ref)
-        {
-            xobj_sources.push(xobj_dict);
+        if contains_pdf_subtype(res_body, b"/Form") {
+            push_reason(format!(
+                "第 {page_num} 页包含未提取的 Form XObject（可能含正文、图表或嵌入图像）"
+            ));
         }
-        for src in xobj_sources {
-            if let Some(idx) = find_subslice(src, 0, b"/XObject") {
-                let tail = &src[idx..];
-                let text = String::from_utf8_lossy(tail);
-                let tokens: Vec<&str> = text
-                    .split(|c: char| c.is_ascii_whitespace() || matches!(c, '<' | '>' | '[' | ']' | '/'))
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                for window in tokens.windows(3) {
-                    if is_pdf_ref_marker(window[2])
-                        && let Ok(num) = window[0].parse::<u32>()
-                        && window[1].parse::<u16>().is_ok()
-                        && let Some(target) = objects.get(&num)
-                        && contains_pdf_subtype_image(target)
-                    {
-                        return true;
+
+        let mut pos = 0;
+        while let Some(idx) = find_subslice(res_body, pos, b"/XObject") {
+            let after = idx + 8;
+            pos = after;
+            if after < res_body.len() && res_body[after].is_ascii_alphanumeric() {
+                continue;
+            }
+            let tail = &res_body[after..];
+            let mut xobj_refs = Vec::new();
+            if let Some(dict_slice) = extract_balanced_pdf_dict(tail) {
+                xobj_refs.extend(extract_all_pdf_refs(dict_slice));
+            } else if let Some(xobj_ref) = parse_single_ref(&res_body[idx..], b"/XObject") {
+                if let Some(xobj_dict) = objects.get(&xobj_ref) {
+                    let dict_slice = extract_balanced_pdf_dict(xobj_dict).unwrap_or(xobj_dict);
+                    xobj_refs.extend(extract_all_pdf_refs(dict_slice));
+                } else {
+                    push_reason(format!("第 {page_num} 页引用了缺失的 XObject 字典 ({xobj_ref})"));
+                }
+            }
+
+            for num in xobj_refs {
+                match objects.get(&num) {
+                    None => {
+                        push_reason(format!("第 {page_num} 页引用了缺失的 XObject ({num})"));
+                    }
+                    Some(target) => {
+                        if contains_pdf_subtype(target, b"/Image") {
+                            has_image = true;
+                            push_reason(format!("第 {page_num} 页包含未提取的图像内容"));
+                        } else if contains_pdf_subtype(target, b"/Form") {
+                            push_reason(format!(
+                                "第 {page_num} 页包含未提取的 Form XObject（可能含正文、图表或嵌入图像）"
+                            ));
+                        } else {
+                            push_reason(format!("第 {page_num} 页包含未提取的 XObject 内容"));
+                        }
                     }
                 }
             }
         }
     }
-    false
+
+    (has_image, reasons)
 }
 
-fn has_inline_image(stream: &[u8]) -> bool {
+fn scan_content_stream_xobjects(stream: &[u8]) -> (bool, bool) {
+    let mut has_inline_image = false;
+    let mut has_do_operator = false;
     let mut i = 0;
     while i < stream.len() {
         let b = stream[i];
@@ -1497,20 +1830,59 @@ fn has_inline_image(stream: &[u8]) -> bool {
             i += 1;
             continue;
         }
+        if b == b'%' {
+            while i < stream.len() && stream[i] != b'\n' && stream[i] != b'\r' {
+                i += 1;
+            }
+            continue;
+        }
         if b == b'(' {
             let (_, next) = parse_pdf_literal_string(stream, i);
             i = next;
             continue;
         }
+        if b == b'<' && stream.get(i + 1) != Some(&b'<') {
+            let (_, next) = parse_pdf_hex_string(stream, i);
+            i = next;
+            continue;
+        }
+        if b == b'/' {
+            i += 1;
+            while i < stream.len()
+                && !stream[i].is_ascii_whitespace()
+                && !matches!(
+                    stream[i],
+                    b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
+                )
+            {
+                i += 1;
+            }
+            continue;
+        }
+        if matches!(b, b'<' | b'>' | b'[' | b']' | b'{' | b'}') {
+            i += 1;
+            continue;
+        }
         let start = i;
-        while i < stream.len() && !stream[i].is_ascii_whitespace() {
+        while i < stream.len()
+            && !stream[i].is_ascii_whitespace()
+            && !matches!(
+                stream[i],
+                b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
+            )
+        {
             i += 1;
         }
-        if &stream[start..i] == b"BI" {
-            return true;
+        match &stream[start..i] {
+            b"BI" => has_inline_image = true,
+            b"Do" => has_do_operator = true,
+            _ => {}
+        }
+        if has_inline_image && has_do_operator {
+            break;
         }
     }
-    false
+    (has_inline_image, has_do_operator)
 }
 
 fn extract_stream_bytes(obj_body: &[u8], page_num: usize) -> Result<Vec<u8>, ExtractError> {
@@ -2058,11 +2430,13 @@ mod tests {
     }
 
     #[test]
-    fn docx_with_images_reports_the_unread_visual_content() -> Result<()> {
+    fn docx_with_images_or_unparsed_parts_fails_incomplete() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let path = dir.path().join("pictured.docx");
+
+        // (a) Text + image in DOCX must fail with IncompleteExtraction before any AI send.
+        let pictured = dir.path().join("pictured.docx");
         {
-            let mut zip = ZipWriter::new(File::create(&path)?);
+            let mut zip = ZipWriter::new(File::create(&pictured)?);
             zip.start_file("word/document.xml", SimpleFileOptions::default())?;
             zip.write_all(
                 br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
@@ -2073,17 +2447,346 @@ mod tests {
             zip.write_all(b"\x89PNG")?;
             zip.finish()?;
         }
+        let err = extract_attachment(
+            &pictured,
+            &fixture_attachment("pictured.docx", std::fs::metadata(&pictured)?.len()),
+            AiProvider::DeepSeek,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ExtractError::IncompleteExtraction { .. }),
+            "pictured DOCX must fail with IncompleteExtraction, got {err:?}"
+        );
+
+        // (b) Text + footnotes.xml must fail conservatively instead of dropping footnotes.
+        let footnoted = dir.path().join("footnoted.docx");
+        {
+            let mut zip = ZipWriter::new(File::create(&footnoted)?);
+            zip.start_file("word/document.xml", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+                    <w:p><w:r><w:t>Main body text</w:t></w:r></w:p></w:body></w:document>"#,
+            )?;
+            zip.start_file("word/footnotes.xml", SimpleFileOptions::default())?;
+            zip.write_all(br#"<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>"#)?;
+            zip.finish()?;
+        }
+        let err = extract_attachment(
+            &footnoted,
+            &fixture_attachment("footnoted.docx", std::fs::metadata(&footnoted)?.len()),
+            AiProvider::OpenAi,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ExtractError::IncompleteExtraction { ref reasons, .. } if reasons.iter().any(|r| r.contains("footnotes.xml"))),
+            "DOCX with footnotes must fail with IncompleteExtraction, got {err:?}"
+        );
+
+        // (c) Text + header1.xml must fail conservatively.
+        let headered = dir.path().join("headered.docx");
+        {
+            let mut zip = ZipWriter::new(File::create(&headered)?);
+            zip.start_file("word/document.xml", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+                    <w:p><w:r><w:t>Body text</w:t></w:r></w:p></w:body></w:document>"#,
+            )?;
+            zip.start_file("word/header1.xml", SimpleFileOptions::default())?;
+            zip.write_all(br#"<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>"#)?;
+            zip.finish()?;
+        }
+        let err = extract_attachment(
+            &headered,
+            &fixture_attachment("headered.docx", std::fs::metadata(&headered)?.len()),
+            AiProvider::Grok,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ExtractError::IncompleteExtraction { ref reasons, .. } if reasons.iter().any(|r| r.contains("header1.xml"))),
+            "DOCX with header1.xml must fail with IncompleteExtraction, got {err:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pdf_with_text_and_form_or_image_xobject_fails_local_extraction() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+
+        // (a) Text + inline /XObject Form + /Fm1 Do
+        let mut form_inline_pdf = Vec::new();
+        form_inline_pdf.extend_from_slice(b"%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n");
+        form_inline_pdf.extend_from_slice(b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n");
+        form_inline_pdf.extend_from_slice(b"3 0 obj << /Type /Page /Parent 2 0 R /Resources << /XObject << /Fm1 5 0 R >> >> /Contents 4 0 R >> endobj\n");
+        form_inline_pdf.extend_from_slice(b"4 0 obj << /Length 73 >>\nstream\nBT /F1 12 Tf (Searchable paragraph with plenty of characters) Tj ET /Fm1 Do\nendstream\nendobj\n");
+        form_inline_pdf.extend_from_slice(b"5 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Length 28 >>\nstream\nBT (Hidden form text) Tj ET\nendstream\nendobj\n%%EOF");
+        let form_inline_path = dir.path().join("form-inline.pdf");
+        std::fs::write(&form_inline_path, &form_inline_pdf)?;
+
+        let err = extract_attachment(
+            &form_inline_path,
+            &fixture_attachment("form-inline.pdf", form_inline_pdf.len() as u64),
+            AiProvider::DeepSeek,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ExtractError::IncompleteExtraction { ref reasons, .. } if reasons.iter().any(|r| r.contains("Form XObject"))),
+            "PDF with Form XObject must fail local extraction, got {err:?}"
+        );
+        // OpenAI within 10 MiB still uses native full-PDF submission.
+        let native = extract_attachment(
+            &form_inline_path,
+            &fixture_attachment("form-inline.pdf", form_inline_pdf.len() as u64),
+            AiProvider::OpenAi,
+        )?;
+        assert!(matches!(native, ExtractedAttachment::NativePdf { .. }));
+
+        // (b) Text + indirect /Resources + indirect /XObject dict pointing to /Form
+        let mut form_indirect_pdf = Vec::new();
+        form_indirect_pdf.extend_from_slice(b"%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n");
+        form_indirect_pdf.extend_from_slice(b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n");
+        form_indirect_pdf.extend_from_slice(b"3 0 obj << /Type /Page /Parent 2 0 R /Resources 6 0 R /Contents 4 0 R >> endobj\n");
+        form_indirect_pdf.extend_from_slice(b"4 0 obj << /Length 73 >>\nstream\nBT /F1 12 Tf (Searchable paragraph with plenty of characters) Tj ET /Fm1 Do\nendstream\nendobj\n");
+        form_indirect_pdf.extend_from_slice(b"5 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 50 50] /Length 0 >>\nstream\n\nendstream\nendobj\n");
+        form_indirect_pdf.extend_from_slice(b"6 0 obj << /XObject 7 0 R >> endobj\n");
+        form_indirect_pdf.extend_from_slice(b"7 0 obj << /Fm1 5 0 R >> endobj\n%%EOF");
+        let form_indirect_path = dir.path().join("form-indirect.pdf");
+        std::fs::write(&form_indirect_path, &form_indirect_pdf)?;
+
+        let err = extract_attachment(
+            &form_indirect_path,
+            &fixture_attachment("form-indirect.pdf", form_indirect_pdf.len() as u64),
+            AiProvider::DeepSeek,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ExtractError::IncompleteExtraction { ref reasons, .. } if reasons.iter().any(|r| r.contains("Form XObject"))),
+            "PDF with indirect Form XObject dict must fail, got {err:?}"
+        );
+
+        // (c) Text + /Image XObject on the same page must also fail local extraction.
+        let mut text_and_img_pdf = Vec::new();
+        text_and_img_pdf.extend_from_slice(b"%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n");
+        text_and_img_pdf.extend_from_slice(b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n");
+        text_and_img_pdf.extend_from_slice(b"3 0 obj << /Type /Page /Parent 2 0 R /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >> endobj\n");
+        text_and_img_pdf.extend_from_slice(b"4 0 obj << /Length 73 >>\nstream\nBT /F1 12 Tf (Searchable paragraph with plenty of characters) Tj ET /Im1 Do\nendstream\nendobj\n");
+        text_and_img_pdf.extend_from_slice(b"5 0 obj << /Type /XObject /Subtype /Image /Width 10 /Height 10 >> endobj\n%%EOF");
+        let text_and_img_path = dir.path().join("text-and-image.pdf");
+        std::fs::write(&text_and_img_path, &text_and_img_pdf)?;
+
+        let err = extract_attachment(
+            &text_and_img_path,
+            &fixture_attachment("text-and-image.pdf", text_and_img_pdf.len() as u64),
+            AiProvider::DeepSeek,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ExtractError::IncompleteExtraction { .. }),
+            "PDF with text + image must fail with IncompleteExtraction, got {err:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn xlsx_preserves_sparse_columns_and_rejects_broken_rels_strings_and_xml() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+
+        // (a) Sparse coordinates A1/C1, A2/C2, C3 must keep empty middle columns.
+        let sparse = dir.path().join("sparse.xlsx");
+        {
+            let mut zip = ZipWriter::new(File::create(&sparse)?);
+            zip.start_file("xl/workbook.xml", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>
+                    <sheet name="Ledger" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            )?;
+            zip.start_file("xl/_rels/workbook.xml.rels", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>"#,
+            )?;
+            zip.start_file("xl/sharedStrings.xml", SimpleFileOptions::default())?;
+            zip.write_all(r#"<sst><si><t>收入</t></si><si><t>成本</t></si></sst>"#.as_bytes())?;
+            zip.start_file("xl/worksheets/sheet1.xml", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<worksheet><sheetData>
+                    <row r="1"><c r="A1" t="s"><v>0</v></c><c r="C1" t="s"><v>1</v></c></row>
+                    <row r="2"><c r="A2"><v>100</v></c><c r="C2"><v>40</v></c></row>
+                    <row r="3"><c r="C3"><v>99</v></c></row>
+                </sheetData></worksheet>"#,
+            )?;
+            zip.finish()?;
+        }
         let extracted = extract_attachment(
-            &path,
-            &fixture_attachment("pictured.docx", std::fs::metadata(&path)?.len()),
+            &sparse,
+            &fixture_attachment("sparse.xlsx", std::fs::metadata(&sparse)?.len()),
             AiProvider::DeepSeek,
         )?;
-        let ExtractedAttachment::TextChunks { uncovered, .. } = &extracted else {
-            panic!("expected TextChunks, got {extracted:?}");
+        let ExtractedAttachment::TextChunks { chunks, .. } = extracted else {
+            panic!("expected TextChunks");
         };
-        assert!(!uncovered.is_empty());
-        let built = build_chunked_requests("q", &[], &[], &[extracted])?;
-        assert!(built.uncovered.iter().any(|entry| entry.contains("pictured.docx")));
+        let text = chunks.join("\n");
+        assert!(text.contains("收入\t\t成本"), "got:\n{text}");
+        assert!(text.contains("100\t\t40"), "got:\n{text}");
+        assert!(text.contains("\t\t99"), "got:\n{text}");
+
+        // (b) Missing relationship for rId1 must fail instead of guessing sheet1.xml.
+        let missing_rel = dir.path().join("missing-rel.xlsx");
+        {
+            let mut zip = ZipWriter::new(File::create(&missing_rel)?);
+            zip.start_file("xl/workbook.xml", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>
+                    <sheet name="Actual" sheetId="1" r:id="rId9"/></sheets></workbook>"#,
+            )?;
+            zip.start_file("xl/_rels/workbook.xml.rels", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>"#,
+            )?;
+            zip.start_file("xl/worksheets/sheet1.xml", SimpleFileOptions::default())?;
+            zip.write_all(br#"<worksheet><sheetData><row><c r="A1"><v>wrong</v></c></row></sheetData></worksheet>"#)?;
+            zip.finish()?;
+        }
+        let err = extract_attachment(
+            &missing_rel,
+            &fixture_attachment("missing-rel.xlsx", std::fs::metadata(&missing_rel)?.len()),
+            AiProvider::Grok,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Actual"), "err: {err}");
+        assert!(err.to_string().contains("rId9"), "err: {err}");
+
+        // (c) Missing workbook.xml.rels file must fail instead of guessing sheetN.xml.
+        let no_rels_file = dir.path().join("no-rels.xlsx");
+        {
+            let mut zip = ZipWriter::new(File::create(&no_rels_file)?);
+            zip.start_file("xl/workbook.xml", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>
+                    <sheet name="One" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            )?;
+            zip.start_file("xl/worksheets/sheet1.xml", SimpleFileOptions::default())?;
+            zip.write_all(br#"<worksheet><sheetData><row><c r="A1"><v>guess</v></c></row></sheetData></worksheet>"#)?;
+            zip.finish()?;
+        }
+        assert!(
+            extract_attachment(
+                &no_rels_file,
+                &fixture_attachment("no-rels.xlsx", std::fs::metadata(&no_rels_file)?.len()),
+                AiProvider::Grok,
+            )
+            .is_err()
+        );
+
+        // (d) Out-of-bounds and non-numeric shared string indices must error.
+        for bad_idx in ["99", "not-a-num"] {
+            let bad_ss = dir.path().join(format!("bad-ss-{bad_idx}.xlsx"));
+            {
+                let mut zip = ZipWriter::new(File::create(&bad_ss)?);
+                zip.start_file("xl/workbook.xml", SimpleFileOptions::default())?;
+                zip.write_all(
+                    br#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>
+                        <sheet name="One" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+                )?;
+                zip.start_file("xl/_rels/workbook.xml.rels", SimpleFileOptions::default())?;
+                zip.write_all(
+                    br#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>"#,
+                )?;
+                zip.start_file("xl/sharedStrings.xml", SimpleFileOptions::default())?;
+                zip.write_all(br#"<sst><si><t>only</t></si></sst>"#)?;
+                zip.start_file("xl/worksheets/sheet1.xml", SimpleFileOptions::default())?;
+                zip.write_all(
+                    format!(
+                        r#"<worksheet><sheetData><row><c r="A1" t="s"><v>{bad_idx}</v></c></row></sheetData></worksheet>"#
+                    )
+                    .as_bytes(),
+                )?;
+                zip.finish()?;
+            }
+            assert!(
+                extract_attachment(
+                    &bad_ss,
+                    &fixture_attachment("bad-ss.xlsx", std::fs::metadata(&bad_ss)?.len()),
+                    AiProvider::Grok,
+                )
+                .is_err(),
+                "shared string index '{bad_idx}' must fail"
+            );
+        }
+
+        // (e) Malformed XML in workbook.xml.rels or workbook.xml must error instead of returning partial sheets.
+        let bad_rels_xml = dir.path().join("bad-rels-xml.xlsx");
+        {
+            let mut zip = ZipWriter::new(File::create(&bad_rels_xml)?);
+            zip.start_file("xl/workbook.xml", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>
+                    <sheet name="One" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            )?;
+            zip.start_file("xl/_rels/workbook.xml.rels", SimpleFileOptions::default())?;
+            zip.write_all(br#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/><broken"#)?;
+            zip.start_file("xl/worksheets/sheet1.xml", SimpleFileOptions::default())?;
+            zip.write_all(br#"<worksheet><sheetData><row><c r="A1"><v>ok</v></c></row></sheetData></worksheet>"#)?;
+            zip.finish()?;
+        }
+        assert!(
+            extract_attachment(
+                &bad_rels_xml,
+                &fixture_attachment("bad-rels-xml.xlsx", std::fs::metadata(&bad_rels_xml)?.len()),
+                AiProvider::Grok,
+            )
+            .is_err()
+        );
+
+        let bad_wb_xml = dir.path().join("bad-wb-xml.xlsx");
+        {
+            let mut zip = ZipWriter::new(File::create(&bad_wb_xml)?);
+            zip.start_file("xl/workbook.xml", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>
+                    <sheet name="One" sheetId="1" r:id="rId1"/><sheet name="Broken"#,
+            )?;
+            zip.start_file("xl/_rels/workbook.xml.rels", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>"#,
+            )?;
+            zip.start_file("xl/worksheets/sheet1.xml", SimpleFileOptions::default())?;
+            zip.write_all(br#"<worksheet><sheetData><row><c r="A1"><v>ok</v></c></row></sheetData></worksheet>"#)?;
+            zip.finish()?;
+        }
+        assert!(
+            extract_attachment(
+                &bad_wb_xml,
+                &fixture_attachment("bad-wb-xml.xlsx", std::fs::metadata(&bad_wb_xml)?.len()),
+                AiProvider::Grok,
+            )
+            .is_err()
+        );
+
+        // (f) Embedded chart in XLSX must fail with IncompleteExtraction.
+        let charted = dir.path().join("charted.xlsx");
+        {
+            let mut zip = ZipWriter::new(File::create(&charted)?);
+            zip.start_file("xl/workbook.xml", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>
+                    <sheet name="One" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            )?;
+            zip.start_file("xl/_rels/workbook.xml.rels", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>"#,
+            )?;
+            zip.start_file("xl/worksheets/sheet1.xml", SimpleFileOptions::default())?;
+            zip.write_all(br#"<worksheet><sheetData><row><c r="A1"><v>ok</v></c></row></sheetData></worksheet>"#)?;
+            zip.start_file("xl/charts/chart1.xml", SimpleFileOptions::default())?;
+            zip.write_all(br#"<chartSpace/>"#)?;
+            zip.finish()?;
+        }
+        let err = extract_attachment(
+            &charted,
+            &fixture_attachment("charted.xlsx", std::fs::metadata(&charted)?.len()),
+            AiProvider::Grok,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ExtractError::IncompleteExtraction { .. }));
         Ok(())
     }
 }
