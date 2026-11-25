@@ -38,6 +38,7 @@ impl Client {
                 PRIMARY KEY (kind, id)
              );
              CREATE TABLE IF NOT EXISTS cancelled_downloads (id TEXT PRIMARY KEY);
+             CREATE TABLE IF NOT EXISTS discarded_uploads (id TEXT PRIMARY KEY);
              CREATE TABLE IF NOT EXISTS send_failure_notices (
                 kind TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY (kind, id)
              );

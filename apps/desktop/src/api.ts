@@ -90,7 +90,7 @@ export type ForwardTarget = {
 };
 export type ViewerForwardItem = {
   target: ForwardTarget;
-  status: "sent" | "queued" | "failed";
+  status: "sent" | "queued" | "failed" | "cancelled";
   error?: string | null;
   cache_error?: string | null;
 };

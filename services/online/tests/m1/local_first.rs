@@ -2087,8 +2087,127 @@ async fn viewer_discarded_batch_target_not_republished_on_sibling_retry() -> Res
             .any(|m| m.attachment.as_ref().is_some_and(|a| a.id == edited_dave_id))
     );
 
-    alice.close().await;
+    // 3. Viewer full-batch retry (forward_or_queue_media) after main-window discard:
+    //    replaying the original request with the same batch_id & full targets must NOT
+    //    recreate or republish the discarded target (even across client restart), while a
+    //    new explicit forward with new IDs succeeds cleanly.
+    let bob_id = bob.user.id;
+    let bob_token = bob.session_token().to_owned();
+    bob.remove_contact(carol.user.id).await?;
+    bob.remove_contact(dave.user.id).await?;
+    let replay_req = forwarding_request(&[group_ok, dm_carol, dm_dave]);
+    let replay_group_id = replay_req.targets[0].attachment_id;
+    let replay_carol_id = replay_req.targets[1].attachment_id;
+    let replay_dave_id = replay_req.targets[2].attachment_id;
+
+    let replay_partial = bob.forward_or_queue_media(source_id, &replay_req).await?;
+    assert_eq!(replay_partial[0].status, "sent");
+    assert_eq!(replay_partial[1].status, "failed");
+    assert_eq!(replay_partial[2].status, "failed");
+    let group_replay_before: (i64, Option<i64>) = sqlx::query_as(
+        "SELECT seq, (extract(epoch FROM expires_at)*1000)::BIGINT FROM messages WHERE attachment_id = $1",
+    )
+    .bind(replay_group_id)
+    .fetch_one(&db)
+    .await?;
+
+    bob.discard(replay_carol_id, Direction::Upload).await?;
+    assert_eq!(direct(&bob, &carol).await?, dm_carol);
+    assert_eq!(direct(&bob, &dave).await?, dm_dave);
+
+    let replay_out = bob.forward_or_queue_media(source_id, &replay_req).await?;
+    assert_eq!(replay_out[0].status, "sent");
+    assert_eq!(replay_out[1].status, "cancelled");
+    assert_eq!(replay_out[2].status, "sent");
+    assert!(
+        !bob.transfers()
+            .await?
+            .iter()
+            .any(|t| t.attachment.id == replay_carol_id),
+        "discarded target must not be recreated in local transfers by full-batch replay"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE attachment_id = $1")
+            .bind(replay_carol_id)
+            .fetch_one(&db)
+            .await?,
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE attachment_id = $1")
+            .bind(replay_dave_id)
+            .fetch_one(&db)
+            .await?,
+        1
+    );
+    let group_replay_after: (i64, Option<i64>) = sqlx::query_as(
+        "SELECT seq, (extract(epoch FROM expires_at)*1000)::BIGINT FROM messages WHERE attachment_id = $1",
+    )
+    .bind(replay_group_id)
+    .fetch_one(&db)
+    .await?;
+    assert_eq!(group_replay_before, group_replay_after);
+
     bob.close().await;
+    drop(bob);
+    let bob_restarted = Client::restore(dir_b.path(), &server, bob_id, &bob_token).await?;
+    let after_restart = bob_restarted
+        .forward_or_queue_media(source_id, &replay_req)
+        .await?;
+    assert_eq!(after_restart[0].status, "sent");
+    assert_eq!(after_restart[1].status, "cancelled");
+    assert_eq!(after_restart[2].status, "sent");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE attachment_id = $1")
+            .bind(replay_carol_id)
+            .fetch_one(&db)
+            .await?,
+        0
+    );
+
+    carol.sync().await?;
+    dave.sync().await?;
+    assert!(
+        !carol
+            .messages(dm_carol, None)
+            .await?
+            .items
+            .iter()
+            .any(|m| m.attachment.as_ref().is_some_and(|a| a.id == replay_carol_id))
+    );
+    assert!(
+        dave.messages(dm_dave, None)
+            .await?
+            .items
+            .iter()
+            .any(|m| m.attachment.as_ref().is_some_and(|a| a.id == replay_dave_id))
+    );
+
+    let explicit_new_req = forwarding_request(&[dm_carol]);
+    let explicit_carol_id = explicit_new_req.targets[0].attachment_id;
+    let explicit_out = bob_restarted
+        .forward_or_queue_media(source_id, &explicit_new_req)
+        .await?;
+    assert_eq!(explicit_out[0].status, "sent");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE attachment_id = $1")
+            .bind(explicit_carol_id)
+            .fetch_one(&db)
+            .await?,
+        1
+    );
+    carol.sync().await?;
+    assert!(
+        carol
+            .messages(dm_carol, None)
+            .await?
+            .items
+            .iter()
+            .any(|m| m.attachment.as_ref().is_some_and(|a| a.id == explicit_carol_id))
+    );
+
+    alice.close().await;
+    bob_restarted.close().await;
     carol.close().await;
     dave.close().await;
     server_task.abort();
