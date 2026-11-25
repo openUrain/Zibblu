@@ -196,6 +196,12 @@ pub struct Conversation {
     pub unread: i64,
     #[serde(default)]
     pub read_through: i64,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub manual_unread: bool,
+    #[serde(default)]
+    pub muted: bool,
 }
 
 #[derive(Serialize, Deserialize)]

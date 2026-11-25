@@ -1106,7 +1106,7 @@ impl Client {
             .bind(now)
             .execute(&mut *tx)
             .await?;
-        let removed_public: Vec<String> = sqlx::query_scalar(
+        let mut removed_public: Vec<String> = sqlx::query_scalar(
             "DELETE FROM public_cache_files
              WHERE device_id = ?1 AND (
                 expires_at <= ?2
@@ -1121,6 +1121,11 @@ impl Client {
         .bind(now)
         .fetch_all(&mut *tx)
         .await?;
+        for rel in self.prune_profile_cache(&mut tx).await? {
+            if !removed_public.contains(&rel) {
+                removed_public.push(rel);
+            }
+        }
         let valid_public_rel: HashSet<String> = sqlx::query_scalar(
             "SELECT rel_path FROM public_cache_files WHERE device_id = ?1",
         )
@@ -1165,32 +1170,37 @@ impl Client {
 
         let (public_candidates, tmp_candidates) = tokio::task::spawn_blocking(move || {
             let mut public_candidates = Vec::new();
-            for sub in ["avatars", "covers"] {
-                let dir = public_root.join(sub);
-                if let Ok(entries) = fs::read_dir(&dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        let Ok(meta) = fs::symlink_metadata(&path) else { continue };
-                        if !meta.is_file() || staging::is_link(&meta) {
-                            continue;
-                        }
-                        if let Ok(rel) = path.strip_prefix(&profile_dir) {
-                            let rel_str = rel.to_string_lossy().replace('\\', "/");
-                            if !valid_public_rel.contains(&rel_str) {
-                                public_candidates.push((rel_str, path));
-                            }
+            if public_root.is_dir() {
+                for entry in walkdir::WalkDir::new(&public_root)
+                    .follow_links(false)
+                    .into_iter()
+                    .flatten()
+                {
+                    let path = entry.path();
+                    let Ok(meta) = fs::symlink_metadata(path) else { continue };
+                    if !meta.is_file() || staging::is_link(&meta) {
+                        continue;
+                    }
+                    if let Ok(rel) = path.strip_prefix(&profile_dir) {
+                        let rel_str = rel.to_string_lossy().replace('\\', "/");
+                        if !valid_public_rel.contains(&rel_str) {
+                            public_candidates.push((rel_str, path.to_path_buf()));
                         }
                     }
                 }
             }
             let mut tmp_candidates = Vec::new();
-            if let Ok(entries) = fs::read_dir(&tmp_root) {
-                for entry in entries.flatten() {
+            if tmp_root.is_dir() {
+                for entry in walkdir::WalkDir::new(&tmp_root)
+                    .follow_links(false)
+                    .into_iter()
+                    .flatten()
+                {
                     let path = entry.path();
                     let name = entry.file_name().to_string_lossy().into_owned();
-                    let Ok(meta) = fs::symlink_metadata(&path) else { continue };
+                    let Ok(meta) = fs::symlink_metadata(path) else { continue };
                     if meta.is_file() && !staging::is_link(&meta) {
-                        tmp_candidates.push((name, path));
+                        tmp_candidates.push((name, path.to_path_buf()));
                     }
                 }
             }

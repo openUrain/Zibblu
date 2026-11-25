@@ -329,6 +329,11 @@ impl Client {
         if seq.is_none() {
             sqlx::query("DELETE FROM local_read_positions WHERE conversation_id = ?")
                 .bind(&chat).execute(&mut *tx).await?;
+            super::ai_prompts::delete_ai_prompts_in_tx(&mut tx, conversation).await?;
+        }
+        if delete_chat {
+            sqlx::query("DELETE FROM conversation_prefs WHERE conversation_id = ?")
+                .bind(&chat).execute(&mut *tx).await?;
         }
         // Signal active downloads before committing cancellation; external files already published remain user-owned.
         for id in &downloads {
@@ -724,10 +729,18 @@ impl Client {
                 let job = match (state, attachment) {
                     (BatchTargetState::Discarded, _) | (_, None) => continue,
                     (BatchTargetState::Existing(mut existing), _) => {
+                        let conv = target.conversation_id.to_string();
                         sqlx::query("DELETE FROM local_deleted_chats WHERE conversation_id = ?")
-                            .bind(target.conversation_id.to_string())
+                            .bind(&conv)
                             .execute(&mut *tx)
                             .await?;
+                        sqlx::query(
+                            "UPDATE conversation_prefs SET hidden_at_seq = NULL
+                             WHERE conversation_id = ? AND hidden_at_seq IS NOT NULL",
+                        )
+                        .bind(&conv)
+                        .execute(&mut *tx)
+                        .await?;
                         if matches!(
                             existing.transfer.status,
                             TransferStatus::Paused | TransferStatus::Failed
@@ -740,10 +753,18 @@ impl Client {
                         existing
                     }
                     (BatchTargetState::New, Some(attachment)) => {
+                        let conv = target.conversation_id.to_string();
                         sqlx::query("DELETE FROM local_deleted_chats WHERE conversation_id = ?")
-                            .bind(target.conversation_id.to_string())
+                            .bind(&conv)
                             .execute(&mut *tx)
                             .await?;
+                        sqlx::query(
+                            "UPDATE conversation_prefs SET hidden_at_seq = NULL
+                             WHERE conversation_id = ? AND hidden_at_seq IS NOT NULL",
+                        )
+                        .bind(&conv)
+                        .execute(&mut *tx)
+                        .await?;
                         let mut job = Job::new(attachment, target.conversation_id, Direction::Upload);
                         job.transfer.sharer = Some(self.user.clone());
                         job.transfer.created_at = Some(now);
@@ -863,10 +884,18 @@ impl Client {
                 match state {
                     DirectTargetState::Discarded => continue,
                     DirectTargetState::Existing(mut existing) => {
+                        let conv = target.conversation_id.to_string();
                         sqlx::query("DELETE FROM local_deleted_chats WHERE conversation_id = ?")
-                            .bind(target.conversation_id.to_string())
+                            .bind(&conv)
                             .execute(&mut *tx)
                             .await?;
+                        sqlx::query(
+                            "UPDATE conversation_prefs SET hidden_at_seq = NULL
+                             WHERE conversation_id = ? AND hidden_at_seq IS NOT NULL",
+                        )
+                        .bind(&conv)
+                        .execute(&mut *tx)
+                        .await?;
                         if matches!(
                             existing.transfer.status,
                             TransferStatus::Paused | TransferStatus::Failed | TransferStatus::Expired
@@ -878,10 +907,18 @@ impl Client {
                         }
                     }
                     DirectTargetState::New => {
+                        let conv = target.conversation_id.to_string();
                         sqlx::query("DELETE FROM local_deleted_chats WHERE conversation_id = ?")
-                            .bind(target.conversation_id.to_string())
+                            .bind(&conv)
                             .execute(&mut *tx)
                             .await?;
+                        sqlx::query(
+                            "UPDATE conversation_prefs SET hidden_at_seq = NULL
+                             WHERE conversation_id = ? AND hidden_at_seq IS NOT NULL",
+                        )
+                        .bind(&conv)
+                        .execute(&mut *tx)
+                        .await?;
                         let mut att = source_att.clone();
                         att.id = target.attachment_id;
                         let mut job = Job::new(att, target.conversation_id, Direction::Upload);
@@ -3100,6 +3137,9 @@ mod tests {
                 unread: 0,
                 read_through: 0,
                 joined_after: None,
+                pinned: false,
+                manual_unread: false,
+                muted: false,
             }],
             pending_contacts: Vec::new(),
             remarks: HashMap::new(),
@@ -3281,6 +3321,9 @@ mod tests {
                 unread: 0,
                 read_through: 0,
                 joined_after: None,
+                pinned: false,
+                manual_unread: false,
+                muted: false,
             }],
             pending_contacts: Vec::new(),
             remarks: HashMap::new(),
@@ -3536,6 +3579,9 @@ mod tests {
                     unread: 0,
                     read_through: 0,
                     joined_after: None,
+                    pinned: false,
+                    manual_unread: false,
+                    muted: false,
                 })
                 .collect(),
             pending_contacts: Vec::new(),
