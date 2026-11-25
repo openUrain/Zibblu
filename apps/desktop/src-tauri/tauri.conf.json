@@ -29,6 +29,9 @@
     "active": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.png", "icons/icon.ico"],
+    "resources": {
+      "bin/ffmpeg/*": "ffmpeg/"
+    },
     "windows": {
       "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
       "nsis": {

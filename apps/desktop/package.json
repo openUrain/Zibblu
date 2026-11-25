@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "stage:ffmpeg:windows": "powershell -ExecutionPolicy Bypass -File scripts/stage-ffmpeg-windows.ps1",
+    "tauri:build:windows": "npm run stage:ffmpeg:windows && tauri build",
     "tauri": "tauri"
   },
   "dependencies": {

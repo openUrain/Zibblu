@@ -481,7 +481,7 @@ pub struct ForwardTarget {
     pub attachment_id: Uuid,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForwardRequest {
     pub batch_id: Uuid,
     pub targets: Vec<ForwardTarget>,

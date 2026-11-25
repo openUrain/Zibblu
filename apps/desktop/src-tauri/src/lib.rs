@@ -100,6 +100,12 @@ pub fn run() {
                 }
             };
             app.manage(Desktop::new(data.clone()));
+            #[cfg(windows)]
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                app.state::<Desktop>()
+                    .video_exports
+                    .set_bundled_ffmpeg_dir(resource_dir.join("ffmpeg"));
+            }
             #[cfg(target_os = "ios")]
             ios::install();
             let config = &app.config().app.windows[0];

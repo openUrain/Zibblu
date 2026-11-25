@@ -275,6 +275,7 @@ function ImageCanvas({
   const drag = useRef<(Point & { id: number }) | undefined>(undefined);
   const annotatorSnapshotRef = useRef<ImageAnnotationDoc | null>(null);
   const cachedExportRef = useRef<{ bytes: Uint8Array; fileName: string } | null>(null);
+  const pendingCurrentSendRef = useRef<{ key: string; batchId: string; target: ForwardTarget } | null>(null);
   const [viewport, setViewport] = useState<Size>(empty);
   const [image, setImage] = useState<Size>(empty);
   const [view, setView] = useState<View>(centered);
@@ -296,6 +297,7 @@ function ImageCanvas({
 
   useEffect(() => {
     cachedExportRef.current = null;
+    pendingCurrentSendRef.current = null;
   }, [annotationDoc]);
 
   useEffect(() => {
@@ -473,13 +475,21 @@ function ImageCanvas({
     setNotice("");
     setSendingMedia(true);
     try {
-      const batchId = crypto.randomUUID();
-      const target: ForwardTarget = { conversation_id, attachment_id: crypto.randomUUID() };
+      const sendKey = `${file.id}:${hasUnsentEdits ? "edited" : "orig"}`;
+      if (!pendingCurrentSendRef.current || pendingCurrentSendRef.current.key !== sendKey) {
+        pendingCurrentSendRef.current = {
+          key: sendKey,
+          batchId: crypto.randomUUID(),
+          target: { conversation_id, attachment_id: crypto.randomUUID() },
+        };
+      }
+      const { batchId, target } = pendingCurrentSendRef.current;
       const res = await executeSendBatch(batchId, [target]);
       const failedItem = res.items.find(item => item.status === "failed");
       if (failedItem) {
         throw new Error(failedItem.error || t("Could not send media", "发送失败"));
       }
+      pendingCurrentSendRef.current = null;
       forceCloseWindow();
     } catch (error) {
       setActionError(errorMessage(error));
@@ -629,10 +639,10 @@ function ImageCanvas({
       open={forwardOpen}
       submitting={sendingMedia}
       onClose={() => setForwardOpen(false)}
-      onConfirm={async targets => {
+      onConfirm={async (batchId, targets) => {
         setSendingMedia(true);
         try {
-          const res = await executeSendBatch(crypto.randomUUID(), targets);
+          const res = await executeSendBatch(batchId, targets);
           if (!res.items.some(item => item.status === "failed")) {
             forceCloseWindow();
           }
@@ -641,10 +651,10 @@ function ImageCanvas({
           setSendingMedia(false);
         }
       }}
-      onRetryFailed={async (batchId, failedTargets) => {
+      onRetryFailed={async (batchId, fullTargets) => {
         setSendingMedia(true);
         try {
-          return await executeSendBatch(batchId, failedTargets);
+          return await executeSendBatch(batchId, fullTargets);
         } finally {
           setSendingMedia(false);
         }
@@ -691,6 +701,7 @@ function VideoCanvas({
   const resumeState = useRef<{ time: number; play: boolean } | null>(null);
   const prevHasOriginal = useRef(Boolean(video?.has_local_original));
   const pendingVideoSendRef = useRef<PendingVideoSend | null>(null);
+  const pendingCurrentSendRef = useRef<{ key: string; batchId: string; target: ForwardTarget } | null>(null);
   const [sourceRevision, setSourceRevision] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -969,8 +980,15 @@ function VideoCanvas({
 
   async function sendCurrentChat() {
     if (sendingMedia || exportRunning || trimming || failed || draft) return;
-    const batchId = crypto.randomUUID();
-    const target: ForwardTarget = { conversation_id, attachment_id: crypto.randomUUID() };
+    const sendKey = `${file.id}:${trimRange ? `${trimRange.startSec}-${trimRange.endSec}` : "orig"}`;
+    if (!pendingCurrentSendRef.current || pendingCurrentSendRef.current.key !== sendKey) {
+      pendingCurrentSendRef.current = {
+        key: sendKey,
+        batchId: crypto.randomUUID(),
+        target: { conversation_id, attachment_id: crypto.randomUUID() },
+      };
+    }
+    const { batchId, target } = pendingCurrentSendRef.current;
     if (trimRange !== null) {
       await startTrimmedExportAndSend(batchId, [target]);
       return;
@@ -984,6 +1002,7 @@ function VideoCanvas({
       if (failedItem) {
         throw new Error(failedItem.error || t("Could not send media", "发送失败"));
       }
+      pendingCurrentSendRef.current = null;
       forceCloseWindow();
     } catch (error) {
       setActionError(errorMessage(error));
@@ -1164,13 +1183,13 @@ function VideoCanvas({
       open={forwardOpen}
       submitting={sendingMedia}
       onClose={() => setForwardOpen(false)}
-      onConfirm={async targets => {
+      onConfirm={async (batchId, targets) => {
         if (trimRange !== null) {
-          return await executeSendVideo(crypto.randomUUID(), targets);
+          return await executeSendVideo(batchId, targets);
         }
         setSendingMedia(true);
         try {
-          const res = await executeSendVideo(crypto.randomUUID(), targets);
+          const res = await executeSendVideo(batchId, targets);
           if (!res.items.some(item => item.status === "failed")) {
             forceCloseWindow();
           }
@@ -1179,10 +1198,10 @@ function VideoCanvas({
           setSendingMedia(false);
         }
       }}
-      onRetryFailed={async (batchId, failedTargets) => {
+      onRetryFailed={async (batchId, fullTargets) => {
         setSendingMedia(true);
         try {
-          return await executeSendVideo(batchId, failedTargets);
+          return await executeSendVideo(batchId, fullTargets);
         } finally {
           setSendingMedia(false);
         }

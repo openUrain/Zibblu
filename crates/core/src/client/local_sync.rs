@@ -148,15 +148,6 @@ impl Client {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
              );
-             CREATE TABLE IF NOT EXISTS pending_forwards (
-                attachment_id TEXT PRIMARY KEY,
-                batch_id TEXT NOT NULL,
-                source_id TEXT NOT NULL,
-                conversation_id TEXT NOT NULL,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                next_attempt INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT
-             );
              CREATE TABLE IF NOT EXISTS video_preview_partials (
                 device_id TEXT NOT NULL,
                 conversation_id TEXT NOT NULL,
@@ -198,8 +189,8 @@ impl Client {
                 FROM inbox
                 UNION ALL SELECT -id, conversation_id, NULL, draft FROM outbox WHERE draft IS NOT NULL
                   AND NOT EXISTS (SELECT 1 FROM local_suppressed_sends s WHERE s.kind = 'text' AND s.id = outbox.nonce);
-             UPDATE transfers SET payload = json_set(payload, '$.status', 'queued')
-                WHERE json_extract(payload, '$.status') = 'running';";
+             UPDATE transfers SET payload = json_set(payload, '$.status', 'queued', '$.retry_at', 0)
+                WHERE json_extract(payload, '$.status') IN ('running', 'queued');";
         for statement in statements.split_terminator(';') {
             sqlx::query(statement).execute(&mut *tx).await?;
         }
@@ -330,7 +321,7 @@ impl Client {
                             .or_else(|| message.attachment.as_ref().map(|file| file.id))
                         {
                             let suppressed: bool = sqlx::query_scalar(
-                                "SELECT EXISTS(SELECT 1 FROM local_suppressed_sends WHERE kind = 'upload' AND id = ? AND conversation_id = ?)",
+                                "SELECT EXISTS(SELECT 1 FROM local_suppressed_sends WHERE kind IN ('upload', 'forward') AND id = ? AND conversation_id = ?)",
                             ).bind(id.to_string()).bind(message.conversation_id.to_string()).fetch_one(&mut *tx).await?;
                             if suppressed {
                                 sqlx::query("INSERT OR IGNORE INTO local_deleted_messages (seq, conversation_id, attachment_id) VALUES (?,?,?)")

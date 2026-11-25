@@ -72,8 +72,47 @@ struct FfprobeStream {
     duration: Option<String>,
 }
 
-fn new_media_command(program: &str) -> Command {
-    let mut cmd = Command::new(program);
+pub fn resolve_media_binary(program: &str, bundled_dir: Option<&Path>) -> PathBuf {
+    let exe_name = if cfg!(windows) {
+        format!("{program}.exe")
+    } else {
+        program.to_owned()
+    };
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = bundled_dir {
+        candidates.push(dir.join(&exe_name));
+        candidates.push(dir.join("ffmpeg").join(&exe_name));
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(exe_dir) = exe.parent()
+    {
+        candidates.push(exe_dir.join("ffmpeg").join(&exe_name));
+        candidates.push(exe_dir.join("bin").join("ffmpeg").join(&exe_name));
+        candidates.push(exe_dir.join(&exe_name));
+    }
+    if let Some(env_dir) = std::env::var_os("ZIBBLU_FFMPEG_DIR") {
+        let dir = PathBuf::from(env_dir);
+        candidates.push(dir.join(&exe_name));
+        candidates.push(dir.join("ffmpeg").join(&exe_name));
+    }
+    #[cfg(debug_assertions)]
+    {
+        candidates.push(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("bin")
+                .join("ffmpeg")
+                .join(&exe_name),
+        );
+    }
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from(program))
+}
+
+fn new_media_command(program: &str, bundled_dir: Option<&Path>) -> Command {
+    let resolved = resolve_media_binary(program, bundled_dir);
+    let mut cmd = Command::new(resolved);
     cmd.stdin(Stdio::null());
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -82,7 +121,7 @@ fn new_media_command(program: &str) -> Command {
 
 fn map_spawn_error(program: &str, err: std::io::Error) -> anyhow::Error {
     if err.kind() == ErrorKind::NotFound {
-        anyhow!("`{program}` executable was not found. Install FFmpeg and ensure `{program}` is on PATH.")
+        anyhow!("`{program}` runtime was not found in the bundled ffmpeg directory or on PATH.")
     } else {
         anyhow!("Failed to launch `{program}`: {err}")
     }
@@ -143,9 +182,9 @@ pub fn parse_ffprobe_json(raw: &str) -> Result<VideoProbeInfo> {
     })
 }
 
-pub async fn probe_video(path: &Path) -> Result<VideoProbeInfo> {
+pub async fn probe_video(path: &Path, bundled_dir: Option<&Path>) -> Result<VideoProbeInfo> {
     ensure!(path.is_file(), "Video file does not exist");
-    let mut cmd = new_media_command("ffprobe");
+    let mut cmd = new_media_command("ffprobe", bundled_dir);
     cmd.args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"])
         .arg(path)
         .stdout(Stdio::piped())
@@ -170,8 +209,12 @@ pub async fn probe_video(path: &Path) -> Result<VideoProbeInfo> {
     parse_ffprobe_json(&stdout)
 }
 
-async fn extract_single_thumbnail(path: &Path, timestamp_sec: f64) -> Result<Vec<u8>> {
-    let mut cmd = new_media_command("ffmpeg");
+async fn extract_single_thumbnail(
+    path: &Path,
+    timestamp_sec: f64,
+    bundled_dir: Option<&Path>,
+) -> Result<Vec<u8>> {
+    let mut cmd = new_media_command("ffmpeg", bundled_dir);
     cmd.args(["-v", "error", "-ss", &format!("{timestamp_sec:.3}"), "-i"])
         .arg(path)
         .args([
@@ -222,21 +265,25 @@ async fn extract_single_thumbnail(path: &Path, timestamp_sec: f64) -> Result<Vec
     Ok(bytes)
 }
 
-pub async fn extract_thumbnails(path: &Path, count: usize) -> Result<Vec<Vec<u8>>> {
-    let info = probe_video(path).await?;
+pub async fn extract_thumbnails(
+    path: &Path,
+    count: usize,
+    bundled_dir: Option<&Path>,
+) -> Result<Vec<Vec<u8>>> {
+    let info = probe_video(path, bundled_dir).await?;
     let target_count = count.clamp(8, 12);
 
     timeout(Duration::from_secs(THUMBNAIL_TIMEOUT_SECS), async {
         let mut frames = Vec::with_capacity(target_count);
         for index in 0..target_count {
             let timestamp = info.duration_sec * (index as f64 + 0.5) / (target_count as f64);
-            let frame = extract_single_thumbnail(path, timestamp).await?;
+            let frame = extract_single_thumbnail(path, timestamp, bundled_dir).await?;
             if !frame.is_empty() {
                 frames.push(frame);
             }
         }
         if frames.is_empty() {
-            let fallback = extract_single_thumbnail(path, 0.0).await?;
+            let fallback = extract_single_thumbnail(path, 0.0, bundled_dir).await?;
             if !fallback.is_empty() {
                 frames.push(fallback);
             }
@@ -331,9 +378,18 @@ struct ExportEntry {
 #[derive(Default)]
 pub struct VideoExportRegistry {
     entries: Arc<StdMutex<HashMap<Uuid, ExportEntry>>>,
+    bundled_dir: StdMutex<Option<PathBuf>>,
 }
 
 impl VideoExportRegistry {
+    pub fn set_bundled_ffmpeg_dir(&self, dir: PathBuf) {
+        *self.bundled_dir.lock().expect("bundled ffmpeg dir") = Some(dir);
+    }
+
+    pub fn bundled_ffmpeg_dir(&self) -> Option<PathBuf> {
+        self.bundled_dir.lock().expect("bundled ffmpeg dir").clone()
+    }
+
     pub async fn start_trim_export(
         &self,
         attachment_id: Uuid,
@@ -357,7 +413,8 @@ impl VideoExportRegistry {
         let temp_guard = client.map(|c| c.track_temp_prefix(format!("{TRIM_TEMP_PREFIX}{export_id}")));
         let output_path = tmp_dir.join(format!("{TRIM_TEMP_PREFIX}{export_id}{TRIM_TEMP_SUFFIX}"));
 
-        let mut cmd = new_media_command("ffmpeg");
+        let bundled = self.bundled_ffmpeg_dir();
+        let mut cmd = new_media_command("ffmpeg", bundled.as_deref());
         cmd.args(["-y", "-ss", &format!("{start_sec:.6}"), "-i"])
             .arg(source_path)
             .args([
@@ -718,6 +775,114 @@ mod tests {
         assert!(!trim_b.exists());
         assert!(keep_transfer.is_file());
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn bundled_ffmpeg_probes_extracts_thumbnails_and_exports_trimmed_mp4_without_path() {
+        use super::{
+            VideoExportRegistry, extract_thumbnails, probe_video, resolve_media_binary,
+        };
+        use sha2::{Digest, Sha256};
+
+        let staged_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("bin")
+            .join("ffmpeg");
+        let ffmpeg_bin = resolve_media_binary("ffmpeg", Some(&staged_dir));
+        let ffprobe_bin = resolve_media_binary("ffprobe", Some(&staged_dir));
+        if cfg!(windows) && (!staged_dir.join("ffmpeg.exe").is_file() || !staged_dir.join("ffprobe.exe").is_file()) {
+            // Skip only if CI has not staged Windows FFmpeg runtime before running unit tests.
+            return;
+        }
+        assert!(ffmpeg_bin.is_absolute() && ffmpeg_bin.is_file());
+        assert!(ffprobe_bin.is_absolute() && ffprobe_bin.is_file());
+
+        let root = std::env::temp_dir().join(format!("zibblu-trim-e2e-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let fixture = root.join("source.mp4");
+
+        let status = super::new_media_command("ffmpeg", Some(&staged_dir))
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x240:rate=25",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000",
+                "-t",
+                "3",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+            ])
+            .arg(&fixture)
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success(), "failed to generate test mp4 fixture");
+
+        let orig_bytes = std::fs::read(&fixture).unwrap();
+        let orig_sha = Sha256::digest(&orig_bytes);
+
+        let info = probe_video(&fixture, Some(&staged_dir)).await.unwrap();
+        assert_eq!((info.width, info.height), (320, 240));
+        assert!(info.has_audio);
+        assert!((2.7..=3.3).contains(&info.duration_sec));
+
+        let thumbs = extract_thumbnails(&fixture, 8, Some(&staged_dir))
+            .await
+            .unwrap();
+        assert_eq!(thumbs.len(), 8);
+        assert!(thumbs.iter().all(|f| !f.is_empty()));
+
+        let registry = VideoExportRegistry::default();
+        registry.set_bundled_ffmpeg_dir(staged_dir.clone());
+        let initial = registry
+            .start_trim_export(
+                Uuid::new_v4(),
+                &fixture,
+                &root,
+                None,
+                0.5,
+                2.0,
+                info.duration_sec,
+            )
+            .await
+            .unwrap();
+        let mut final_progress = initial.clone();
+        for _ in 0..80 {
+            if let Some(p) = registry.status(initial.export_id) {
+                final_progress = p;
+                if final_progress.status != "running" {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(
+            final_progress.status,
+            "complete",
+            "export failed: {:?}",
+            final_progress.error
+        );
+        let exported = registry.take_completed_path(initial.export_id).unwrap();
+        let exported_info = probe_video(&exported, Some(&staged_dir)).await.unwrap();
+        assert!(exported_info.has_audio);
+        assert!((1.2..=1.8).contains(&exported_info.duration_sec));
+        assert_eq!(
+            Sha256::digest(std::fs::read(&fixture).unwrap()),
+            orig_sha,
+            "original video fixture must remain unchanged"
+        );
+        registry.cleanup_entry(initial.export_id).await;
         let _ = std::fs::remove_dir_all(&root);
     }
 }

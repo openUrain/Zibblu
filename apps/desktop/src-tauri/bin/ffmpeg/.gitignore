@@ -1,0 +1,6 @@
+*.exe
+*.dll
+LICENSE
+LICENSE.*
+!NOTICE.txt
+!.gitignore

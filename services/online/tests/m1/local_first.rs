@@ -9,7 +9,7 @@ use axum::{
 use sqlx::{PgPool, SqlitePool};
 use std::{
     path::PathBuf,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
 use zibblu_core::{
     Attachment, AttachmentKind, ContentAck, DeviceSession, ExpiredPayload, ForwardRequest,
@@ -1472,5 +1472,349 @@ async fn wait_for_media_commit(fence: &mut sqlx::Transaction<'_, sqlx::Postgres>
         }
         Ok::<_, anyhow::Error>(())
     }).await??;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn viewer_edited_media_batch_3_and_9_targets_and_offline_restart() -> Result<()> {
+    let db = test_db().await?;
+    let offline = Arc::new(AtomicBool::new(false));
+    let offline_gate = offline.clone();
+    let app = zibblu_online::router_with_retention(
+        db.clone(),
+        Retention {
+            file_secs: Some(604800),
+            upload_secs: Some(86400),
+            ..Retention::default()
+        },
+    )
+    .await?
+    .layer(middleware::from_fn(move |request: Request, next: Next| {
+        let offline = offline_gate.clone();
+        async move {
+            if offline.load(Ordering::SeqCst) {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            }
+            next.run(request).await
+        }
+    }));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let server = format!("http://{}", listener.local_addr()?);
+    let server_task = tokio::spawn(async move { axum::serve(listener, app).await });
+
+    let first = tempfile::tempdir()?;
+    let second = tempfile::tempdir()?;
+    let third = tempfile::tempdir()?;
+    let suffix = &Uuid::new_v4().simple().to_string()[..10];
+    let password = "edited-batch-fixture";
+    let alice = sign_in(first.path(), &server, &format!("ed_a_{suffix}"), password, true).await?;
+    let alice_id = alice.user.id;
+    let alice_token = alice.session_token().to_owned();
+    let bob = sign_in(second.path(), &server, &format!("ed_b_{suffix}"), password, true).await?;
+    let carol = sign_in(third.path(), &server, &format!("ed_c_{suffix}"), password, true).await?;
+
+    let mut chats = vec![direct(&alice, &bob).await?];
+    direct(&alice, &carol).await?;
+    for idx in 0..8 {
+        chats.push(
+            alice
+                .create_conversation(ConversationRequest::Group {
+                    title: format!("edited-grp-{idx}-{suffix}"),
+                    contact_ids: vec![bob.user.id, carol.user.id],
+                })
+                .await?,
+        );
+    }
+    alice.sync().await?;
+    bob.sync().await?;
+    carol.sync().await?;
+
+    let img_path = first.path().join("annotated.png");
+    std::fs::write(&img_path, b"\x89PNG\r\n\x1a\nannotated-fixture-bytes")?;
+
+    // 1. Online 3-target edited batch: single chunk upload for leader + fixed-batch forward for followers.
+    let batch3_id = Uuid::new_v4();
+    let targets3: Vec<ForwardTarget> = chats[..3]
+        .iter()
+        .map(|&conversation_id| ForwardTarget {
+            conversation_id,
+            attachment_id: Uuid::new_v4(),
+        })
+        .collect();
+    let transfers3 = alice
+        .queue_edited_media_batch(
+            "photo_annotated.png".into(),
+            img_path.clone(),
+            batch3_id,
+            targets3.clone(),
+        )
+        .await?;
+    assert_eq!(transfers3.len(), 3);
+    for t in &targets3 {
+        wait_transfer(&alice, t.attachment_id, Direction::Upload, |job| {
+            job.status == TransferStatus::Complete
+        })
+        .await?;
+    }
+    let leader_chunks: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM attachment_chunks WHERE attachment_id = $1")
+            .bind(targets3[0].attachment_id)
+            .fetch_one(&db)
+            .await?;
+    assert_eq!(leader_chunks, 1);
+    let follower_chunks: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM attachment_chunks WHERE attachment_id = ANY($1)")
+            .bind(vec![targets3[1].attachment_id, targets3[2].attachment_id])
+            .fetch_one(&db)
+            .await?;
+    assert_eq!(follower_chunks, 0, "followers must deduplicate via #118 batch forward");
+    let follower_msgs: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM messages WHERE forward_batch = $1")
+            .bind(batch3_id)
+            .fetch_one(&db)
+            .await?;
+    assert_eq!(follower_msgs, 2);
+
+    // 2. Offline 9-target edited batch survives client restart and completes with zero 409s.
+    offline.store(true, Ordering::SeqCst);
+    let batch9_id = Uuid::new_v4();
+    let targets9: Vec<ForwardTarget> = chats
+        .iter()
+        .map(|&conversation_id| ForwardTarget {
+            conversation_id,
+            attachment_id: Uuid::new_v4(),
+        })
+        .collect();
+    let queued9 = alice
+        .queue_edited_media_batch(
+            "clip_trimmed.mp4".into(),
+            img_path.clone(),
+            batch9_id,
+            targets9.clone(),
+        )
+        .await?;
+    assert_eq!(queued9.len(), 9);
+    alice.close().await;
+    drop(alice);
+
+    offline.store(false, Ordering::SeqCst);
+    let alice_restarted = Client::restore(first.path(), &server, alice_id, &alice_token).await?;
+    alice_restarted.resume_queued().await?;
+    for t in &targets9 {
+        wait_transfer(&alice_restarted, t.attachment_id, Direction::Upload, |job| {
+            job.status == TransferStatus::Complete
+        })
+        .await?;
+    }
+    let batch9_follower_msgs: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM messages WHERE forward_batch = $1")
+            .bind(batch9_id)
+            .fetch_one(&db)
+            .await?;
+    assert_eq!(batch9_follower_msgs, 8);
+    let batch9_follower_chunks: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM attachment_chunks WHERE attachment_id = ANY($1)")
+            .bind(targets9[1..].iter().map(|t| t.attachment_id).collect::<Vec<_>>())
+            .fetch_one(&db)
+            .await?;
+    assert_eq!(batch9_follower_chunks, 0);
+
+    alice_restarted.close().await;
+    bob.close().await;
+    carol.close().await;
+    server_task.abort();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn viewer_direct_forward_fixed_batch_retry_revocation_and_tombstones() -> Result<()> {
+    let db = test_db().await?;
+    let offline = Arc::new(AtomicBool::new(false));
+    let offline_gate = offline.clone();
+    let lose_response = Arc::new(AtomicU8::new(0));
+    let response_gate = lose_response.clone();
+
+    let app = zibblu_online::router_with_retention(
+        db.clone(),
+        Retention {
+            file_secs: Some(604800),
+            upload_secs: Some(86400),
+            ..Retention::default()
+        },
+    )
+    .await?
+    .layer(middleware::from_fn(move |request: Request, next: Next| {
+        let offline = offline_gate.clone();
+        let gate = response_gate.clone();
+        async move {
+            if offline.load(Ordering::SeqCst) {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            }
+            let forward = request.uri().path().ends_with("/forward");
+            let response = next.run(request).await;
+            if forward
+                && response.status() == StatusCode::OK
+                && gate
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                    .ok()
+                    == Some(1)
+            {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            }
+            response
+        }
+    }));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let server = format!("http://{}", listener.local_addr()?);
+    let server_task = tokio::spawn(async move { axum::serve(listener, app).await });
+
+    let dir_a = tempfile::tempdir()?;
+    let dir_b = tempfile::tempdir()?;
+    let dir_c = tempfile::tempdir()?;
+    let suffix = &Uuid::new_v4().simple().to_string()[..10];
+    let pw = "viewer-direct-fwd-fixture";
+    let alice = sign_in(dir_a.path(), &server, &format!("df_a_{suffix}"), pw, true).await?;
+    let bob = sign_in(dir_b.path(), &server, &format!("df_b_{suffix}"), pw, true).await?;
+    let carol = sign_in(dir_c.path(), &server, &format!("df_c_{suffix}"), pw, true).await?;
+
+    let source_chat = direct(&alice, &bob).await?;
+    let target_dm = direct(&bob, &carol).await?;
+    let g1 = bob
+        .create_conversation(ConversationRequest::Group {
+            title: format!("df-g1-{suffix}"),
+            contact_ids: vec![alice.user.id, carol.user.id],
+        })
+        .await?;
+    let g2 = bob
+        .create_conversation(ConversationRequest::Group {
+            title: format!("df-g2-{suffix}"),
+            contact_ids: vec![alice.user.id, carol.user.id],
+        })
+        .await?;
+    let deleted_target_chat = bob
+        .create_conversation(ConversationRequest::Group {
+            title: format!("df-del-{suffix}"),
+            contact_ids: vec![alice.user.id, carol.user.id],
+        })
+        .await?;
+    alice.sync().await?;
+    bob.sync().await?;
+    carol.sync().await?;
+
+    let src_file = dir_a.path().join("media.bin");
+    std::fs::write(&src_file, b"unedited-forward-original-bytes")?;
+    let source_id = alice.queue_upload(source_chat, src_file).await?.attachment.id;
+    wait_transfer(&alice, source_id, Direction::Upload, |job| {
+        job.status == TransferStatus::Complete
+    })
+    .await?;
+    bob.sync().await?;
+    let source_seq = bob.attachment(source_id).await?.seq;
+
+    // 1. Partial failure followed by full-batch retry with same batch_id & full ordered targets.
+    bob.remove_contact(carol.user.id).await?;
+    let req_partial = forwarding_request(&[target_dm, g1, g2]);
+    let partial_out = bob.forward_or_queue_media(source_id, &req_partial).await?;
+    assert_eq!(partial_out[0].status, "failed");
+    assert_eq!(partial_out[1].status, "sent");
+    assert_eq!(partial_out[2].status, "sent");
+    let transfers_after_partial = bob.transfers().await?;
+    let failed_job = transfers_after_partial
+        .iter()
+        .find(|t| t.attachment.id == req_partial.targets[0].attachment_id)
+        .expect("failed forward must remain visible in transfers for retry");
+    assert_eq!(failed_job.status, TransferStatus::Failed);
+    assert!(failed_job.error.is_some());
+
+    // Restore permission and retry with the same batch_id & full ordered targets.
+    assert_eq!(direct(&bob, &carol).await?, target_dm);
+    let retried_out = bob.forward_or_queue_media(source_id, &req_partial).await?;
+    assert!(retried_out.iter().all(|item| item.status == "sent"));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE forward_batch = $1")
+            .bind(req_partial.batch_id)
+            .fetch_one(&db)
+            .await?,
+        3
+    );
+
+    // 2. Response loss after DB commit: remains queued+publishing, fail-closed on discard, recovers without duplicate.
+    let req_loss = forwarding_request(&[g1, g2]);
+    lose_response.store(1, Ordering::SeqCst);
+    let loss_out = bob.forward_or_queue_media(source_id, &req_loss).await?;
+    assert!(loss_out.iter().all(|item| item.status == "queued"));
+    assert!(
+        bob.discard(req_loss.targets[0].attachment_id, Direction::Upload)
+            .await
+            .is_err(),
+        "unconfirmed forward must fail closed on discard"
+    );
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+    bob.resume_queued().await?;
+    for t in &req_loss.targets {
+        wait_transfer(&bob, t.attachment_id, Direction::Upload, |job| {
+            job.status == TransferStatus::Complete
+        })
+        .await?;
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE forward_batch = $1")
+            .bind(req_loss.batch_id)
+            .fetch_one(&db)
+            .await?,
+        2
+    );
+
+    // 3. Offline forward WITH local original, then source RECALLED on server while offline:
+    //    must NOT fall back to independent upload; active chat shows Failed, deleted chat follows #117!
+    assert!(alice.attachment(source_id).await?.local_file);
+    offline.store(true, Ordering::SeqCst);
+    let req_revoked = forwarding_request(&[g1, deleted_target_chat]);
+    let offline_out = alice.forward_or_queue_media(source_id, &req_revoked).await?;
+    assert!(offline_out.iter().all(|item| item.status == "queued"));
+    alice.delete_conversation(deleted_target_chat).await?;
+
+    offline.store(false, Ordering::SeqCst);
+    alice.recall_message(source_chat, source_seq).await?;
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+    alice.resume_queued().await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE forward_batch = $1")
+            .bind(req_revoked.batch_id)
+            .fetch_one(&db)
+            .await?,
+        0,
+        "recalled source must never be published via upload fallback"
+    );
+    let alice_transfers = alice.transfers().await?;
+    let active_failed = alice_transfers
+        .iter()
+        .find(|t| t.attachment.id == req_revoked.targets[0].attachment_id)
+        .expect("active chat permanent failure must stay visible for retry/discard");
+    assert_eq!(active_failed.status, TransferStatus::Failed);
+    assert!(
+        !alice_transfers
+            .iter()
+            .any(|t| t.attachment.id == req_revoked.targets[1].attachment_id),
+        "deleted chat failure must retire cleanly per #117"
+    );
+    assert_eq!(alice.take_send_failure_notices().await?, 1);
+    let dir_after = alice.directory().await?;
+    assert!(
+        !dir_after
+            .conversations
+            .iter()
+            .any(|c| c.id == deleted_target_chat),
+        "deleted chat must stay deleted per #117"
+    );
+
+    alice.close().await;
+    bob.close().await;
+    carol.close().await;
+    server_task.abort();
     Ok(())
 }

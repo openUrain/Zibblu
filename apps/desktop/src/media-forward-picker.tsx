@@ -1,6 +1,6 @@
 import { CheckCircle2, Circle, LoaderCircle, Search } from "lucide-react";
 import { pinyin } from "pinyin-pro";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorMessage } from "./api";
 import type { Conversation, ForwardTarget, User, ViewerForwardItem, ViewerForwardTargets } from "./api";
 import { Avatar, Dialog, chatName, displayName } from "./common";
@@ -33,8 +33,8 @@ type Props = {
   open: boolean;
   submitting: boolean;
   onClose: () => void;
-  onConfirm: (targets: ForwardTarget[]) => Promise<ResolvedForwardAttempt>;
-  onRetryFailed: (batchId: string, failedTargets: ForwardTarget[]) => Promise<ResolvedForwardAttempt>;
+  onConfirm: (batchId: string, targets: ForwardTarget[]) => Promise<ResolvedForwardAttempt>;
+  onRetryFailed: (batchId: string, fullTargets: ForwardTarget[]) => Promise<ResolvedForwardAttempt>;
   onDoneAfterPartial: () => void;
 };
 
@@ -82,7 +82,14 @@ export function MediaForwardPicker({
   const [resolving, setResolving] = useState(false);
   const [partialResult, setPartialResult] = useState<{
     batchId: string;
+    fullTargets: ForwardTarget[];
     items: ViewerForwardItem[];
+    labels: Map<string, string>;
+  } | null>(null);
+  const pendingSubmitRef = useRef<{
+    selectionKey: string;
+    batchId: string;
+    targets: ForwardTarget[];
     labels: Map<string, string>;
   } | null>(null);
 
@@ -93,6 +100,7 @@ export function MediaForwardPicker({
       setSubmitError("");
       setLoadError("");
       setPartialResult(null);
+      pendingSubmitRef.current = null;
       return;
     }
     let cancelled = false;
@@ -198,37 +206,54 @@ export function MediaForwardPicker({
     setSubmitError("");
     setResolving(true);
     try {
-      const candidateMap = new Map(candidates.map(item => [item.key, item]));
-      const chosen = selectedKeys.map(key => candidateMap.get(key)).filter(Boolean) as PickerCandidate[];
-      const convTargets = new Map<string, { label: string }>();
+      const selectionKey = selectedKeys.join("|");
+      let attempt = pendingSubmitRef.current;
+      if (!attempt || attempt.selectionKey !== selectionKey) {
+        const candidateMap = new Map(candidates.map(item => [item.key, item]));
+        const chosen = selectedKeys.map(key => candidateMap.get(key)).filter(Boolean) as PickerCandidate[];
+        const convTargets = new Map<string, { label: string }>();
 
-      for (const item of chosen) {
-        let convId = item.conversationId;
-        if (!convId && item.contactId) {
-          convId = await api.viewerResolveDirectTarget(item.contactId);
+        for (const item of chosen) {
+          let convId = item.conversationId;
+          if (!convId && item.contactId) {
+            convId = await api.viewerResolveDirectTarget(item.contactId);
+          }
+          if (convId && !convTargets.has(convId)) {
+            convTargets.set(convId, { label: item.title });
+          }
         }
-        if (convId && !convTargets.has(convId)) {
-          convTargets.set(convId, { label: item.title });
+
+        if (convTargets.size === 0) {
+          throw new Error(t("Select at least one valid target", "请选择至少一个有效会话"));
         }
+        if (convTargets.size > MAX_FORWARD_TARGETS) {
+          throw new Error(t("You can forward to at most 9 conversations", "最多只能转发到 9 个会话"));
+        }
+
+        const targets: ForwardTarget[] = [];
+        const labels = new Map<string, string>();
+        for (const [conversation_id, meta] of convTargets.entries()) {
+          targets.push({ conversation_id, attachment_id: crypto.randomUUID() });
+          labels.set(conversation_id, meta.label);
+        }
+        attempt = {
+          selectionKey,
+          batchId: crypto.randomUUID(),
+          targets,
+          labels,
+        };
+        pendingSubmitRef.current = attempt;
       }
 
-      if (convTargets.size === 0) {
-        throw new Error(t("Select at least one valid target", "请选择至少一个有效会话"));
-      }
-      if (convTargets.size > MAX_FORWARD_TARGETS) {
-        throw new Error(t("You can forward to at most 9 conversations", "最多只能转发到 9 个会话"));
-      }
-
-      const targets: ForwardTarget[] = [];
-      const labels = new Map<string, string>();
-      for (const [conversation_id, meta] of convTargets.entries()) {
-        targets.push({ conversation_id, attachment_id: crypto.randomUUID() });
-        labels.set(conversation_id, meta.label);
-      }
-
-      const result = await onConfirm(targets);
+      const result = await onConfirm(attempt.batchId, attempt.targets);
+      pendingSubmitRef.current = null;
       if (result.items.some(item => item.status === "failed")) {
-        setPartialResult({ batchId: result.batchId, items: result.items, labels });
+        setPartialResult({
+          batchId: result.batchId,
+          fullTargets: attempt.targets,
+          items: result.items,
+          labels: attempt.labels,
+        });
       }
     } catch (err) {
       setSubmitError(errorMessage(err));
@@ -239,14 +264,11 @@ export function MediaForwardPicker({
 
   async function retryFailed() {
     if (!partialResult || busy) return;
-    const failedTargets = partialResult.items
-      .filter(item => item.status === "failed")
-      .map(item => item.target);
-    if (failedTargets.length === 0) return;
+    if (!partialResult.items.some(item => item.status === "failed")) return;
     setSubmitError("");
     setResolving(true);
     try {
-      const retried = await onRetryFailed(partialResult.batchId, failedTargets);
+      const retried = await onRetryFailed(partialResult.batchId, partialResult.fullTargets);
       const merged = partialResult.items.map(existing => {
         const updated = retried.items.find(item => item.target.conversation_id === existing.target.conversation_id);
         return updated ?? existing;

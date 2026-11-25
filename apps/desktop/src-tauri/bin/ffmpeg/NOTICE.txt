@@ -1,0 +1,18 @@
+FFmpeg / FFprobe External Runtime Notice
+=========================================
+
+Zibblu Desktop bundles `ffmpeg.exe` and `ffprobe.exe` as standalone external
+executables under `ffmpeg/` inside the Windows application resource directory
+and invokes them strictly as child processes for video probing, thumbnail
+extraction, and user-initiated trim exports (`apps/desktop/src-tauri/src/video_edit.rs`).
+
+Zibblu's Rust and TypeScript application code is licensed under the MIT License
+and does NOT statically or dynamically link FFmpeg libraries. Upstream FFmpeg
+Windows builds (e.g. Gyan.dev / BtbN static releases) are distributed under
+their respective GPL / LGPL license terms; when staging binaries via
+`apps/desktop/scripts/stage-ffmpeg-windows.ps1`, the matching upstream
+`LICENSE` file (if present in the source distribution) is copied alongside
+the binaries into the installer resource directory.
+
+Staging before Windows builds (`npm run tauri build` or `cargo tauri build`):
+  pwsh / powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/stage-ffmpeg-windows.ps1

@@ -689,7 +689,8 @@ pub(crate) async fn viewer_video_probe(
 ) -> CommandResult<crate::video_edit::VideoProbeInfo> {
     require(window.label() == LABEL, "Open the media viewer")?;
     let (_client, path, _file) = authorize_video_original(&state, id).await?;
-    Ok(crate::video_edit::probe_video(&path).await?)
+    let bundled = state.video_exports.bundled_ffmpeg_dir();
+    Ok(crate::video_edit::probe_video(&path, bundled.as_deref()).await?)
 }
 
 #[tauri::command]
@@ -701,7 +702,8 @@ pub(crate) async fn viewer_video_thumbnails(
 ) -> CommandResult<Vec<String>> {
     require(window.label() == LABEL, "Open the media viewer")?;
     let (_client, path, _file) = authorize_video_original(&state, id).await?;
-    let frames = crate::video_edit::extract_thumbnails(&path, count.unwrap_or(10)).await?;
+    let bundled = state.video_exports.bundled_ffmpeg_dir();
+    let frames = crate::video_edit::extract_thumbnails(&path, count.unwrap_or(10), bundled.as_deref()).await?;
     Ok(frames
         .into_iter()
         .map(|bytes| format!("data:image/jpeg;base64,{}", encode_base64(&bytes)))
