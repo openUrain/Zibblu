@@ -88,17 +88,17 @@ Rules:
 
 ## 03 — AI Assistants (explicit read-only)
 
-**User flow:** configure OpenAI, DeepSeek or Grok with a model, API key and custom assistant name → type `@name` in a normal chat → choose prompt only, selected text messages or a bounded recent range → optionally select individual text files → review the exact disclosure and send → receive answer.
+**User flow:** configure OpenAI, DeepSeek or Grok with a model, API key and custom assistant name → type `@name` in a normal chat → choose prompt only, selected messages (automatically including their attached images/documents) or a bounded recent range → optionally select individual text files → review the exact disclosure (including outbound attachments) and send → immediately return to the chat timeline showing the private local prompt and a cancellable generating placeholder → receive answer.
 
 Rules:
 - No background access. Each request has a **fresh, one-time** authorization; it never inherits prior scopes.
-- Read only the chosen message snapshot and any individually selected files. Never give the provider arbitrary filesystem paths.
+- Read only the chosen message snapshot (with bound supported attachments: JPG/PNG/WebP, PDF, DOCX, TXT/Markdown, XLSX/CSV) and any individually selected files. Never give the provider arbitrary filesystem paths, and never expand scope to adjacent unselected messages.
 - Assistant responses cannot overwrite message history or modify/delete local files. No execution, plugin actions, continuous agents or write tools.
-- Remote-provider use must disclose that selected content is sent outside Zibblu. Keep credentials in secure local storage rather than source control.
+- Remote-provider use must disclose that selected content and attachments are sent outside Zibblu. Keep credentials in secure local storage rather than source control.
 - Private mode excludes cloud AI. A future on-device AI option needs a separate privacy review.
-- Context is capped at 60 text messages and 256 KiB per request. The scope selector displays the exact outbound snapshot and destination before sending.
+- Context is capped at 60 messages and bounded sequential chunking within the single authorized request when large documents require splitting. The scope selector displays the exact outbound snapshot, attachments, and destination before sending.
 - Assistant mention names match case-insensitively and must be unique across configured providers.
-- Replies appear chronologically in the conversation with a provider logo. The invoking user can use **Visible to** to share a reviewed reply with selected conversation members. Unshared replies stay in the current sign-in.
+- Submitted `@name` prompts appear in the sender's own timeline marked **Only visible to you** and persist locally per account, never sent to peers. AI generation shows an in-chat cancellable placeholder; replies stay local unless the invoking user explicitly shares the **reply** via **Visible to** (which never shares the local prompt).
 - Settings supports testing the API key and listing model IDs through the provider's HTTPS API. Enter a model ID manually when model discovery is unavailable. An advanced base URL can point to a compatible HTTPS Responses API.
 
 ## Brand
