@@ -1036,22 +1036,39 @@ fn parse_xlsx_workbook(
     Ok(sheets)
 }
 
-fn parse_xlsx_cell_col(cell_ref: &str) -> Result<usize, ExtractError> {
+fn parse_xlsx_row_num(raw: &str) -> Result<usize, ExtractError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || !trimmed.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(ExtractError::Other(anyhow::anyhow!(
+            "Invalid XLSX row number '{raw}'"
+        )));
+    }
+    let row_num = trimmed.parse::<usize>().map_err(|_| {
+        ExtractError::Other(anyhow::anyhow!("XLSX row number '{raw}' is out of range"))
+    })?;
+    if row_num == 0 {
+        return Err(ExtractError::Other(anyhow::anyhow!(
+            "Invalid XLSX row number '{raw}'"
+        )));
+    }
+    Ok(row_num)
+}
+
+fn parse_xlsx_cell_coord(cell_ref: &str) -> Result<(usize, usize), ExtractError> {
     let trimmed = cell_ref.trim();
     let split_idx = trimmed
         .bytes()
         .position(|b| !b.is_ascii_alphabetic())
         .unwrap_or(trimmed.len());
     let (col_part, row_part) = trimmed.split_at(split_idx);
-    if col_part.is_empty()
-        || row_part.is_empty()
-        || !row_part.bytes().all(|b| b.is_ascii_digit())
-        || row_part.parse::<usize>().ok().is_none_or(|r| r == 0)
-    {
+    if col_part.is_empty() {
         return Err(ExtractError::Other(anyhow::anyhow!(
             "Invalid XLSX cell reference '{cell_ref}'"
         )));
     }
+    let row_num = parse_xlsx_row_num(row_part).map_err(|_| {
+        ExtractError::Other(anyhow::anyhow!("Invalid XLSX cell reference '{cell_ref}'"))
+    })?;
     let mut col_num = 0usize;
     for b in col_part.bytes() {
         let upper = b.to_ascii_uppercase();
@@ -1073,7 +1090,83 @@ fn parse_xlsx_cell_col(cell_ref: &str) -> Result<usize, ExtractError> {
             "XLSX column '{cell_ref}' exceeds maximum worksheet columns"
         )));
     }
-    Ok(zero_based)
+    Ok((zero_based, row_num))
+}
+
+fn parse_xlsx_row_attr_r(
+    e: &quick_xml::events::BytesStart<'_>,
+) -> Result<Option<usize>, ExtractError> {
+    for attr in e.attributes() {
+        let attr = attr.map_err(|err| {
+            ExtractError::Other(anyhow::anyhow!("Invalid attribute in worksheet XML: {err}"))
+        })?;
+        if attr.key.local_name().as_ref() == "r" {
+            let val = attr
+                .normalized_value(quick_xml::XmlVersion::Explicit1_0)
+                .map_err(|err| {
+                    ExtractError::Other(anyhow::anyhow!(
+                        "Invalid attribute value in worksheet XML: {err}"
+                    ))
+                })?
+                .into_owned();
+            return Ok(Some(parse_xlsx_row_num(&val)?));
+        }
+    }
+    Ok(None)
+}
+
+fn parse_xlsx_cell_attrs(
+    e: &quick_xml::events::BytesStart<'_>,
+    next_col: &mut usize,
+    current_row_num: &mut usize,
+    row_num_explicit: &mut bool,
+    next_row: &mut usize,
+) -> Result<(usize, String), ExtractError> {
+    let mut cell_type = String::new();
+    let mut cell_ref = None;
+    for attr in e.attributes() {
+        let attr = attr.map_err(|err| {
+            ExtractError::Other(anyhow::anyhow!("Invalid attribute in worksheet XML: {err}"))
+        })?;
+        let key = attr.key.local_name();
+        let val = attr
+            .normalized_value(quick_xml::XmlVersion::Explicit1_0)
+            .map_err(|err| {
+                ExtractError::Other(anyhow::anyhow!(
+                    "Invalid attribute value in worksheet XML: {err}"
+                ))
+            })?
+            .into_owned();
+        match key.as_ref() {
+            "t" => cell_type = val,
+            "r" => cell_ref = Some(val),
+            _ => {}
+        }
+    }
+    let col = match cell_ref {
+        Some(r) => {
+            let (col, cell_row_num) = parse_xlsx_cell_coord(&r)?;
+            if *row_num_explicit && cell_row_num != *current_row_num {
+                return Err(ExtractError::Other(anyhow::anyhow!(
+                    "XLSX cell '{r}' row {cell_row_num} conflicts with row {}",
+                    *current_row_num
+                )));
+            }
+            if !*row_num_explicit {
+                *current_row_num = cell_row_num;
+                *row_num_explicit = true;
+                *next_row = cell_row_num + 1;
+            }
+            *next_col = col + 1;
+            col
+        }
+        None => {
+            let col = *next_col;
+            *next_col += 1;
+            col
+        }
+    };
+    Ok((col, cell_type))
 }
 
 fn parse_xlsx_sheet(xml: &str, shared_strings: &[String]) -> Result<Vec<String>, ExtractError> {
@@ -1081,6 +1174,9 @@ fn parse_xlsx_sheet(xml: &str, shared_strings: &[String]) -> Result<Vec<String>,
     reader.config_mut().trim_text(false);
     let mut rows = Vec::new();
     let mut current_row: Vec<String> = Vec::new();
+    let mut next_row = 1usize;
+    let mut current_row_num = 0usize;
+    let mut row_num_explicit = false;
     let mut next_col = 0usize;
     let mut cell_col = 0usize;
     let mut cell_type = String::new();
@@ -1095,86 +1191,57 @@ fn parse_xlsx_sheet(xml: &str, shared_strings: &[String]) -> Result<Vec<String>,
                 "row" => {
                     current_row.clear();
                     next_col = 0;
+                    if let Some(r) = parse_xlsx_row_attr_r(e)? {
+                        current_row_num = r;
+                        row_num_explicit = true;
+                        next_row = r + 1;
+                    } else {
+                        current_row_num = next_row;
+                        row_num_explicit = false;
+                        next_row += 1;
+                    }
                 }
                 "c" => {
                     in_cell = true;
-                    cell_type.clear();
                     cell_value.clear();
-                    let mut cell_ref = None;
-                    for attr in e.attributes() {
-                        let attr = attr.map_err(|err| {
-                            ExtractError::Other(anyhow::anyhow!(
-                                "Invalid attribute in worksheet XML: {err}"
-                            ))
-                        })?;
-                        let key = attr.key.local_name();
-                        let val = attr
-                            .normalized_value(quick_xml::XmlVersion::Explicit1_0)
-                            .map_err(|err| {
-                                ExtractError::Other(anyhow::anyhow!(
-                                    "Invalid attribute value in worksheet XML: {err}"
-                                ))
-                            })?
-                            .into_owned();
-                        match key.as_ref() {
-                            "t" => cell_type = val,
-                            "r" => cell_ref = Some(val),
-                            _ => {}
-                        }
-                    }
-                    cell_col = match cell_ref {
-                        Some(r) => {
-                            let col = parse_xlsx_cell_col(&r)?;
-                            next_col = col + 1;
-                            col
-                        }
-                        None => {
-                            let col = next_col;
-                            next_col += 1;
-                            col
-                        }
-                    };
+                    let (col, kind) = parse_xlsx_cell_attrs(
+                        e,
+                        &mut next_col,
+                        &mut current_row_num,
+                        &mut row_num_explicit,
+                        &mut next_row,
+                    )?;
+                    cell_col = col;
+                    cell_type = kind;
                 }
                 "v" if in_cell => in_value = true,
                 "t" if in_cell => in_inline_t = true,
                 _ => {}
             },
-            Ok(Event::Empty(ref e)) if e.local_name().as_ref() == "c" => {
-                let mut empty_type = String::new();
-                let mut cell_ref = None;
-                for attr in e.attributes() {
-                    let attr = attr.map_err(|err| {
-                        ExtractError::Other(anyhow::anyhow!(
-                            "Invalid attribute in worksheet XML: {err}"
-                        ))
-                    })?;
-                    let key = attr.key.local_name();
-                    let val = attr
-                        .normalized_value(quick_xml::XmlVersion::Explicit1_0)
-                        .map_err(|err| {
-                            ExtractError::Other(anyhow::anyhow!(
-                                "Invalid attribute value in worksheet XML: {err}"
-                            ))
-                        })?
-                        .into_owned();
-                    match key.as_ref() {
-                        "t" => empty_type = val,
-                        "r" => cell_ref = Some(val),
-                        _ => {}
+            Ok(Event::Empty(ref e)) => match e.local_name().as_ref() {
+                "row" => {
+                    if let Some(r) = parse_xlsx_row_attr_r(e)? {
+                        next_row = r + 1;
+                    } else {
+                        next_row += 1;
                     }
                 }
-                if let Some(r) = cell_ref {
-                    let col = parse_xlsx_cell_col(&r)?;
-                    next_col = col + 1;
-                } else {
-                    next_col += 1;
+                "c" => {
+                    let (_, empty_type) = parse_xlsx_cell_attrs(
+                        e,
+                        &mut next_col,
+                        &mut current_row_num,
+                        &mut row_num_explicit,
+                        &mut next_row,
+                    )?;
+                    if empty_type == "s" {
+                        return Err(ExtractError::Other(anyhow::anyhow!(
+                            "XLSX shared string cell is missing string index"
+                        )));
+                    }
                 }
-                if empty_type == "s" {
-                    return Err(ExtractError::Other(anyhow::anyhow!(
-                        "XLSX shared string cell is missing string index"
-                    )));
-                }
-            }
+                _ => {}
+            },
             Ok(Event::Text(ref e)) if in_value || in_inline_t => {
                 cell_value.push_str(e.as_ref());
             }
@@ -1217,7 +1284,7 @@ fn parse_xlsx_sheet(xml: &str, shared_strings: &[String]) -> Result<Vec<String>,
                 }
                 "row" => {
                     if !current_row.is_empty() {
-                        rows.push(current_row.join("\t"));
+                        rows.push(format!("Row {current_row_num}: {}", current_row.join("\t")));
                     }
                 }
                 _ => {}
@@ -2624,9 +2691,9 @@ mod tests {
             panic!("expected TextChunks");
         };
         let text = chunks.join("\n");
-        assert!(text.contains("收入\t\t成本"), "got:\n{text}");
-        assert!(text.contains("100\t\t40"), "got:\n{text}");
-        assert!(text.contains("\t\t99"), "got:\n{text}");
+        assert!(text.contains("Row 1: 收入\t\t成本"), "got:\n{text}");
+        assert!(text.contains("Row 2: 100\t\t40"), "got:\n{text}");
+        assert!(text.contains("Row 3: \t\t99"), "got:\n{text}");
 
         // (b) Missing relationship for rId1 must fail instead of guessing sheet1.xml.
         let missing_rel = dir.path().join("missing-rel.xlsx");
@@ -2787,6 +2854,92 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, ExtractError::IncompleteExtraction { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn xlsx_preserves_original_row_numbers_for_sparse_rows() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let write_xlsx = |file_name: &str, sheet_xml: &[u8]| -> Result<PathBuf> {
+            let path = dir.path().join(file_name);
+            let mut zip = ZipWriter::new(File::create(&path)?);
+            zip.start_file("xl/workbook.xml", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>
+                    <sheet name="Ledger" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            )?;
+            zip.start_file("xl/_rels/workbook.xml.rels", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>"#,
+            )?;
+            zip.start_file("xl/worksheets/sheet1.xml", SimpleFileOptions::default())?;
+            zip.write_all(sheet_xml)?;
+            zip.finish()?;
+            Ok(path)
+        };
+
+        let extract_text = |path: &Path| -> Result<String> {
+            let extracted = extract_attachment(
+                path,
+                &fixture_attachment("rows.xlsx", std::fs::metadata(path)?.len()),
+                AiProvider::DeepSeek,
+            )?;
+            let ExtractedAttachment::TextChunks { chunks, .. } = extracted else {
+                panic!("expected TextChunks");
+            };
+            Ok(chunks.join("\n"))
+        };
+
+        // (a) A1=100, A10=200, C12=300 must differ from A1=100, A2=200 without expanding blank rows.
+        let sparse_rows = write_xlsx(
+            "sparse-rows.xlsx",
+            br#"<worksheet><sheetData>
+                <row r="1"><c r="A1"><v>100</v></c></row>
+                <row r="10"><c r="A10"><v>200</v></c></row>
+                <row r="12"><c r="C12"><v>300</v></c></row>
+            </sheetData></worksheet>"#,
+        )?;
+        let dense_rows = write_xlsx(
+            "dense-rows.xlsx",
+            br#"<worksheet><sheetData>
+                <row r="1"><c r="A1"><v>100</v></c></row>
+                <row r="2"><c r="A2"><v>200</v></c></row>
+            </sheetData></worksheet>"#,
+        )?;
+        let sparse_text = extract_text(&sparse_rows)?;
+        let dense_text = extract_text(&dense_rows)?;
+        assert_ne!(sparse_text, dense_text);
+        assert!(sparse_text.contains("Row 1: 100"), "got:\n{sparse_text}");
+        assert!(sparse_text.contains("Row 10: 200"), "got:\n{sparse_text}");
+        assert!(sparse_text.contains("Row 12: \t\t300"), "got:\n{sparse_text}");
+        assert!(!sparse_text.contains("Row 2:"), "empty rows must not be expanded:\n{sparse_text}");
+
+        // (b) Missing <row r> falls back to <c r="B7">, and an empty <row/> advances implicit row index.
+        let implicit_rows = write_xlsx(
+            "implicit-rows.xlsx",
+            br#"<worksheet><sheetData>
+                <row><c r="B7"><v>77</v></c></row>
+                <row/>
+                <row><c><v>88</v></c></row>
+            </sheetData></worksheet>"#,
+        )?;
+        let implicit_text = extract_text(&implicit_rows)?;
+        assert!(implicit_text.contains("Row 7: \t77"), "got:\n{implicit_text}");
+        assert!(implicit_text.contains("Row 9: 88"), "got:\n{implicit_text}");
+
+        // (c) Conflicting row numbers or invalid row="0" must error.
+        let conflict = write_xlsx(
+            "conflict.xlsx",
+            br#"<worksheet><sheetData><row r="2"><c r="A10"><v>bad</v></c></row></sheetData></worksheet>"#,
+        )?;
+        assert!(extract_text(&conflict).is_err());
+
+        let zero_row = write_xlsx(
+            "zero-row.xlsx",
+            br#"<worksheet><sheetData><row r="0"><c r="A1"><v>bad</v></c></row></sheetData></worksheet>"#,
+        )?;
+        assert!(extract_text(&zero_row).is_err());
+
         Ok(())
     }
 }
