@@ -605,6 +605,12 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     await refresh();
   }
 
+  async function reopenHiddenGroup(id: string) {
+    await api.unhideConversation(id);
+    await refresh();
+    selectChat(id);
+  }
+
   async function hide(conversation: string, seq: number) {
     await api.hideMessage(conversation, seq);
     setHidden(previous => new Set(previous).add(seq));
@@ -823,8 +829,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           : <section className="chat-blank"><Blank icon={<MessageCircle size={28} />} title={t("Select a chat", "选择会话")} /></section>}
         {chatProfile && profilePage}
       </div>}
-      {(windows || nav === "Contacts") && <Contacts active={nav === "Contacts"} details={openDetails} directory={directory}
-        selected={windows ? directoryContact?.id : profile?.id} refresh={refresh} create={create}
+      {(windows || nav === "Contacts") && <Contacts active={nav === "Contacts"} details={openDetails} directory={directory} own={session.user.id} refresh={refresh} create={create} reopenGroup={reopenHiddenGroup}
         openAvatar={openContactCard} addContact={() => setNewContact(true)} />}
       {nav === "Files" && <FilesView revision={revision} recalled={recalled} hidden={hidden} transfers={transfers} onChanged={changed} />}
       {nav === "Me" && <section className="settings-page phone-me">
@@ -1011,10 +1016,11 @@ function AddContact({ session, close, open }: { session: Session; close: () => v
   </Dialog>;
 }
 
-function Contacts({ active, directory, selected, refresh, create, addContact, details, openAvatar }: {
-  active: boolean; openAvatar: (user: User) => void;
+function Contacts({ active, directory, own, selected, refresh, create, reopenGroup, addContact, details, openAvatar }: {
+  active: boolean; openAvatar: (user: User) => void; own: string;
   details: (user: User) => void;
   directory: Directory; selected?: string; refresh: () => Promise<void>; create: (request: ConversationRequest) => Promise<void>;
+  reopenGroup: (id: string) => Promise<void>;
   addContact: () => void;
 }) {
   const { contacts, pending_contacts } = directory;
@@ -1025,6 +1031,16 @@ function Contacts({ active, directory, selected, refresh, create, addContact, de
   const scrollTop = useRef(0);
   const [failure, setFailure] = useState("");
   const [busy, setBusy] = useState(false);
+  const [hiddenGroups, setHiddenGroups] = useState<Conversation[]>([]);
+
+  useEffect(() => {
+    if (!active) return;
+    let current = true;
+    void api.hiddenGroupConversations()
+      .then(groups => { if (current) setHiddenGroups(groups); })
+      .catch(() => { if (current) setHiddenGroups([]); });
+    return () => { current = false; };
+  }, [active, directory]);
 
   useLayoutEffect(() => {
     if (windows && active && list.current) list.current.scrollTop = scrollTop.current;
@@ -1076,6 +1092,18 @@ function Contacts({ active, directory, selected, refresh, create, addContact, de
     <div className="contacts-list" ref={list}
       onScroll={windows ? event => { scrollTop.current = event.currentTarget.scrollTop; } : undefined}>
     {failure && <p className="inline-error" role="alert">{failure}</p>}
+    {!query && hiddenGroups.length > 0 && <section>
+      <h2 className="section-title">{t("Hidden group chats", "已隐藏的群聊")}</h2>
+      <div className="contact-requests">
+        {hiddenGroups.map(chat => <div className="contact-row" key={chat.id}>
+          <button className="person-link contact-name" disabled={busy}
+            onClick={() => void perform(() => reopenGroup(chat.id))}>
+            <UsersRound size={20} aria-hidden="true" />
+            <span><strong>{chatName(chat, own, remarks)}</strong></span>
+          </button>
+        </div>)}
+      </div>
+    </section>}
     {!query && pending_contacts.length > 0 && <section>
       <h2 className="section-title">{t("Contact requests", "新的朋友")}</h2>
       <div className="contact-requests">

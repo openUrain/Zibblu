@@ -114,6 +114,28 @@ impl Client {
         Ok(())
     }
 
+    pub async fn hidden_group_conversations(&self) -> Result<Vec<Conversation>> {
+        self.ensure_open()?;
+        let hidden: Vec<String> = sqlx::query_scalar(
+            "SELECT conversation_id FROM conversation_prefs WHERE hidden_at_seq IS NOT NULL",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        let mut groups: Vec<Conversation> = self
+            .membership_directory()
+            .await?
+            .conversations
+            .into_iter()
+            .filter(|chat| {
+                chat.title.is_some()
+                    && hidden.contains(&chat.id.to_string())
+                    && chat.members.iter().any(|member| member.id == self.user.id)
+            })
+            .collect();
+        sort_conversations(&mut groups);
+        Ok(groups)
+    }
+
     pub async fn mark_conversation_read_local(&self, conversation: Uuid) -> Result<()> {
         self.ensure_normal_member(conversation).await?;
         let id = conversation.to_string();
@@ -462,6 +484,44 @@ mod tests {
         let pref = &prefs[&conv.to_string()];
         assert!(pref.pinned_at.is_none());
         assert!(!pref.muted);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hidden_group_can_be_listed_and_reopened_after_restart_with_prefs_kept() -> Result<()> {
+        let data = tempfile::tempdir()?;
+        let own = Uuid::new_v4();
+        let peer = Uuid::new_v4();
+        let group = Uuid::new_v4();
+        let direct = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        let client = open_test_client(data.path(), own, device_id, false).await?;
+        let mut team = make_conversation(group, 2000, false, own, peer);
+        team.title = Some("Team".into());
+        seed_directory(&client, vec![team, make_conversation(direct, 1000, false, own, peer)]).await?;
+
+        client.set_conversation_pinned(group, true).await?;
+        client.hide_conversation(group).await?;
+        client.hide_conversation(direct).await?;
+        client.close().await;
+        drop(client);
+
+        let reopened = open_test_client(data.path(), own, device_id, true).await?;
+        assert!(!reopened.directory().await?.conversations.iter().any(|chat| chat.id == group));
+        let hidden = reopened.hidden_group_conversations().await?;
+        assert_eq!(hidden.iter().map(|chat| chat.id).collect::<Vec<_>>(), vec![group]);
+
+        reopened.unhide_conversation(group).await?;
+        assert!(reopened.hidden_group_conversations().await?.is_empty());
+        let reopened_chat = reopened
+            .directory()
+            .await?
+            .conversations
+            .into_iter()
+            .find(|chat| chat.id == group)
+            .expect("group is open again");
+        assert!(reopened_chat.pinned);
+        assert_eq!(reopened_chat.members.len(), 2);
         Ok(())
     }
 }

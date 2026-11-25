@@ -974,6 +974,11 @@ pub(crate) async fn hide_conversation(
 }
 
 #[tauri::command]
+pub(crate) async fn hidden_group_conversations(state: State<'_, Desktop>) -> Result<Vec<Conversation>> {
+    Ok(state.client().await?.hidden_group_conversations().await?)
+}
+
+#[tauri::command]
 pub(crate) async fn unhide_conversation(
     app: AppHandle,
     state: State<'_, Desktop>,

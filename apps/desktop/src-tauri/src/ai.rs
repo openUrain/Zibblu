@@ -1029,49 +1029,75 @@ async fn execute_ai_job(
         &approved.files,
         &extracted,
     )?;
-    let total_chunks = requests.len();
-    let mut answers = Vec::with_capacity(total_chunks);
-    for (idx, parts) in requests.into_iter().enumerate() {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(AiCancelledError.into());
-        }
-        let status_text = if total_chunks > 1 {
-            format!("{}/{}", idx + 1, total_chunks)
-        } else {
-            String::new()
-        };
-        update_job_status(
-            app,
-            job_id,
-            conversation_id,
-            "generating",
-            status_text,
-            None,
-        );
-        let reply = run_with_cancel(
-            cancel_rx,
-            cancelled,
-            provider.answer_parts(
-                &base,
-                &approved.assistant.info.model,
-                key,
-                parts,
-                Arc::clone(cancel_notify),
-            ),
-        )
-        .await?;
-        answers.push(reply);
-    }
+    let uncovered = requests.uncovered;
+    let granted: Vec<(i64, zibblu_core::Attachment)> = approved
+        .attachments
+        .iter()
+        .map(|item| (item.seq, item.attachment.clone()))
+        .collect();
+    let model = &approved.assistant.info.model;
+    let base_ref = &base;
+    let mut answers = send_chunks(
+        requests.requests,
+        cancelled,
+        || client.ensure_ai_attachments_authorized(conversation_id, &granted),
+        |idx, total, parts| {
+            let status_text = if total > 1 {
+                format!("{}/{}", idx + 1, total)
+            } else {
+                String::new()
+            };
+            update_job_status(app, job_id, conversation_id, "generating", status_text, None);
+            let mut rx = cancel_rx.clone();
+            async move {
+                run_with_cancel(
+                    &mut rx,
+                    cancelled,
+                    provider.answer_parts(base_ref, model, key, parts, Arc::clone(cancel_notify)),
+                )
+                .await
+            }
+        },
+    )
+    .await?;
 
-    if answers.len() == 1 {
-        Ok(answers.pop().expect("single chunk answer"))
+    let mut reply = if answers.len() == 1 {
+        answers.pop().expect("single chunk answer")
     } else {
         let mut combined = format!("已顺序处理全部 {} 个分块：", answers.len());
         for (idx, chunk_answer) in answers.iter().enumerate() {
             combined.push_str(&format!("\n\n[分块 {}/{}]\n{}", idx + 1, answers.len(), chunk_answer));
         }
-        Ok(combined)
+        combined
+    };
+    if !uncovered.is_empty() {
+        reply.push_str(&format!("\n\n[未读取的内容：{}]", uncovered.join("；")));
     }
+    Ok(reply)
+}
+
+/// Re-checks authorization immediately before every provider request so a recall or
+/// revocation that lands between chunks stops the remaining sends.
+async fn send_chunks<P, RFut, SFut>(
+    requests: Vec<P>,
+    cancelled: &AtomicBool,
+    mut recheck: impl FnMut() -> RFut,
+    mut send: impl FnMut(usize, usize, P) -> SFut,
+) -> Result<Vec<String>>
+where
+    RFut: std::future::Future<Output = Result<()>>,
+    SFut: std::future::Future<Output = Result<String>>,
+{
+    let total = requests.len();
+    let mut answers = Vec::with_capacity(total);
+    for (idx, parts) in requests.into_iter().enumerate() {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(AiCancelledError.into());
+        }
+        recheck().await?;
+        answers.push(send(idx, total, parts).await?);
+    }
+    Ok(answers)
 }
 
 async fn run_ai_job(
@@ -1234,6 +1260,40 @@ mod tests {
         assert!(ai.view(v1).is_err());
         assert_eq!(ai.view(v2)?.conversation, c2);
         Ok(())
+    }
+
+    #[test]
+    fn revoked_attachment_stops_before_any_provider_request() {
+        use std::sync::atomic::AtomicUsize;
+        let cancelled = AtomicBool::new(false);
+        let rechecks = AtomicUsize::new(0);
+        let sends = AtomicUsize::new(0);
+        let run = |revoke_after: usize| {
+            rechecks.store(0, Ordering::SeqCst);
+            sends.store(0, Ordering::SeqCst);
+            tauri::async_runtime::block_on(send_chunks(
+                vec!["a", "b", "c"],
+                &cancelled,
+                || {
+                    let seen = rechecks.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        if seen >= revoke_after {
+                            anyhow::bail!("attachment revoked")
+                        }
+                        Ok(())
+                    }
+                },
+                |_, _, part| {
+                    sends.fetch_add(1, Ordering::SeqCst);
+                    async move { Ok(part.to_owned()) }
+                },
+            ))
+        };
+        assert!(run(0).is_err());
+        assert_eq!(sends.load(Ordering::SeqCst), 0, "no request may leave once revoked");
+        assert!(run(1).is_err());
+        assert_eq!(sends.load(Ordering::SeqCst), 1, "later chunks must be blocked");
+        assert_eq!(run(9).unwrap(), vec!["a", "b", "c"]);
     }
 
     #[test]

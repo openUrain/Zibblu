@@ -214,6 +214,7 @@ pub fn run() {
             commands::set_conversation_muted,
             commands::hide_conversation,
             commands::unhide_conversation,
+            commands::hidden_group_conversations,
             commands::mark_conversation_read_local,
             commands::open_chat_window,
             chat_window::chat_window_session,

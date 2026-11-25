@@ -198,6 +198,7 @@ export const api = {
     invoke<void>("set_conversation_muted", { conversation, muted }),
   hideConversation: (conversation: string) => invoke<void>("hide_conversation", { conversation }),
   unhideConversation: (conversation: string) => invoke<void>("unhide_conversation", { conversation }),
+  hiddenGroupConversations: () => invoke<Conversation[]>("hidden_group_conversations"),
   markConversationReadLocal: (conversation: string) =>
     invoke<void>("mark_conversation_read_local", { conversation }),
   openChatWindow: (conversation: string) => invoke<void>("open_chat_window", { conversation }),

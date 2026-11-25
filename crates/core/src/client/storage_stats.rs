@@ -279,6 +279,7 @@ fn scan_filesystem(
     let mut conv_disk: HashMap<Uuid, ConvDiskBytes> = HashMap::new();
     let mut conversation_media_bytes = 0u64;
     let mut outbox_bytes = 0u64;
+    let mut seen_outbox_identities: HashSet<staging::FileIdentity> = HashSet::new();
     let mut orphan_staging_bytes = 0u64;
     let mut orphan_managed_bytes = 0u64;
 
@@ -375,7 +376,9 @@ fn scan_filesystem(
             let len = meta.len();
             if (name.starts_with("upload-") && name.ends_with(".part")) || name.starts_with("draft-")
             {
-                outbox_bytes = outbox_bytes.saturating_add(len);
+                if seen_outbox_identities.insert(file_identity(&path, &meta)) {
+                    outbox_bytes = outbox_bytes.saturating_add(len);
+                }
             } else if let Some(id) = name
                 .strip_prefix("download-")
                 .and_then(|s| s.strip_suffix(".part"))
@@ -496,6 +499,47 @@ fn scan_app_bytes(dir: &Path) -> u64 {
     }
 
     total.saturating_add(dir_size_no_links(&dir_fs.join("ffmpeg")))
+}
+
+fn file_identity(path: &Path, meta: &fs::Metadata) -> staging::FileIdentity {
+    #[cfg(windows)]
+    {
+        use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_OPEN_REPARSE_POINT, GetFileInformationByHandle,
+        };
+
+        let _ = meta;
+        if let Ok(file) = fs::OpenOptions::new()
+            .access_mode(0)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+        {
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
+            if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } != 0 {
+                let volume = info.dwVolumeSerialNumber;
+                let index = u64::from(info.nFileIndexHigh) << 32 | u64::from(info.nFileIndexLow);
+                if volume != 0 || index != 0 {
+                    return staging::FileIdentity::Windows { volume, index };
+                }
+            }
+        }
+        staging::FileIdentity::Path(path.to_path_buf())
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = path;
+        staging::FileIdentity::Unix {
+            dev: meta.dev(),
+            ino: meta.ino(),
+        }
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = meta;
+        staging::FileIdentity::Path(path.to_path_buf())
+    }
 }
 
 fn file_size_no_link(path: &Path) -> u64 {
@@ -1141,6 +1185,129 @@ mod tests {
                 .fetch_one(&client.db)
                 .await?;
         assert_eq!(tombstones, 1);
+        client.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn edited_batch_hardlinked_spools_count_once_until_last_link_removed() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let src_dir = tempfile::tempdir()?;
+        let user = User {
+            id: Uuid::new_v4(),
+            handle: "batch_hardlink".into(),
+        };
+        let device_id = Uuid::new_v4();
+        let cursor = Uuid::new_v4();
+        let make_session = || DeviceSession {
+            user: user.clone(),
+            device_id,
+            cursor,
+        };
+        let client =
+            Client::open(root.path(), Api::new("http://127.0.0.1:1")?, make_session(), false)
+                .await?;
+
+        let chats: Vec<Uuid> = (0..9).map(|_| Uuid::new_v4()).collect();
+        setup_directory(&client, &chats).await?;
+
+        let src = src_dir.path().join("edited_photo.png");
+        let payload = vec![b'X'; 128 * 1024];
+        fs::write(&src, &payload)?;
+        let expected_size = payload.len() as u64;
+
+        let targets: Vec<crate::ForwardTarget> = chats
+            .iter()
+            .map(|&conversation_id| crate::ForwardTarget {
+                conversation_id,
+                attachment_id: Uuid::new_v4(),
+            })
+            .collect();
+        let queued = client
+            .queue_edited_media_batch(
+                "edited_photo.png".into(),
+                src,
+                Uuid::new_v4(),
+                targets.clone(),
+            )
+            .await?;
+        assert_eq!(queued.len(), 9);
+
+        let stats_all = client.storage_stats(None).await?;
+        assert_global_sum(&stats_all);
+        assert_eq!(
+            stats_all.outbox_bytes, expected_size,
+            "nine hard-linked spools must count as one physical file"
+        );
+
+        client.close().await;
+        drop(client);
+        let client =
+            Client::open(root.path(), Api::new("http://127.0.0.1:1")?, make_session(), true).await?;
+
+        // Remove 1st link -> 8 links still reference the physical file, so outbox_bytes stays unchanged.
+        fs::remove_file(client.staging.join(format!("upload-{}.part", targets[0].attachment_id)))?;
+        let stats_eight = client.storage_stats(None).await?;
+        assert_global_sum(&stats_eight);
+        assert_eq!(
+            stats_eight.outbox_bytes, expected_size,
+            "removing one hard link must not report space reclaimed"
+        );
+
+        // Remove links 2..=8 -> 1 link remains, outbox_bytes still unchanged.
+        for target in &targets[1..8] {
+            fs::remove_file(client.staging.join(format!("upload-{}.part", target.attachment_id)))?;
+        }
+        let stats_one = client.storage_stats(None).await?;
+        assert_global_sum(&stats_one);
+        assert_eq!(stats_one.outbox_bytes, expected_size);
+
+        // Remove final 9th link -> outbox_bytes drops to 0.
+        fs::remove_file(client.staging.join(format!("upload-{}.part", targets[8].attachment_id)))?;
+        let stats_zero = client.storage_stats(None).await?;
+        assert_global_sum(&stats_zero);
+        assert_eq!(stats_zero.outbox_bytes, 0);
+
+        client.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn outbox_copy_fallback_counts_each_independent_physical_copy() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let session = DeviceSession {
+            user: User {
+                id: Uuid::new_v4(),
+                handle: "copy_fallback".into(),
+            },
+            device_id: Uuid::new_v4(),
+            cursor: Uuid::new_v4(),
+        };
+        let client =
+            Client::open(root.path(), Api::new("http://127.0.0.1:1")?, session, false).await?;
+
+        let payload = vec![b'C'; 4096];
+        let unit = payload.len() as u64;
+        let first = client.staging.join(format!("upload-{}.part", Uuid::new_v4()));
+        let second = client.staging.join(format!("upload-{}.part", Uuid::new_v4()));
+        let third = client.staging.join(format!("upload-{}.part", Uuid::new_v4()));
+        fs::write(&first, &payload)?;
+        fs::copy(&first, &second)?;
+        fs::copy(&first, &third)?;
+
+        let stats_three = client.storage_stats(None).await?;
+        assert_global_sum(&stats_three);
+        assert_eq!(
+            stats_three.outbox_bytes,
+            unit * 3,
+            "independent copy-fallback files must each be counted"
+        );
+
+        fs::remove_file(&second)?;
+        let stats_two = client.storage_stats(None).await?;
+        assert_global_sum(&stats_two);
+        assert_eq!(stats_two.outbox_bytes, unit * 2);
+
         client.close().await;
         Ok(())
     }

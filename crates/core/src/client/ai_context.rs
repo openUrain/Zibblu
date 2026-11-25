@@ -68,10 +68,21 @@ impl Client {
         scope: AiScope,
     ) -> Result<Vec<AiContextMessage>> {
         self.ensure_open()?;
+        let recent = matches!(scope, AiScope::Recent { .. });
         let mut tx = self.db.begin().await?;
         let joined_after = ensure_normal_chat(&mut tx, self.user.id, conversation).await?;
-        let messages = scoped_context_messages(&mut tx, conversation, joined_after, scope).await?;
+        let mut messages = scoped_context_messages(&mut tx, conversation, joined_after, scope).await?;
         tx.commit().await?;
+        let now = self.server_now();
+        let is_expired = |message: &AiContextMessage| message.expires_at.is_some_and(|at| at <= now);
+        if recent {
+            messages.retain(|message| !is_expired(message));
+        } else {
+            ensure!(
+                !messages.iter().any(is_expired),
+                "Some selected messages are unavailable in this chat"
+            );
+        }
         Ok(messages)
     }
 
@@ -87,9 +98,16 @@ impl Client {
         }
         let mut tx = self.db.begin().await?;
         let joined_after = ensure_normal_chat(&mut tx, self.user.id, conversation).await?;
-        let ok = verify_message_attachment_in_tx(&mut tx, conversation, joined_after, seq, attachment)
-            .await
-            .is_ok();
+        let ok = verify_message_attachment_in_tx(
+            &mut tx,
+            conversation,
+            joined_after,
+            seq,
+            attachment,
+            self.server_now(),
+        )
+        .await
+        .is_ok();
         tx.commit().await?;
         if !ok {
             return Ok(false);
@@ -121,12 +139,19 @@ impl Client {
         let cancel_fut = cancel.notified();
         tokio::pin!(cancel_fut);
 
-        // 1. Re-verify authorization, visibility, recall/deletion state, and attachment identity.
+        // 1. Re-verify authorization, visibility, recall/deletion state, expiry, and attachment identity.
         {
             let mut tx = self.db.begin().await?;
             let joined_after = ensure_normal_chat(&mut tx, self.user.id, conversation).await?;
-            verify_message_attachment_in_tx(&mut tx, conversation, joined_after, seq, attachment)
-                .await?;
+            verify_message_attachment_in_tx(
+                &mut tx,
+                conversation,
+                joined_after,
+                seq,
+                attachment,
+                self.server_now(),
+            )
+            .await?;
             tx.commit().await?;
         }
 
@@ -214,19 +239,39 @@ impl Client {
         }
 
         // Re-check DB authorization in case the message was recalled or deleted mid-download.
-        {
-            let mut tx = self.db.begin().await?;
-            let joined_after = ensure_normal_chat(&mut tx, self.user.id, conversation).await?;
-            verify_message_attachment_in_tx(&mut tx, conversation, joined_after, seq, attachment)
-                .await?;
-            tx.commit().await?;
-        }
+        self.ensure_ai_attachments_authorized(conversation, &[(seq, attachment.clone())])
+            .await?;
 
         let path = cleanup.disarm().expect("disarmed temp path");
         Ok(AuthorizedAiAttachment::Temporary {
             path,
             _temp_guard: temp_guard,
         })
+    }
+
+    /// Final gate before any content leaves for the AI provider.
+    pub async fn ensure_ai_attachments_authorized(
+        &self,
+        conversation: Uuid,
+        items: &[(i64, Attachment)],
+    ) -> Result<()> {
+        self.ensure_open()?;
+        let now = self.server_now();
+        let mut tx = self.db.begin().await?;
+        let joined_after = ensure_normal_chat(&mut tx, self.user.id, conversation).await?;
+        for (seq, attachment) in items {
+            verify_message_attachment_in_tx(
+                &mut tx,
+                conversation,
+                joined_after,
+                *seq,
+                attachment,
+                now,
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 }
 
@@ -261,6 +306,7 @@ async fn verify_message_attachment_in_tx(
     joined_after: Option<i64>,
     seq: i64,
     attachment: &Attachment,
+    now: i64,
 ) -> Result<()> {
     let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
         "SELECT payload FROM inbox
@@ -290,6 +336,10 @@ async fn verify_message_attachment_in_tx(
     ensure!(
         message.attachment.as_ref() == Some(attachment),
         "Attachment metadata does not match the authorized message"
+    );
+    ensure!(
+        message.expires_at.is_none_or(|expires_at| expires_at > now),
+        "This attachment has expired and can no longer be sent to AI"
     );
     Ok(())
 }
@@ -559,6 +609,41 @@ mod tests {
                 .await
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cached_attachment_past_expires_at_is_rejected_without_expired_marker() -> Result<()> {
+        use sqlx::Connection;
+        let mut db = SqliteConnection::connect("sqlite::memory:").await?;
+        setup_schema(&mut db).await?;
+        let chat = Uuid::new_v4();
+        let user = User { id: Uuid::new_v4(), handle: "alice".into() };
+        let att = Attachment {
+            id: Uuid::new_v4(),
+            name: "doc.txt".into(),
+            kind: AttachmentKind::File,
+            size: 8,
+            sha256: "c".repeat(64),
+        };
+        let mut msg = make_message(5, chat, user, None, Some(att.clone()), false, None);
+        msg.expires_at = Some(10_000);
+        sqlx::query("INSERT INTO inbox VALUES (5, ?, ?, ?)")
+            .bind(chat.to_string())
+            .bind(serde_json::to_string(&msg)?)
+            .bind(att.id.to_string())
+            .execute(&mut db)
+            .await?;
+
+        verify_message_attachment_in_tx(&mut db, chat, None, 5, &att, 9_999).await?;
+        for now in [10_000, 10_001] {
+            assert!(
+                verify_message_attachment_in_tx(&mut db, chat, None, 5, &att, now)
+                    .await
+                    .is_err(),
+                "attachment must be refused once the clock reaches expires_at"
+            );
+        }
         Ok(())
     }
 

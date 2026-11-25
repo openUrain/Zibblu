@@ -186,7 +186,14 @@ pub enum ExtractedAttachment {
     TextChunks {
         name: String,
         chunks: Vec<String>,
+        uncovered: Vec<String>,
     },
+}
+
+#[derive(Clone, Debug)]
+pub struct ChunkedAiRequests {
+    pub requests: Vec<Vec<AiInputPart>>,
+    pub uncovered: Vec<String>,
 }
 
 pub fn extract_attachment(
@@ -234,22 +241,25 @@ pub fn extract_attachment(
             Ok(ExtractedAttachment::TextChunks {
                 name: attachment.name.clone(),
                 chunks,
+                uncovered: Vec::new(),
             })
         }
         SupportedAttachmentKind::Docx => {
-            let text = extract_docx_text(file, &attachment.name)?;
-            let chunks = split_text_chunks(&text, MAX_CHUNK_TEXT_BYTES)?;
+            let docx = extract_docx_text(file, &attachment.name)?;
+            let chunks = split_text_chunks(&docx.text, MAX_CHUNK_TEXT_BYTES)?;
             Ok(ExtractedAttachment::TextChunks {
                 name: attachment.name.clone(),
                 chunks,
+                uncovered: docx.uncovered,
             })
         }
         SupportedAttachmentKind::Xlsx => {
-            let sheets = extract_xlsx_sheets(file, &attachment.name)?;
-            let chunks = pack_sections_into_chunks(&sheets, MAX_CHUNK_TEXT_BYTES)?;
+            let xlsx = extract_xlsx_sheets(file, &attachment.name)?;
+            let chunks = pack_sections_into_chunks(&xlsx.sections, MAX_CHUNK_TEXT_BYTES)?;
             Ok(ExtractedAttachment::TextChunks {
                 name: attachment.name.clone(),
                 chunks,
+                uncovered: xlsx.uncovered,
             })
         }
         SupportedAttachmentKind::Pdf => {
@@ -263,11 +273,12 @@ pub fn extract_attachment(
                     file_data: format!("data:application/pdf;base64,{}", STANDARD.encode(&bytes)),
                 });
             }
-            let pages = extract_pdf_pages(&bytes)?;
-            let chunks = pack_sections_into_chunks(&pages, MAX_CHUNK_TEXT_BYTES)?;
+            let pdf = extract_pdf_pages(&bytes)?;
+            let chunks = pack_sections_into_chunks(&pdf.pages, MAX_CHUNK_TEXT_BYTES)?;
             Ok(ExtractedAttachment::TextChunks {
                 name: attachment.name.clone(),
                 chunks,
+                uncovered: pdf.uncovered,
             })
         }
     }
@@ -278,9 +289,10 @@ pub fn build_chunked_requests(
     messages: &[AiMessage],
     local_files: &[AiFile],
     extracted: &[ExtractedAttachment],
-) -> Result<Vec<Vec<AiInputPart>>> {
+) -> Result<ChunkedAiRequests> {
     let mut text_docs: Vec<(String, Vec<String>)> = Vec::new();
     let mut media_parts: Vec<AiInputPart> = Vec::new();
+    let mut all_uncovered: Vec<String> = Vec::new();
     for item in extracted {
         match item {
             ExtractedAttachment::Image { image_url, .. } => {
@@ -294,8 +306,27 @@ pub fn build_chunked_requests(
                     file_data: file_data.clone(),
                 });
             }
-            ExtractedAttachment::TextChunks { name, chunks } => {
-                text_docs.push((name.clone(), chunks.clone()));
+            ExtractedAttachment::TextChunks {
+                name,
+                chunks,
+                uncovered,
+            } => {
+                let mut doc_chunks = chunks.clone();
+                if !uncovered.is_empty() {
+                    let note = format!(
+                        "[注意：以下视觉或非文本内容未能通过纯文本提取读取，请勿推测或假装可见：{}]",
+                        uncovered.join("；")
+                    );
+                    if let Some(first) = doc_chunks.first_mut() {
+                        *first = format!("{note}\n\n{first}");
+                    } else {
+                        doc_chunks.push(note);
+                    }
+                    for entry in uncovered {
+                        all_uncovered.push(format!("{name}: {entry}"));
+                    }
+                }
+                text_docs.push((name.clone(), doc_chunks));
             }
         }
     }
@@ -309,7 +340,10 @@ pub fn build_chunked_requests(
         .encode()?;
         let mut parts = vec![AiInputPart::InputText { text: input }];
         parts.extend(media_parts);
-        return Ok(vec![parts]);
+        return Ok(ChunkedAiRequests {
+            requests: vec![parts],
+            uncovered: all_uncovered,
+        });
     }
 
     // Try packing all extracted document text into a single snapshot first.
@@ -330,7 +364,10 @@ pub fn build_chunked_requests(
     {
         let mut parts = vec![AiInputPart::InputText { text: input }];
         parts.extend(media_parts);
-        return Ok(vec![parts]);
+        return Ok(ChunkedAiRequests {
+            requests: vec![parts],
+            uncovered: all_uncovered,
+        });
     }
 
     // Otherwise distribute extracted document chunks sequentially, bounded by MAX_AI_CHUNKS.
@@ -425,7 +462,10 @@ pub fn build_chunked_requests(
         requests.len() <= MAX_AI_CHUNKS,
         "Selected content exceeds the maximum of {MAX_AI_CHUNKS} sequential AI chunks. Choose fewer files or messages."
     );
-    Ok(requests)
+    Ok(ChunkedAiRequests {
+        requests,
+        uncovered: all_uncovered,
+    })
 }
 
 fn read_bounded(file: File, max_bytes: u64, name: &str) -> Result<Vec<u8>, ExtractError> {
@@ -579,9 +619,46 @@ fn append_general_ref(out: &mut String, reference: &quick_xml::events::BytesRef<
     }
 }
 
-fn extract_docx_text(file: File, doc_name: &str) -> Result<String, ExtractError> {
+struct DocxExtraction {
+    text: String,
+    uncovered: Vec<String>,
+}
+
+struct XlsxExtraction {
+    sections: Vec<String>,
+    uncovered: Vec<String>,
+}
+
+struct PdfExtraction {
+    pages: Vec<String>,
+    uncovered: Vec<String>,
+}
+
+fn collect_zip_visual_entries(archive: &ZipArchive<BufReader<File>>, prefix: &str) -> Vec<String> {
+    let mut uncovered = Vec::new();
+    for entry in archive.file_names() {
+        if let Some(rest) = entry.strip_prefix(prefix) {
+            if rest.starts_with("media/") {
+                uncovered.push(format!("嵌入图片/媒体 ({entry})"));
+            } else if rest.starts_with("charts/") {
+                uncovered.push(format!("嵌入图表 ({entry})"));
+            } else if rest.starts_with("diagrams/") {
+                uncovered.push(format!("嵌入图示 ({entry})"));
+            } else if rest.starts_with("embeddings/") {
+                uncovered.push(format!("嵌入对象 ({entry})"));
+            } else if rest.starts_with("drawings/") {
+                uncovered.push(format!("绘图内容 ({entry})"));
+            }
+        }
+    }
+    uncovered.sort();
+    uncovered
+}
+
+fn extract_docx_text(file: File, doc_name: &str) -> Result<DocxExtraction, ExtractError> {
     let mut archive = ZipArchive::new(BufReader::new(file))
         .map_err(|_| ExtractError::UnsupportedFileFormat(doc_name.to_owned()))?;
+    let mut uncovered = collect_zip_visual_entries(&archive, "word/");
     let xml = read_zip_entry_utf8(&mut archive, "word/document.xml", doc_name)?;
     let mut reader = Reader::from_str(&xml);
     reader.config_mut().trim_text(false);
@@ -591,6 +668,7 @@ fn extract_docx_text(file: File, doc_name: &str) -> Result<String, ExtractError>
     let mut in_cell = false;
     let mut cell_has_para = false;
     let mut row_has_cell = false;
+    let mut has_inline_drawing = false;
 
     loop {
         match reader.read_event() {
@@ -609,11 +687,17 @@ fn extract_docx_text(file: File, doc_name: &str) -> Result<String, ExtractError>
                         out.push(' ');
                     }
                 }
+                "drawing" | "pict" | "blip" | "imagedata" | "chart" => {
+                    has_inline_drawing = true;
+                }
                 _ => {}
             },
             Ok(Event::Empty(ref e)) => match e.local_name().as_ref() {
                 "tab" => out.push('\t'),
                 "br" | "cr" => out.push('\n'),
+                "drawing" | "pict" | "blip" | "imagedata" | "chart" => {
+                    has_inline_drawing = true;
+                }
                 _ => {}
             },
             Ok(Event::Text(ref e)) => {
@@ -655,12 +739,23 @@ fn extract_docx_text(file: File, doc_name: &str) -> Result<String, ExtractError>
             _ => {}
         }
     }
-    Ok(out.trim().to_owned())
+    if has_inline_drawing && uncovered.is_empty() {
+        uncovered.push("文档正文包含未提取的图像或图表元素".into());
+    }
+    let text = out.trim().to_owned();
+    if text.is_empty() && !uncovered.is_empty() {
+        return Err(ExtractError::Other(anyhow::anyhow!(
+            "DOCX '{doc_name}' 仅包含图片或图表等视觉内容（{}），当前纯文本提取无法读取",
+            uncovered.join("、")
+        )));
+    }
+    Ok(DocxExtraction { text, uncovered })
 }
 
-fn extract_xlsx_sheets(file: File, doc_name: &str) -> Result<Vec<String>, ExtractError> {
+fn extract_xlsx_sheets(file: File, doc_name: &str) -> Result<XlsxExtraction, ExtractError> {
     let mut archive = ZipArchive::new(BufReader::new(file))
         .map_err(|_| ExtractError::UnsupportedFileFormat(doc_name.to_owned()))?;
+    let uncovered = collect_zip_visual_entries(&archive, "xl/");
 
     let shared_strings = if archive.by_name("xl/sharedStrings.xml").is_ok() {
         let xml = read_zip_entry_utf8(&mut archive, "xl/sharedStrings.xml", doc_name)?;
@@ -678,13 +773,19 @@ fn extract_xlsx_sheets(file: File, doc_name: &str) -> Result<Vec<String>, Extrac
 
     let workbook_xml = read_zip_entry_utf8(&mut archive, "xl/workbook.xml", doc_name)?;
     let sheets = parse_xlsx_workbook(&workbook_xml, &rels);
+    if sheets.is_empty() {
+        return Err(ExtractError::Other(anyhow::anyhow!(
+            "No worksheets declared in '{doc_name}'"
+        )));
+    }
 
     let mut sections = Vec::new();
     for (idx, (sheet_name, target_path)) in sheets.into_iter().enumerate() {
-        let fallback_path = format!("xl/worksheets/sheet{}.xml", idx + 1);
-        let entry_path = target_path.unwrap_or(fallback_path);
+        let entry_path = target_path.unwrap_or_else(|| format!("xl/worksheets/sheet{}.xml", idx + 1));
         if archive.by_name(&entry_path).is_err() {
-            continue;
+            return Err(ExtractError::Other(anyhow::anyhow!(
+                "Worksheet '{sheet_name}' ({entry_path}) declared in workbook.xml is missing from '{doc_name}'"
+            )));
         }
         let sheet_xml = read_zip_entry_utf8(&mut archive, &entry_path, doc_name)?;
         let rows = parse_xlsx_sheet(&sheet_xml, &shared_strings)?;
@@ -695,12 +796,10 @@ fn extract_xlsx_sheets(file: File, doc_name: &str) -> Result<Vec<String>, Extrac
         }
     }
 
-    if sections.is_empty() {
-        return Err(ExtractError::Other(anyhow::anyhow!(
-            "No readable worksheets found in '{doc_name}'"
-        )));
-    }
-    Ok(sections)
+    Ok(XlsxExtraction {
+        sections,
+        uncovered,
+    })
 }
 
 fn parse_xlsx_shared_strings(xml: &str) -> Result<Vec<String>, ExtractError> {
@@ -913,18 +1012,42 @@ struct PdfStream<'a> {
     data: &'a [u8],
 }
 
-fn extract_pdf_pages(bytes: &[u8]) -> Result<Vec<String>, ExtractError> {
-    let has_image = contains_subslice(bytes, b"/Subtype /Image")
-        || contains_subslice(bytes, b"/Subtype/Image");
+fn extract_pdf_pages(bytes: &[u8]) -> Result<PdfExtraction, ExtractError> {
+    if contains_pdf_name(bytes, b"/Encrypt") {
+        return Err(ExtractError::Other(anyhow::anyhow!(
+            "Encrypted PDFs are not supported for local text extraction"
+        )));
+    }
 
+    let pdf_has_any_image = contains_pdf_subtype_image(bytes);
     let objects = parse_pdf_objects(bytes);
-    let page_streams = collect_page_streams(&objects, bytes);
+    let page_entries = collect_ordered_pages(&objects, bytes)?;
 
-    let mut pages = Vec::new();
-    for (idx, stream_list) in page_streams.into_iter().enumerate() {
+    let mut pages = Vec::with_capacity(page_entries.len());
+    let mut uncovered = Vec::new();
+    for (idx, entry) in page_entries.into_iter().enumerate() {
+        let page_num = idx + 1;
+        let page_body = objects
+            .get(&entry.obj_num)
+            .copied()
+            .ok_or_else(|| {
+                ExtractError::Other(anyhow::anyhow!("PDF page {page_num} object is missing"))
+            })?;
+        let content_refs = parse_contents_refs(page_body);
         let mut page_text = String::new();
-        for stream_bytes in stream_list {
-            let extracted = extract_text_from_pdf_content_stream(&stream_bytes);
+        let mut stream_has_inline_image = false;
+
+        for obj_ref in content_refs {
+            let obj_body = objects.get(&obj_ref).copied().ok_or_else(|| {
+                ExtractError::Other(anyhow::anyhow!(
+                    "PDF content stream {obj_ref} for page {page_num} is missing"
+                ))
+            })?;
+            let decoded = extract_stream_bytes(obj_body, page_num)?;
+            if has_inline_image(&decoded) {
+                stream_has_inline_image = true;
+            }
+            let extracted = extract_text_from_pdf_content_stream(&decoded);
             if !extracted.trim().is_empty() {
                 if !page_text.is_empty() {
                     page_text.push('\n');
@@ -932,36 +1055,60 @@ fn extract_pdf_pages(bytes: &[u8]) -> Result<Vec<String>, ExtractError> {
                 page_text.push_str(extracted.trim());
             }
         }
-        if !page_text.trim().is_empty() {
-            pages.push(format!("[Page {}]\n{}", idx + 1, page_text.trim()));
+
+        let page_has_image = stream_has_inline_image
+            || page_references_image(page_body, &entry.inherited_resources, &objects);
+        let meaningful_chars = page_text
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .count();
+
+        if meaningful_chars < 16 {
+            if page_has_image || pdf_has_any_image {
+                return Err(ExtractError::ScannedPdfUnsupported);
+            }
+            return Err(ExtractError::Other(anyhow::anyhow!(
+                "PDF 第 {page_num} 页无可提取文本，本地纯文本提取无法确认完整内容"
+            )));
         }
+
+        if page_has_image {
+            uncovered.push(format!("第 {page_num} 页包含未提取的图像内容"));
+        }
+        pages.push(format!("[Page {page_num}]\n{}", page_text.trim()));
     }
 
-    let meaningful_chars: usize = pages
-        .iter()
-        .map(|p| {
-            p.strip_prefix("[Page ")
-                .and_then(|rest| rest.split_once(']'))
-                .map_or(p.as_str(), |(_, body)| body)
-                .chars()
-                .filter(|c| c.is_alphanumeric())
-                .count()
-        })
-        .sum();
-
-    if meaningful_chars < 16 {
-        if has_image {
-            return Err(ExtractError::ScannedPdfUnsupported);
-        }
-        return Err(ExtractError::Other(anyhow::anyhow!(
-            "Could not extract readable text from this PDF"
-        )));
-    }
-    Ok(pages)
+    Ok(PdfExtraction { pages, uncovered })
 }
 
-fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w| w == needle)
+fn contains_pdf_name(haystack: &[u8], name: &[u8]) -> bool {
+    let mut pos = 0;
+    while let Some(idx) = find_subslice(haystack, pos, name) {
+        let next = idx + name.len();
+        if next >= haystack.len() || !haystack[next].is_ascii_alphanumeric() {
+            return true;
+        }
+        pos = idx + name.len();
+    }
+    false
+}
+
+fn contains_pdf_subtype_image(body: &[u8]) -> bool {
+    let mut pos = 0;
+    while let Some(idx) = find_subslice(body, pos, b"/Subtype") {
+        let mut after = idx + 8;
+        while after < body.len() && body[after].is_ascii_whitespace() {
+            after += 1;
+        }
+        if body[after..].starts_with(b"/Image") {
+            let next = after + 6;
+            if next >= body.len() || !body[next].is_ascii_alphabetic() {
+                return true;
+            }
+        }
+        pos = idx + 8;
+    }
+    false
 }
 
 fn parse_pdf_objects(bytes: &[u8]) -> HashMap<u32, &[u8]> {
@@ -1027,67 +1174,142 @@ fn find_subslice(haystack: &[u8], start: usize, needle: &[u8]) -> Option<usize> 
         .map(|offset| start + offset)
 }
 
-fn collect_page_streams(objects: &HashMap<u32, &[u8]>, raw_pdf: &[u8]) -> Vec<Vec<Vec<u8>>> {
+struct PdfPageEntry {
+    obj_num: u32,
+    inherited_resources: Vec<u32>,
+}
+
+fn collect_ordered_pages(
+    objects: &HashMap<u32, &[u8]>,
+    raw_pdf: &[u8],
+) -> Result<Vec<PdfPageEntry>, ExtractError> {
+    let root_pages = find_root_pages_obj(objects, raw_pdf);
+    if let Some(pages_obj) = root_pages {
+        let mut out = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        walk_pages_node(pages_obj, objects, &[], &mut visited, 0, &mut out)?;
+        if let Some(body) = objects.get(&pages_obj)
+            && let Some(expected_count) = parse_integer_entry(body, b"/Count")
+            && out.len() != expected_count
+        {
+            return Err(ExtractError::Other(anyhow::anyhow!(
+                "PDF page tree count mismatch (expected {expected_count}, found {})",
+                out.len()
+            )));
+        }
+        if out.is_empty() {
+            return Err(ExtractError::Other(anyhow::anyhow!(
+                "PDF contains no pages in its page tree"
+            )));
+        }
+        return Ok(out);
+    }
+
     let mut page_nums: Vec<u32> = objects
         .iter()
         .filter(|(_, body)| is_page_object(body))
         .map(|(num, _)| *num)
         .collect();
     page_nums.sort_unstable();
+    if page_nums.len() == 1 {
+        return Ok(vec![PdfPageEntry {
+            obj_num: page_nums[0],
+            inherited_resources: Vec::new(),
+        }]);
+    }
+    Err(ExtractError::Other(anyhow::anyhow!(
+        "PDF lacks a valid page tree; cannot verify page order and completeness"
+    )))
+}
 
-    let mut pages = Vec::new();
-    for num in page_nums {
-        if let Some(body) = objects.get(&num) {
-            let content_refs = parse_contents_refs(body);
-            let mut streams = Vec::new();
-            for obj_ref in content_refs {
-                if let Some(obj_body) = objects.get(&obj_ref)
-                    && let Some(decoded) = extract_stream_bytes(obj_body)
-                {
-                    streams.push(decoded);
-                }
-            }
-            if !streams.is_empty() {
-                pages.push(streams);
-            }
+fn find_root_pages_obj(objects: &HashMap<u32, &[u8]>, raw_pdf: &[u8]) -> Option<u32> {
+    if let Some(root_ref) = parse_single_ref(raw_pdf, b"/Root")
+        && let Some(catalog) = objects.get(&root_ref)
+        && let Some(pages_ref) = parse_single_ref(catalog, b"/Pages")
+    {
+        return Some(pages_ref);
+    }
+    for &body in objects.values() {
+        if is_catalog_object(body)
+            && let Some(pages_ref) = parse_single_ref(body, b"/Pages")
+        {
+            return Some(pages_ref);
         }
     }
+    let mut candidates: Vec<u32> = objects
+        .iter()
+        .filter(|(_, body)| is_pages_node(body) && parse_single_ref(body, b"/Parent").is_none())
+        .map(|(&num, _)| num)
+        .collect();
+    candidates.sort_unstable();
+    candidates.into_iter().next()
+}
 
-    if !pages.is_empty() {
-        return pages;
+fn walk_pages_node(
+    node_num: u32,
+    objects: &HashMap<u32, &[u8]>,
+    parent_resources: &[u32],
+    visited: &mut std::collections::HashSet<u32>,
+    depth: usize,
+    out: &mut Vec<PdfPageEntry>,
+) -> Result<(), ExtractError> {
+    if depth > 64 || !visited.insert(node_num) {
+        return Err(ExtractError::Other(anyhow::anyhow!(
+            "PDF page tree contains a cycle or excessive depth"
+        )));
     }
+    let body = objects.get(&node_num).copied().ok_or_else(|| {
+        ExtractError::Other(anyhow::anyhow!("PDF page tree object {node_num} is missing"))
+    })?;
+    if is_page_object(body) {
+        out.push(PdfPageEntry {
+            obj_num: node_num,
+            inherited_resources: parent_resources.to_vec(),
+        });
+        return Ok(());
+    }
+    if !is_pages_node(body) {
+        return Err(ExtractError::Other(anyhow::anyhow!(
+            "PDF object {node_num} in page tree is neither /Pages nor /Page"
+        )));
+    }
+    let mut resources = parent_resources.to_vec();
+    if let Some(res_ref) = parse_single_ref(body, b"/Resources") {
+        resources.push(res_ref);
+    }
+    let kids = parse_array_refs(body, b"/Kids");
+    if kids.is_empty() {
+        return Err(ExtractError::Other(anyhow::anyhow!(
+            "PDF /Pages object {node_num} has no /Kids"
+        )));
+    }
+    for kid in kids {
+        walk_pages_node(kid, objects, &resources, visited, depth + 1, out)?;
+    }
+    Ok(())
+}
 
-    // Fallback when page tree references are non-standard: decode all content streams in order.
-    let mut fallback = Vec::new();
-    let mut pos = 0;
-    while let Some(stream_idx) = find_subslice(raw_pdf, pos, b"stream") {
-        let dict_start = raw_pdf[..stream_idx]
-            .iter()
-            .rposition(|&b| b == b'<')
-            .unwrap_or(0);
-        if let Some(decoded) = extract_stream_bytes(&raw_pdf[dict_start..]) {
-            if contains_subslice(&decoded, b"BT") {
-                fallback.push(decoded);
-            }
-        }
-        pos = stream_idx + 6;
-    }
-    if fallback.is_empty() {
-        Vec::new()
-    } else {
-        vec![fallback]
-    }
+fn is_catalog_object(body: &[u8]) -> bool {
+    has_pdf_type(body, b"/Catalog")
+}
+
+fn is_pages_node(body: &[u8]) -> bool {
+    has_pdf_type(body, b"/Pages")
 }
 
 fn is_page_object(body: &[u8]) -> bool {
+    has_pdf_type(body, b"/Page")
+}
+
+fn has_pdf_type(body: &[u8], expected: &[u8]) -> bool {
     let mut pos = 0;
     while let Some(idx) = find_subslice(body, pos, b"/Type") {
         let mut after = idx + 5;
         while after < body.len() && body[after].is_ascii_whitespace() {
             after += 1;
         }
-        if body[after..].starts_with(b"/Page") {
-            let next = after + 5;
+        if body[after..].starts_with(expected) {
+            let next = after + expected.len();
             if next >= body.len() || !body[next].is_ascii_alphabetic() {
                 return true;
             }
@@ -1097,11 +1319,64 @@ fn is_page_object(body: &[u8]) -> bool {
     false
 }
 
-fn parse_contents_refs(body: &[u8]) -> Vec<u32> {
-    let Some(idx) = find_subslice(body, 0, b"/Contents") else {
+fn parse_single_ref(body: &[u8], key: &[u8]) -> Option<u32> {
+    let mut pos = 0;
+    while let Some(idx) = find_subslice(body, pos, key) {
+        let after = idx + key.len();
+        if after < body.len() && body[after].is_ascii_alphanumeric() {
+            pos = after;
+            continue;
+        }
+        let mut i = after;
+        while i < body.len() && body[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let slice = &body[i..body.len().min(i + 48)];
+        let text = String::from_utf8_lossy(slice);
+        let tokens: Vec<&str> = text.split_whitespace().collect();
+        if tokens.len() >= 3
+            && tokens[2] == "R"
+            && let Ok(num) = tokens[0].parse::<u32>()
+            && tokens[1].parse::<u16>().is_ok()
+        {
+            return Some(num);
+        }
+        pos = after;
+    }
+    None
+}
+
+fn parse_integer_entry(body: &[u8], key: &[u8]) -> Option<usize> {
+    let mut pos = 0;
+    while let Some(idx) = find_subslice(body, pos, key) {
+        let after = idx + key.len();
+        if after < body.len() && body[after].is_ascii_alphanumeric() {
+            pos = after;
+            continue;
+        }
+        let mut i = after;
+        while i < body.len() && body[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let start = i;
+        while i < body.len() && body[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i > start
+            && let Ok(val) = std::str::from_utf8(&body[start..i]).ok()?.parse()
+        {
+            return Some(val);
+        }
+        pos = after;
+    }
+    None
+}
+
+fn parse_array_refs(body: &[u8], key: &[u8]) -> Vec<u32> {
+    let Some(idx) = find_subslice(body, 0, key) else {
         return Vec::new();
     };
-    let mut i = idx + 9;
+    let mut i = idx + key.len();
     while i < body.len() && body[i].is_ascii_whitespace() {
         i += 1;
     }
@@ -1129,8 +1404,90 @@ fn parse_contents_refs(body: &[u8]) -> Vec<u32> {
     refs
 }
 
-fn extract_stream_bytes(obj_body: &[u8]) -> Option<Vec<u8>> {
-    let stream_kw = find_subslice(obj_body, 0, b"stream")?;
+fn parse_contents_refs(body: &[u8]) -> Vec<u32> {
+    parse_array_refs(body, b"/Contents")
+}
+
+fn page_references_image(
+    page_body: &[u8],
+    inherited_resources: &[u32],
+    objects: &HashMap<u32, &[u8]>,
+) -> bool {
+    if contains_pdf_subtype_image(page_body) {
+        return true;
+    }
+    let mut res_bodies = vec![page_body];
+    if let Some(res_ref) = parse_single_ref(page_body, b"/Resources")
+        && let Some(res_body) = objects.get(&res_ref)
+    {
+        res_bodies.push(res_body);
+    }
+    for res_ref in inherited_resources {
+        if let Some(res_body) = objects.get(res_ref) {
+            res_bodies.push(res_body);
+        }
+    }
+    for res_body in res_bodies {
+        if contains_pdf_subtype_image(res_body) {
+            return true;
+        }
+        let mut xobj_sources: Vec<&[u8]> = vec![res_body];
+        if let Some(xobj_ref) = parse_single_ref(res_body, b"/XObject")
+            && let Some(xobj_dict) = objects.get(&xobj_ref)
+        {
+            xobj_sources.push(xobj_dict);
+        }
+        for src in xobj_sources {
+            if let Some(idx) = find_subslice(src, 0, b"/XObject") {
+                let tail = &src[idx..];
+                let text = String::from_utf8_lossy(tail);
+                let tokens: Vec<&str> = text.split_whitespace().collect();
+                for window in tokens.windows(3) {
+                    if window[2] == "R"
+                        && let Ok(num) = window[0].parse::<u32>()
+                        && window[1].parse::<u16>().is_ok()
+                        && let Some(target) = objects.get(&num)
+                        && contains_pdf_subtype_image(target)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn has_inline_image(stream: &[u8]) -> bool {
+    let mut i = 0;
+    while i < stream.len() {
+        let b = stream[i];
+        if b.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if b == b'(' {
+            let (_, next) = parse_pdf_literal_string(stream, i);
+            i = next;
+            continue;
+        }
+        let start = i;
+        while i < stream.len() && !stream[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if &stream[start..i] == b"BI" {
+            return true;
+        }
+    }
+    false
+}
+
+fn extract_stream_bytes(obj_body: &[u8], page_num: usize) -> Result<Vec<u8>, ExtractError> {
+    let stream_kw = find_subslice(obj_body, 0, b"stream").ok_or_else(|| {
+        ExtractError::Other(anyhow::anyhow!(
+            "PDF content object on page {page_num} has no stream"
+        ))
+    })?;
     let dict = &obj_body[..stream_kw];
     let mut data_start = stream_kw + 6;
     if obj_body.get(data_start..data_start + 2) == Some(b"\r\n") {
@@ -1138,36 +1495,63 @@ fn extract_stream_bytes(obj_body: &[u8]) -> Option<Vec<u8>> {
     } else if obj_body.get(data_start) == Some(&b'\n') || obj_body.get(data_start) == Some(&b'\r') {
         data_start += 1;
     } else {
-        return None;
+        return Err(ExtractError::Other(anyhow::anyhow!(
+            "Malformed PDF stream header on page {page_num}"
+        )));
     }
-    let endstream = find_subslice(obj_body, data_start, b"endstream")?;
+    let endstream = find_subslice(obj_body, data_start, b"endstream").ok_or_else(|| {
+        ExtractError::Other(anyhow::anyhow!(
+            "Malformed PDF stream end on page {page_num}"
+        ))
+    })?;
     let mut data = &obj_body[data_start..endstream];
     while data.last().is_some_and(|b| matches!(b, b'\r' | b'\n')) {
         data = &data[..data.len() - 1];
     }
 
     let parsed = PdfStream { dict, data };
-    if contains_subslice(parsed.dict, b"/FlateDecode") {
+    if let Some(filter_pos) = find_subslice(parsed.dict, 0, b"/Filter") {
+        let after = &parsed.dict[filter_pos + 7..];
+        let trimmed = after
+            .iter()
+            .position(|b| !b.is_ascii_whitespace())
+            .map_or(&[][..], |idx| &after[idx..]);
+        let is_flate = trimmed.starts_with(b"/FlateDecode")
+            && trimmed
+                .get(12)
+                .is_none_or(|b| !b.is_ascii_alphanumeric());
+        if !is_flate {
+            return Err(ExtractError::Other(anyhow::anyhow!(
+                "PDF stream on page {page_num} uses an unsupported filter"
+            )));
+        }
         let mut out = Vec::new();
         let mut decoder = ZlibDecoder::new(parsed.data).take((MAX_PDF_STREAM_BYTES + 1) as u64);
-        if decoder.read_to_end(&mut out).is_ok() && !out.is_empty() {
-            if out.len() <= MAX_PDF_STREAM_BYTES {
-                return Some(out);
-            }
-            return None;
+        if decoder.read_to_end(&mut out).is_ok()
+            && !out.is_empty()
+            && out.len() <= MAX_PDF_STREAM_BYTES
+        {
+            return Ok(out);
         }
         out.clear();
         let mut raw_decoder =
             DeflateDecoder::new(parsed.data).take((MAX_PDF_STREAM_BYTES + 1) as u64);
-        if raw_decoder.read_to_end(&mut out).is_ok() && out.len() <= MAX_PDF_STREAM_BYTES {
-            return Some(out);
+        if raw_decoder.read_to_end(&mut out).is_ok()
+            && !out.is_empty()
+            && out.len() <= MAX_PDF_STREAM_BYTES
+        {
+            return Ok(out);
         }
-        None
-    } else if parsed.data.len() <= MAX_PDF_STREAM_BYTES {
-        Some(parsed.data.to_vec())
-    } else {
-        None
+        return Err(ExtractError::Other(anyhow::anyhow!(
+            "Could not decompress PDF FlateDecode stream on page {page_num}"
+        )));
     }
+    if parsed.data.len() > MAX_PDF_STREAM_BYTES {
+        return Err(ExtractError::Other(anyhow::anyhow!(
+            "PDF stream on page {page_num} exceeds size limit"
+        )));
+    }
+    Ok(parsed.data.to_vec())
 }
 
 fn extract_text_from_pdf_content_stream(stream: &[u8]) -> String {
@@ -1580,6 +1964,88 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, ExtractError::ScannedPdfUnsupported));
+        Ok(())
+    }
+
+    #[test]
+    fn mixed_text_and_scanned_pdf_is_never_reported_as_fully_read() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut pdf = Vec::new();
+        pdf.extend_from_slice(b"%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n");
+        pdf.extend_from_slice(b"2 0 obj << /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >> endobj\n");
+        pdf.extend_from_slice(b"3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R >> endobj\n");
+        pdf.extend_from_slice(b"4 0 obj << /Length 60 >>\nstream\nBT /F1 12 Tf (Page one carries plenty of searchable words) Tj ET\nendstream\nendobj\n");
+        pdf.extend_from_slice(b"5 0 obj << /Type /Page /Parent 2 0 R /Contents 6 0 R >> endobj\n");
+        pdf.extend_from_slice(b"6 0 obj << /Length 13 >>\nstream\nBT /Im1 Do ET\nendstream\nendobj\n");
+        pdf.extend_from_slice(b"7 0 obj << /Type /XObject /Subtype /Image /Width 10 /Height 10 >> endobj\n%%EOF");
+        let path = dir.path().join("mixed.pdf");
+        std::fs::write(&path, &pdf)?;
+        let result = extract_attachment(
+            &path,
+            &fixture_attachment("mixed.pdf", pdf.len() as u64),
+            AiProvider::DeepSeek,
+        );
+        assert!(result.is_err(), "a scanned page must not be silently dropped");
+        Ok(())
+    }
+
+    #[test]
+    fn xlsx_with_a_missing_declared_sheet_fails_instead_of_skipping_it() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("partial.xlsx");
+        {
+            let mut zip = ZipWriter::new(File::create(&path)?);
+            zip.start_file("xl/workbook.xml", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>
+                    <sheet name="One" sheetId="1" r:id="rId1"/><sheet name="Two" sheetId="2" r:id="rId2"/></sheets></workbook>"#,
+            )?;
+            zip.start_file("xl/_rels/workbook.xml.rels", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/>
+                    <Relationship Id="rId2" Target="worksheets/sheet2.xml"/></Relationships>"#,
+            )?;
+            zip.start_file("xl/worksheets/sheet1.xml", SimpleFileOptions::default())?;
+            zip.write_all(br#"<worksheet><sheetData><row><c t="inlineStr"><is><t>only</t></is></c></row></sheetData></worksheet>"#)?;
+            zip.finish()?;
+        }
+        let err = extract_attachment(
+            &path,
+            &fixture_attachment("partial.xlsx", std::fs::metadata(&path)?.len()),
+            AiProvider::Grok,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Two"), "error must name the missing sheet: {err}");
+        Ok(())
+    }
+
+    #[test]
+    fn docx_with_images_reports_the_unread_visual_content() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("pictured.docx");
+        {
+            let mut zip = ZipWriter::new(File::create(&path)?);
+            zip.start_file("word/document.xml", SimpleFileOptions::default())?;
+            zip.write_all(
+                br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+                    <w:p><w:r><w:t>Text next to a picture</w:t></w:r></w:p>
+                    <w:p><w:r><w:drawing/></w:r></w:p></w:body></w:document>"#,
+            )?;
+            zip.start_file("word/media/image1.png", SimpleFileOptions::default())?;
+            zip.write_all(b"\x89PNG")?;
+            zip.finish()?;
+        }
+        let extracted = extract_attachment(
+            &path,
+            &fixture_attachment("pictured.docx", std::fs::metadata(&path)?.len()),
+            AiProvider::DeepSeek,
+        )?;
+        let ExtractedAttachment::TextChunks { uncovered, .. } = &extracted else {
+            panic!("expected TextChunks, got {extracted:?}");
+        };
+        assert!(!uncovered.is_empty());
+        let built = build_chunked_requests("q", &[], &[], &[extracted])?;
+        assert!(built.uncovered.iter().any(|entry| entry.contains("pictured.docx")));
         Ok(())
     }
 }
