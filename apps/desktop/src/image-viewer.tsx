@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { KeyboardEvent, PointerEvent, ReactNode } from "react";
+import type { CSSProperties, KeyboardEvent, PointerEvent, ReactNode } from "react";
 import { api, errorMessage } from "./api";
 import type { ForwardTarget, ViewerSelection } from "./api";
 import { Dialog } from "./common";
@@ -24,6 +24,7 @@ import { createEmptyAnnotationDoc, exportAnnotatedImage } from "./image-annotato
 import { ImageAnnotationOverlay, ImageAnnotator } from "./image-annotator-view";
 import { t } from "./locale";
 import { MediaForwardPicker } from "./media-forward-picker";
+import { MediaSplitButton } from "./media-split-button";
 import type { ResolvedForwardAttempt } from "./media-forward-picker";
 import type {
   ImageAnnotationDoc,
@@ -75,8 +76,9 @@ export function ImageViewer() {
 
   const forceCloseWindow = useCallback(() => {
     bypassCloseGuardRef.current = true;
-    void appWindow.close().catch(() => {
+    void appWindow.destroy().catch(error => {
       bypassCloseGuardRef.current = false;
+      setFailure(errorMessage(error));
     });
   }, []);
 
@@ -157,6 +159,7 @@ export function ImageViewer() {
       : <><ViewerToolbar fullscreen={fullscreen} /><div className="image-viewer-note" role={failure ? "alert" : "status"}>
         {failure || <LoaderCircle className="preview-spinner" aria-label="Loading media" />}
       </div></>}
+    {selection && failure && <div className="image-action-status" role="alert">{failure}</div>}
   </main>;
 }
 
@@ -181,72 +184,13 @@ function ViewerSplitSendButton({
   onSendCurrent: () => void;
   onOpenForward: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!expanded) return;
-    const onPointerDown = (event: globalThis.PointerEvent) => {
-      if (rootRef.current && event.target instanceof Node && !rootRef.current.contains(event.target)) {
-        setExpanded(false);
-      }
-    };
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        setExpanded(false);
-      }
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown, true);
-    };
-  }, [expanded]);
-
-  const effectiveDisabled = disabled || busy;
-
-  return (
-    <div ref={rootRef} className={"viewer-split-send" + (expanded ? " expanded" : "")}>
-      <button
-        type="button"
-        className="viewer-split-main"
-        disabled={effectiveDisabled}
-        onClick={() => {
-          setExpanded(false);
-          onSendCurrent();
-        }}
-      >
-        {busy && <LoaderCircle className="preview-spinner" size={14} aria-hidden />}
-        {t("Send", "发送")}
-      </button>
-      {expanded ? (
-        <button
-          type="button"
-          className="viewer-split-alt"
-          disabled={effectiveDisabled}
-          onClick={() => {
-            setExpanded(false);
-            onOpenForward();
-          }}
-        >
-          {t("Forward", "转发")}
-        </button>
-      ) : (
-        <button
-          type="button"
-          className="viewer-split-toggle"
-          disabled={effectiveDisabled}
-          aria-expanded={false}
-          aria-label={t("Expand forward option", "展开转发选项")}
-          onClick={() => setExpanded(true)}
-        >
-          <ChevronDown size={14} aria-hidden />
-        </button>
-      )}
-    </div>
-  );
+  return <MediaSplitButton className="viewer-split-send"
+    label={t("Send", "发送")} menuLabel={t("Send options", "发送选项")}
+    disabled={disabled || busy} run={onSendCurrent}
+    choices={[{ label: t("Forward", "转发"), run: onOpenForward }]}>
+    {busy && <LoaderCircle className="preview-spinner" size={14} aria-hidden />}
+    {t("Send", "发送")}
+  </MediaSplitButton>;
 }
 
 type CanvasSharedProps = ViewerSelection & {
@@ -369,7 +313,7 @@ function ImageCanvas({
   const transform = clamp(view);
   const scale = view.scale ?? fit(view.turn);
   const size = dimensions(view.turn);
-  const pannable = !annotating && loaded && (size.width * scale > viewport.width || size.height * scale > viewport.height);
+  const pannable = loaded && (size.width * scale > viewport.width || size.height * scale > viewport.height);
   const viewTransform: ViewTransform = { x: transform.x, y: transform.y, scale, turn: view.turn };
 
   async function operate(action: () => Promise<void>) {
@@ -712,6 +656,7 @@ function VideoCanvas({
   const [busy, setBusy] = useState(false);
 
   const [trimming, setTrimming] = useState(false);
+  const [previewHeight, setPreviewHeight] = useState(66);
   const [loadingTrimAssets, setLoadingTrimAssets] = useState(false);
   const [probe, setProbe] = useState<VideoProbeInfo | null>(null);
   const [thumbnails, setThumbnails] = useState<string[]>([]);
@@ -777,7 +722,10 @@ function VideoCanvas({
       needsConfirm: () => exportRunning || trimming || hasUnsentEdits,
       promptClose: () => {
         if (exportRunning) {
-          setConfirmingCancelExport(true);
+          setPendingDiscardAction(() => () => {
+            pendingVideoSendRef.current = null;
+            forceCloseWindow();
+          });
           return;
         }
         setPendingDiscardAction(() => () => {
@@ -1055,6 +1003,9 @@ function VideoCanvas({
         </div>
       )}
     </ViewerToolbar>
+    <div className="video-workspace">
+    <div className="video-layout" data-trimming={trimming || undefined}
+      style={{ "--trim-preview": `${previewHeight}%` } as CSSProperties}>
     <div className="image-stage video-stage" tabIndex={0} aria-label={file.name}>
       {!failed && <video
         ref={videoRef}
@@ -1124,31 +1075,6 @@ function VideoCanvas({
           <p>{t("Loading timeline…", "正在加载剪辑时间轴…")}</p>
         </div>
       )}
-      {trimming && !loadingTrimAssets && probe && (
-        <VideoTrimmer
-          attachmentId={file.id}
-          videoRef={videoRef}
-          initialRange={trimRange}
-          probe={probe}
-          thumbnails={thumbnails}
-          onComplete={range => {
-            const isFull = Math.abs(range.startSec) < 1e-4 && Math.abs(range.endSec - range.durationSec) < 1e-4;
-            setTrimRange(isFull ? null : range);
-            setTrimming(false);
-            const el = videoRef.current;
-            if (el && !isFull) {
-              el.currentTime = range.startSec;
-            }
-          }}
-          onRequestCancel={dirty => {
-            if (!dirty) {
-              setTrimming(false);
-              return;
-            }
-            setPendingDiscardAction(() => () => setTrimming(false));
-          }}
-        />
-      )}
       {!draft && !hasOriginal && !trimming && <div className="viewer-original-video-bar">
         {origDownloading ? <>
           <span className="viewer-original-video-pill" role="status">
@@ -1178,6 +1104,53 @@ function VideoCanvas({
         role={actionError || saveError || origDownload?.error ? "alert" : "status"}>
         {actionError || saveError || origDownload?.error || notice || saveStatus}
       </div>}
+    </div>
+    {trimming && <div className="video-trim-divider" role="separator" tabIndex={0}
+      aria-label={t("Resize video preview", "调整视频预览高度")} aria-orientation="horizontal"
+      aria-valuemin={25} aria-valuemax={75} aria-valuenow={previewHeight}
+      onKeyDown={event => {
+        const step = event.key === "ArrowUp" ? -5 : event.key === "ArrowDown" ? 5 : 0;
+        if (!step) return;
+        event.preventDefault();
+        setPreviewHeight(value => Math.max(25, Math.min(75, value + step)));
+      }}
+      onPointerDown={event => {
+        if (event.button === 0) event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={event => {
+        if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+        const bounds = event.currentTarget.parentElement?.getBoundingClientRect();
+        if (bounds?.height) setPreviewHeight(Math.round(Math.max(25, Math.min(75,
+          (event.clientY - bounds.top) * 100 / bounds.height))));
+      }} />}
+      {trimming && !loadingTrimAssets && probe && (
+        <div className="video-trim-pane">
+        <VideoTrimmer
+          attachmentId={file.id}
+          videoRef={videoRef}
+          initialRange={trimRange}
+          probe={probe}
+          thumbnails={thumbnails}
+          onComplete={range => {
+            const isFull = Math.abs(range.startSec) < 1e-4 && Math.abs(range.endSec - range.durationSec) < 1e-4;
+            setTrimRange(isFull ? null : range);
+            setTrimming(false);
+            const el = videoRef.current;
+            if (el && !isFull) {
+              el.currentTime = range.startSec;
+            }
+          }}
+          onRequestCancel={dirty => {
+            if (!dirty) {
+              setTrimming(false);
+              return;
+            }
+            setPendingDiscardAction(() => () => setTrimming(false));
+          }}
+        />
+        </div>
+      )}
+    </div>
     </div>
     <MediaForwardPicker
       open={forwardOpen}

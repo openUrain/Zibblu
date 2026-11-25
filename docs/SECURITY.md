@@ -64,6 +64,8 @@ M1 使用 Argon2id 保存密码摘要。服务端保存七天会话令牌和安�
 
 Windows 和 iOS 的普通聊天预览只访问当前认证资料。接收的会话目录附带本账号的历史截止点，缺少该字段时仍走原有在线预览。临时预览读写复核最近同步的成员状态、截止点、附件有效期、撤回和本机隐藏状态。离线期间其他设备的权限变化在下次成功同步时生效。
 
+Windows 视频封面优先使用已核验的本机原片，缓存仍绑定附件、会话与本机账号。发送中的封面只从同账号、同会话的应用暂存文件生成。封面生成器只读取受限的视频容器和本地文件，限制输出与运行时间。
+
 SQLite 落盘后才发送元数据 ACK。完整保存并校验长度和 SHA-256 后，设备才提交独立的文件内容 ACK。未授权请求统一按不可见处理，授权用户可收到过期回应。内容响应使用 `Cache-Control: private, no-store`。服务端清理只结束数据的在线可用性，WAL、数据库备份、快照和代理需执行各自的留存与访问控制。
 
 Local attachment paths come from a native picker, an explicitly confirmed drop, or a confirmed Windows File Explorer paste. The native app holds the path list behind a single-use ticket and reads files under the current OS account when the user confirms. Pasted images supply bounded image bytes, without a path. Client-side previews of original attachments use the same authenticated chunk access as downloads. Image previews check SHA-256 and serve a content type derived from the validated bytes with `nosniff`. Image decoding is limited by input size, dimensions and decoded pixels. Animations are limited to 240 frames and 64 million canvas pixels in total. The app does not extract received archives.

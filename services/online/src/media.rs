@@ -341,7 +341,7 @@ async fn generate(dir: &FsPath, original_size: i64) -> [&'static str; 2] {
     ];
     let cover = [
         "-map", "0:V:0", "-an", "-sn", "-dn", "-map_metadata", "-1", "-filter_threads", "1",
-        "-vf", "scale=w='min(iw,640)':h='min(ih,640)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+        "-vf", "blackframe=amount=0:threshold=24,metadata=mode=select:key=lavfi.blackframe.pblack:function=less:value=98,scale=w='min(iw,640)':h='min(ih,640)':force_original_aspect_ratio=decrease:force_divisible_by=2",
         "-frames:v", "1", "-q:v", "4", "-threads", "2", "-f", "image2", "cover.jpg",
     ];
     let preview = [

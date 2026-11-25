@@ -19,6 +19,35 @@ pub(crate) static IMAGE_JOBS: Semaphore = Semaphore::const_new(2);
 static PREVIEW_LOCKS: [Mutex<()>; 16] = [const { Mutex::const_new(()) }; 16];
 
 #[tauri::command]
+pub(crate) async fn upload_video_cover(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    id: Uuid,
+) -> CommandResult<tauri::ipc::Response> {
+    let bytes = async {
+        #[cfg(windows)]
+        {
+            let client = state.client().await.map_err(|_| anyhow::anyhow!("Sign in to preview uploads"))?;
+            let (conversation, path, _input) = client.staged_video(id).await?;
+            ensure!(crate::chat_window::is_chat_or_main_window(window.label())
+                && crate::chat_window::window_allows_conversation(window.label(), conversation),
+                "Upload belongs to another conversation");
+            let _permit = IMAGE_JOBS.acquire().await?;
+            let bundled = state.video_exports.bundled_ffmpeg_dir();
+            let bytes = crate::video_edit::extract_video_cover(&path, bundled.as_deref()).await?;
+            ensure!(state.is_current(&client).await, "The session has ended");
+            Ok::<_, anyhow::Error>(bytes)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (window, state, id);
+            Ok::<Vec<u8>, anyhow::Error>(Vec::new())
+        }
+    }.await?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
 pub(crate) async fn preview_video_cover_bytes(
     window: WebviewWindow,
     state: State<'_, Desktop>,
@@ -40,8 +69,7 @@ pub(crate) async fn preview_video_cover_bytes(
             file.preview_mime().is_some_and(|mime| mime.starts_with("video/")),
             "Unsupported video type"
         );
-        let bytes = client
-            .video_cover(message.conversation_id, message.seq, &file)
+        let bytes = video_cover(&state, &client, message.conversation_id, message.seq, &file)
             .await?
             .map(|(_, b)| b)
             .unwrap_or_default();
@@ -50,6 +78,38 @@ pub(crate) async fn preview_video_cover_bytes(
     }
     .await?;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+async fn video_cover(
+    state: &Desktop,
+    client: &Client,
+    conversation: Uuid,
+    seq: i64,
+    file: &Attachment,
+) -> Result<Option<(String, Vec<u8>)>> {
+    #[cfg(windows)]
+    {
+        let _request = PREVIEW_LOCKS[file.id.as_bytes()[0] as usize % PREVIEW_LOCKS.len()].lock().await;
+        if let Some(cover) = client.cached_video_cover(conversation, seq, file).await? {
+            return Ok(Some(cover));
+        }
+        if let Some(path) = client.local_video_original_path(conversation, seq, file, true).await? {
+            let _permit = IMAGE_JOBS.acquire().await?;
+            let bundled = state.video_exports.bundled_ffmpeg_dir();
+            if let Ok(bytes) = crate::video_edit::extract_video_cover(&path, bundled.as_deref()).await
+                && !bytes.is_empty()
+            {
+                client.remember_video_cover(conversation, seq, file, &bytes).await?;
+                return Ok(Some(("image/jpeg".into(), bytes)));
+            }
+        }
+        client.video_cover(conversation, seq, file).await
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = state;
+        client.video_cover(conversation, seq, file).await
+    }
 }
 
 #[tauri::command]
@@ -451,8 +511,7 @@ async fn media_response(
     let query = request.uri().query().and_then(|query| query.split('&').next());
     if mime_hint.starts_with("video/") {
         if query == Some("video-cover") {
-            let Some((mime, bytes)) = client
-                .video_cover(message.conversation_id, message.seq, &file)
+            let Some((mime, bytes)) = video_cover(&app.state::<Desktop>(), &client, message.conversation_id, message.seq, &file)
                 .await?
             else {
                 anyhow::bail!("Video cover unavailable");

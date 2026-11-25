@@ -265,6 +265,43 @@ impl Client {
             .await?)
     }
 
+    pub async fn cached_video_cover(
+        &self,
+        conversation: Uuid,
+        seq: i64,
+        file: &Attachment,
+    ) -> Result<Option<(String, Vec<u8>)>> {
+        self.ensure_open()?;
+        if !self.ensure_message_authorized_for_cache(conversation, seq).await? {
+            return Ok(None);
+        }
+        self.read_media_bytes(
+            conversation, seq, Some(file.id), MediaVariant::VideoCover, &file.sha256,
+        ).await
+    }
+
+    pub async fn remember_video_cover(
+        &self,
+        conversation: Uuid,
+        seq: i64,
+        file: &Attachment,
+        bytes: &[u8],
+    ) -> Result<()> {
+        let sha = format!("{:x}", Sha256::digest(bytes));
+        self.commit_media_bytes(&MediaDescriptor {
+            conversation_id: conversation,
+            message_seq: seq,
+            attachment_id: Some(file.id),
+            variant: MediaVariant::VideoCover,
+            content_key: &file.sha256,
+            expected_sha256: &sha,
+            expected_size: bytes.len() as u64,
+            mime: "image/jpeg",
+            dimensions: None,
+        }, bytes).await?;
+        Ok(())
+    }
+
     pub async fn video_cover(
         &self,
         conversation_id: Uuid,

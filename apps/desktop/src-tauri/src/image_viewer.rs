@@ -19,6 +19,22 @@ use zibblu_core::{
 
 pub(crate) const LABEL: &str = "image-viewer";
 
+#[cfg(windows)]
+pub(crate) fn release_closed_viewer(app: &AppHandle) {
+    let desktop = app.state::<Desktop>();
+    let scope = desktop.image_scope.write().expect("image scope").take();
+    if let Some(scope) = scope.filter(|scope| !scope.draft) {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let desktop = app.state::<Desktop>();
+            desktop.video_exports.cancel_for_attachment(scope.id).await;
+            if let Ok(client) = scope.client(&desktop).await {
+                let _ = client.cancel_original_video_download(scope.id).await;
+            }
+        });
+    }
+}
+
 pub(crate) fn close_deleted(app: &tauri::AppHandle, state: &Desktop, conversation: Uuid, seq: Option<i64>, include_drafts: bool) {
     #[cfg(windows)]
     {

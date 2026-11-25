@@ -280,6 +280,8 @@ impl Desktop {
         crate::chat_window::close_all_chat_windows(app);
         self.video_exports.cancel_all().await;
         self.ai.lock().expect("AI state").clear();
+        #[cfg(windows)]
+        crate::windows_shell::set_tray_unread(app, false);
         self.last_sync_revision
             .store(0, std::sync::atomic::Ordering::Relaxed);
         if let Some(task) = self.outbox_worker.lock().await.take() {
@@ -661,6 +663,8 @@ pub(crate) async fn sync(app: AppHandle, state: State<'_, Desktop>) -> Result<Sy
         }
         result => result?,
     };
+    #[cfg(windows)]
+    update_tray(&app, &update.directory);
     if let Some(lobby) = state.private.lock().await.as_ref() {
         lobby.set_memberships(crate::private_runtime::memberships(&client.membership_directory().await?));
     }
@@ -686,8 +690,28 @@ pub(crate) async fn membership_conversations(state: State<'_, Desktop>) -> Resul
 }
 
 #[tauri::command]
-pub(crate) async fn local_update(state: State<'_, Desktop>) -> Result<SyncUpdate> {
-    Ok(state.client().await?.local_update().await?)
+pub(crate) async fn local_update(app: AppHandle, state: State<'_, Desktop>) -> Result<SyncUpdate> {
+    #[cfg(windows)]
+    {
+        let session = state.session.lock().await;
+        let client = session.as_ref().context("Sign in first")?;
+        let update = client.local_update().await?;
+        update_tray(&app, &update.directory);
+        Ok(update)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Ok(state.client().await?.local_update().await?)
+    }
+}
+
+#[cfg(windows)]
+fn update_tray(app: &AppHandle, directory: &Directory) {
+    crate::windows_shell::set_tray_unread(
+        app,
+        directory.conversations.iter().any(|chat| chat.unread > 0 || chat.manual_unread),
+    );
 }
 
 #[tauri::command]
@@ -1522,7 +1546,7 @@ pub(crate) async fn clear_cache(
 pub(crate) async fn storage_stats(
     window: WebviewWindow,
     state: State<'_, Desktop>,
-) -> Result<StorageStats> {
+) -> Result<DesktopStorageStats> {
     if window.label() != "main" {
         return Err(anyhow!("Check storage usage from the main window").into());
     }
@@ -1530,5 +1554,23 @@ pub(crate) async fn storage_stats(
     let app_dir = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf));
-    Ok(client.storage_stats(app_dir.as_deref()).await?)
+    let usage = client.storage_stats(app_dir.as_deref()).await?;
+    #[cfg(windows)]
+    let volumes = crate::windows_shell::storage_volumes([
+        (app_dir.as_deref(), usage.app_bytes),
+        (Some(client.profile_dir()), usage.total_bytes.saturating_sub(usage.app_bytes)),
+    ]);
+    Ok(DesktopStorageStats {
+        usage,
+        #[cfg(windows)]
+        volumes,
+    })
+}
+
+#[derive(Serialize)]
+pub(crate) struct DesktopStorageStats {
+    #[serde(flatten)]
+    usage: StorageStats,
+    #[cfg(windows)]
+    volumes: Vec<crate::windows_shell::StorageVolume>,
 }

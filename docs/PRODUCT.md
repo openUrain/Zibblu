@@ -38,6 +38,8 @@ iPhone and iPad use the same sign-in and sync flows. Choose a file from the syst
 
 Registration asks for the new password twice. On Windows, the main window starts centered in the work area of its initial display. The first close asks whether to exit or hide to the system tray. Settings lets you change this local preference. Minimize still uses the taskbar. The tray can show the same window or exit the app. Launching again with the same data directory restores its window. Separate directories can run independent clients.
 
+On Windows, a left click on the tray icon restores and activates the main window. The tray icon marks unread ordinary conversations, including muted conversations. Storage settings show capacity by volume and keep cache cleanup limited to eligible Zibblu files.
+
 **User flow:** sign in → find a username → send a contact request → wait for approval → send messages or start a group → share files and find them in Files.
 
 Initial functional scope:

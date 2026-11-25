@@ -1279,10 +1279,6 @@ body.windows :is(button, a[href], summary, .choice, .zibblu-selector, .close-act
   border-color: var(--accent);
   box-shadow: var(--shadow), 0 0 4px 1px color-mix(in srgb, var(--accent) 20%, transparent);
 }
-.windows .chat-view .composer-input.ai-composer {
-  grid-template-areas: "editor ." "editor send";
-  grid-template-columns: minmax(0, 1fr) auto; padding-inline-start: 12px;
-}
 .windows .chat-view .composer-input > :is(.composer-plus, .send-button) {
   margin: 0; border-radius: 9999px;
 }

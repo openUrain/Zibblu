@@ -1091,14 +1091,14 @@ function Composer({ conversation, refresh, pickAttachments, pasteFiles, changed,
               }
             }} onRemove={() => removeAttachment(item.id)} />)}
         </div>}
-        <div className={"composer-input" + (assistant ? " ai-composer" : "")}>
-          {!assistant && <button className="icon-button composer-plus" type="button" title={t("Message tools", "消息工具")}
+        <div className={"composer-input" + (assistant && !windows ? " ai-composer" : "")}>
+          {(!assistant || windows) && <button className="icon-button composer-plus" type="button" title={t("Message tools", "消息工具")}
             aria-label={t("Message tools", "消息工具")} aria-haspopup="menu" aria-expanded={toolsAnchor?.classList.contains("composer-plus") ?? false}
             onClick={event => openTools(event.currentTarget, [
               { label: t("Attach a file", "附件"), icon: <Paperclip size={18} />, disabled: preparing || sending, action: () => void pick("file") },
               ...(!ios ? [{ label: t("Attach a folder", "文件夹"), icon: <FolderOpen size={18} />, disabled: preparing || sending, action: () => void pick("folder") }] : []),
             ])}><Plus size={20} /></button>}
-          <FloatingField multiline ref={textarea} id={menuId + "-message"} label={assistant ? t("AI prompt", "AI 提示词") : t("Message", "消息")}
+          <FloatingField multiline ref={textarea} id={menuId + "-message"} label={assistant && !windows ? t("AI prompt", "AI 提示词") : t("Message", "消息")}
             className="composer-text"
             aria-autocomplete="list" aria-controls={menu ? menuId : undefined}
             aria-activedescendant={menu && activeOption ? menuId + "-" + menuIndex : undefined}
@@ -1151,8 +1151,8 @@ function Composer({ conversation, refresh, pickAttachments, pasteFiles, changed,
             }} />
           <button className="button primary send-button" type="submit"
             disabled={(!draft.trim() && attachments.length === 0) || ambiguous || quoteUnavailable || oversized || sending || checkingImage || (!!assistant && (!view || !prompt))}
-            aria-label={assistant ? "Choose AI context" : sending ? "Sending message" : "Send message"}>
-            {assistant ? <>Choose context <ArrowRight size={16} /></>
+            aria-label={assistant && !windows ? "Choose AI context" : sending ? t("Sending message", "正在发送消息") : t("Send message", "发送消息")}>
+            {assistant && !windows ? <>Choose context <ArrowRight size={16} /></>
               : <span>{sending ? t("Sending…", "发送中…") : t("Send", "发送")}</span>}
           </button>
         </div>

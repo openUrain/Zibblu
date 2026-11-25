@@ -1,14 +1,20 @@
 import {
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
   ArrowUpRight,
+  Bold,
   Check,
   Circle,
   Eraser,
+  Italic,
   Minus,
   MousePointer2,
   Pen,
   Redo2,
   Square,
   Type,
+  Underline,
   Undo2,
   X,
 } from "lucide-react";
@@ -37,11 +43,13 @@ import {
   renderAnnotationDoc,
   renderSelectionChrome,
   resizeShapeByHandle,
+  resizeTextByHandle,
   resolveTextFontSize,
   undoHistory,
 } from "./image-annotator";
 import type { AnnotationHistoryState, SelectionHandleKind, TextSizeLevel } from "./image-annotator";
 import { t } from "./locale";
+import { MediaSplitButton } from "./media-split-button";
 import type {
   AnnotationColor,
   AnnotationTool,
@@ -87,11 +95,13 @@ type DragSession =
     }
   | {
       kind: "resize";
-      initialItem: ShapeAnnotation;
-      currentItem: ShapeAnnotation;
+      initialItem: ShapeAnnotation | TextAnnotation;
+      currentItem: ShapeAnnotation | TextAnnotation;
       handle: SelectionHandleKind;
+      startPoint: ImagePoint;
       pointerId: number;
     }
+  | { kind: "text-box"; start: ImagePoint; end: ImagePoint; pointerId: number }
   | {
       kind: "eraser";
       lastPoint: ImagePoint;
@@ -99,14 +109,28 @@ type DragSession =
       pointerId: number;
     };
 
-type TextEditorState = {
+type TextEditorState = Omit<TextAnnotation, "id" | "kind" | "text"> & {
   targetId: string | null; // null = new text item, string = editing existing text
-  x: number;
-  y: number;
-  color: AnnotationColor;
-  fontSize: number;
   value: string;
 };
+
+function withEditedText(doc: ImageAnnotationDoc, editor: TextEditorState): ImageAnnotationDoc {
+  const { targetId, value, ...style } = editor;
+  const text = value.trimEnd();
+  if (!text && !targetId) return doc;
+  if (!text) return { ...doc, items: doc.items.filter(item => item.id !== targetId) };
+  const annotation: TextAnnotation = { ...style, id: targetId ?? createAnnotationId(), kind: "text", text };
+  const previous = targetId && doc.items.find(item => item.id === targetId && item.kind === "text");
+  if (previous && Object.entries(annotation).every(([key, value]) => previous[key as keyof typeof previous] === value)) return doc;
+  return { ...doc, items: targetId
+    ? doc.items.map(item => item.id === targetId ? annotation : item)
+    : [...doc.items, annotation] };
+}
+
+function textEditorFrom(item: TextAnnotation): TextEditorState {
+  const { id, kind: _kind, text, ...style } = item;
+  return { ...style, targetId: id, value: text };
+}
 
 const COLOR_LABELS: Record<AnnotationColor, [string, string]> = {
   "#E53935": ["Red", "红色"],
@@ -135,6 +159,7 @@ const TEXT_SIZE_LABELS: Record<TextSizeLevel, [string, string]> = {
   medium: ["Medium text", "中号文字"],
   large: ["Large text", "大号文字"],
 };
+const shapeTools: readonly AnnotationTool[] = ["line", "arrow", "rect", "ellipse"];
 
 function normalizeTurn(turn: number): number {
   return ((Math.trunc(turn) % 4) + 4) % 4;
@@ -207,6 +232,9 @@ export function ImageAnnotator({
   const textInputRef = useRef<HTMLTextAreaElement>(null);
 
   const [tool, setTool] = useState<AnnotationTool>("pen");
+  const [shape, setShape] = useState<ShapeAnnotation["kind"]>("line");
+  const [pixelEraser, setPixelEraser] = useState(false);
+  const [hoverObject, setHoverObject] = useState(false);
   const [color, setColor] = useState<AnnotationColor>("#E53935");
   const [widthLevel, setWidthLevel] = useState<StrokeWidthLevel>("medium");
   const [textSize, setTextSize] = useState<TextSizeLevel>("medium");
@@ -272,60 +300,14 @@ export function ImageAnnotator({
 
   const commitTextEditor = useCallback(() => {
     if (!textEditor) return;
-    const trimmed = textEditor.value.replace(/\s+$/g, "");
-    if (textEditor.targetId) {
-      const existing = doc.items.find(
-        (item): item is TextAnnotation => item.id === textEditor.targetId && item.kind === "text",
-      );
-      setTextEditor(null);
-      if (!existing) return;
-      if (!trimmed) {
-        setSelectedId(null);
-        commitDoc({
-          ...doc,
-          items: doc.items.filter(item => item.id !== existing.id),
-        });
-        return;
-      }
-      if (
-        existing.text === trimmed &&
-        existing.color === textEditor.color &&
-        existing.fontSize === textEditor.fontSize
-      ) {
-        return;
-      }
-      commitDoc({
-        ...doc,
-        items: doc.items.map(item =>
-          item.id === existing.id
-            ? {
-                ...existing,
-                text: trimmed,
-                color: textEditor.color,
-                fontSize: textEditor.fontSize,
-              }
-            : item,
-        ),
-      });
-      return;
-    }
-
+    const next = withEditedText(doc, textEditor);
     setTextEditor(null);
-    if (!trimmed) return;
-    const newItem: TextAnnotation = {
-      id: createAnnotationId(),
-      kind: "text",
-      color: textEditor.color,
-      fontSize: textEditor.fontSize,
-      x: textEditor.x,
-      y: textEditor.y,
-      text: trimmed,
-    };
-    setSelectedId(newItem.id);
-    commitDoc({
-      ...doc,
-      items: [...doc.items, newItem],
-    });
+    if (next === doc) return;
+    const changed = textEditor.targetId
+      ? next.items.find(item => item.id === textEditor.targetId)
+      : next.items.at(-1);
+    setSelectedId(changed?.id ?? null);
+    commitDoc(next);
   }, [commitDoc, doc, textEditor]);
 
   // Reset transient editing states when leaving edit mode.
@@ -353,7 +335,8 @@ export function ImageAnnotator({
     if (!editing) return;
 
     function onKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.code === "Space" && !isEditableFocus(event.target)) {
+      if (event.code === "Space" && !isEditableFocus(event.target)
+          && !(event.target instanceof Element && event.target.closest("button"))) {
         event.preventDefault();
         setSpacePressed(true);
         return;
@@ -383,6 +366,7 @@ export function ImageAnnotator({
         return;
       }
       if (event.key === "Escape") {
+        if (event.target instanceof Element && event.target.closest(".media-split-button [aria-expanded=true], .media-split-options")) return;
         event.preventDefault();
         event.stopPropagation();
         if (selectedId) {
@@ -461,16 +445,15 @@ export function ImageAnnotator({
     const drag = dragRef.current;
     const hiddenIds = new Set<string>();
     if (textEditor?.targetId) hiddenIds.add(textEditor.targetId);
-    if (drag?.kind === "move" || drag?.kind === "resize") hiddenIds.add(drag.initialItem.id);
     if (drag?.kind === "eraser") {
       for (const id of drag.erasedIds) hiddenIds.add(id);
     }
 
-    const extraItems: ImageAnnotationItem[] = [];
+    let items = doc.items;
     if (drag?.kind === "pen" || drag?.kind === "shape") {
-      extraItems.push(drag.item);
+      items = [...items, drag.item];
     } else if (drag?.kind === "move" || drag?.kind === "resize") {
-      extraItems.push(drag.currentItem);
+      items = items.map(item => item.id === drag.initialItem.id ? drag.currentItem : item);
     }
 
     applyImageTransformToContext(ctx, stageRect, viewTransform, naturalWidth, naturalHeight, dpr);
@@ -479,7 +462,7 @@ export function ImageAnnotator({
       version: 1,
       naturalWidth,
       naturalHeight,
-      items: extraItems.length > 0 ? [...doc.items, ...extraItems] : doc.items,
+      items,
     };
     renderAnnotationDoc(ctx, renderDoc, { clipToImage: true, hiddenIds });
 
@@ -487,6 +470,8 @@ export function ImageAnnotator({
     const activeSelection =
       drag?.kind === "move" || drag?.kind === "resize"
         ? drag.currentItem
+        : drag?.kind === "text-box"
+          ? textBox(drag.start, drag.end)
         : selectedItem && !hiddenIds.has(selectedItem.id)
           ? selectedItem
           : null;
@@ -504,6 +489,8 @@ export function ImageAnnotator({
     stageRect,
     textEditor?.targetId,
     viewTransform,
+    color,
+    textSize,
   ]);
 
   if (!editing) {
@@ -537,14 +524,24 @@ export function ImageAnnotator({
     );
   }
 
+  function textBox(start: ImagePoint, end: ImagePoint): TextAnnotation {
+    const fontSize = resolveTextFontSize(textSize, naturalWidth, naturalHeight);
+    return {
+      id: "", kind: "text", text: "", color, fontSize, family: "system-ui",
+      x: Math.min(start.x, end.x), y: Math.min(start.y, end.y),
+      width: Math.max(fontSize * 3, Math.abs(end.x - start.x)),
+      height: Math.max(fontSize * 1.25, Math.abs(end.y - start.y)),
+    };
+  }
+
   function handlePointerDown(event: PointerEvent<HTMLCanvasElement>) {
     // Allow Space+left drag or middle-button drag to fall through to viewer panning.
     if (spacePressed || event.button === 1) return;
     if (event.button !== 0) return;
 
-    event.stopPropagation();
-
     if (textEditor) {
+      event.preventDefault();
+      event.stopPropagation();
       commitTextEditor();
       return;
     }
@@ -557,13 +554,15 @@ export function ImageAnnotator({
     if (tool === "select") {
       if (selectedItem) {
         const handle = hitTestSelectionHandle(selectedItem, pt, viewTransform.scale);
-        if (handle && selectedItem.kind !== "pen" && selectedItem.kind !== "text") {
+        if (handle && selectedItem.kind !== "pen") {
+          event.stopPropagation();
           event.currentTarget.setPointerCapture(event.pointerId);
           dragRef.current = {
             kind: "resize",
             initialItem: selectedItem,
             currentItem: selectedItem,
             handle,
+            startPoint: pt,
             pointerId: event.pointerId,
           };
           setDragTick(v => v + 1);
@@ -573,6 +572,7 @@ export function ImageAnnotator({
 
       const hit = hitTestAnnotation(doc, pt, viewTransform.scale, ctx);
       if (hit) {
+        event.stopPropagation();
         setSelectedId(hit.id);
         event.currentTarget.setPointerCapture(event.pointerId);
         dragRef.current = {
@@ -590,33 +590,23 @@ export function ImageAnnotator({
       return;
     }
 
+    event.stopPropagation();
+
     if (tool === "text") {
       const hit = hitTestAnnotation(doc, pt, viewTransform.scale, ctx);
       if (hit && hit.kind === "text") {
         setSelectedId(hit.id);
-        setTextEditor({
-          targetId: hit.id,
-          x: hit.x,
-          y: hit.y,
-          color: hit.color,
-          fontSize: hit.fontSize,
-          value: hit.text,
-        });
+        setTextEditor(textEditorFrom(hit));
         return;
       }
       setSelectedId(null);
-      setTextEditor({
-        targetId: null,
-        x: pt.x,
-        y: pt.y,
-        color,
-        fontSize: resolveTextFontSize(textSize, naturalWidth, naturalHeight),
-        value: "",
-      });
+      event.currentTarget.setPointerCapture(event.pointerId);
+      dragRef.current = { kind: "text-box", start: pt, end: pt, pointerId: event.pointerId };
+      setDragTick(value => value + 1);
       return;
     }
 
-    if (tool === "eraser") {
+    if (tool === "eraser" && !pixelEraser) {
       setSelectedId(null);
       const hits = findItemsAlongSegment(doc, pt, pt, viewTransform.scale, undefined, ctx);
       const erasedIds = new Set(hits);
@@ -631,7 +621,7 @@ export function ImageAnnotator({
       return;
     }
 
-    if (tool === "pen") {
+    if (tool === "pen" || tool === "eraser") {
       setSelectedId(null);
       const item: PenAnnotation = {
         id: createAnnotationId(),
@@ -639,6 +629,7 @@ export function ImageAnnotator({
         color,
         widthLevel,
         points: [pt],
+        erase: tool === "eraser" ? true : undefined,
       };
       event.currentTarget.setPointerCapture(event.pointerId);
       dragRef.current = { kind: "pen", item, pointerId: event.pointerId };
@@ -669,6 +660,8 @@ export function ImageAnnotator({
 
     const drag = dragRef.current;
     if (!drag) {
+      setHoverObject(tool === "select" && !!hitTestAnnotation(doc, pt, viewTransform.scale,
+        canvasRef.current?.getContext("2d")));
       if (tool === "select" && selectedItem && !spacePressed) {
         const handle = hitTestSelectionHandle(selectedItem, pt, viewTransform.scale);
         setHoverHandle(handle);
@@ -718,8 +711,16 @@ export function ImageAnnotator({
     }
 
     if (drag.kind === "resize") {
-      drag.currentItem = resizeShapeByHandle(drag.initialItem, drag.handle, pt, event.shiftKey);
+      drag.currentItem = drag.initialItem.kind === "text"
+        ? resizeTextByHandle(drag.initialItem, drag.handle, pt, drag.startPoint)
+        : resizeShapeByHandle(drag.initialItem, drag.handle, pt, event.shiftKey);
       setDragTick(v => v + 1);
+      return;
+    }
+
+    if (drag.kind === "text-box") {
+      drag.end = pt;
+      setDragTick(value => value + 1);
       return;
     }
 
@@ -786,11 +787,16 @@ export function ImageAnnotator({
     if (drag.kind === "resize") {
       const a = drag.initialItem;
       const b = drag.currentItem;
-      if (a.x1 === b.x1 && a.y1 === b.y1 && a.x2 === b.x2 && a.y2 === b.y2) return;
+      if (a === b) return;
       commitDoc({
         ...doc,
         items: doc.items.map(item => (item.id === a.id ? b : item)),
       });
+      return;
+    }
+
+    if (drag.kind === "text-box") {
+      setTextEditor({ ...textEditorFrom(textBox(drag.start, drag.end)), targetId: null });
       return;
     }
 
@@ -826,14 +832,7 @@ export function ImageAnnotator({
     const hit = hitTestAnnotation(doc, pt, viewTransform.scale, canvas.getContext("2d"));
     if (hit && hit.kind === "text") {
       setSelectedId(hit.id);
-      setTextEditor({
-        targetId: hit.id,
-        x: hit.x,
-        y: hit.y,
-        color: hit.color,
-        fontSize: hit.fontSize,
-        value: hit.text,
-      });
+      setTextEditor(textEditorFrom(hit));
     }
   }
 
@@ -892,50 +891,22 @@ export function ImageAnnotator({
     }
   }
 
-  function handleDone() {
+  function applyTextStyle(style: Partial<TextAnnotation>) {
     if (textEditor) {
-      // Compute latest doc synchronously if text editor is still open.
-      const trimmed = textEditor.value.replace(/\s+$/g, "");
-      let finalDoc = doc;
-      if (textEditor.targetId) {
-        finalDoc = trimmed
-          ? {
-              ...doc,
-              items: doc.items.map(item =>
-                item.id === textEditor.targetId && item.kind === "text"
-                  ? {
-                      ...item,
-                      text: trimmed,
-                      color: textEditor.color,
-                      fontSize: textEditor.fontSize,
-                    }
-                  : item,
-              ),
-            }
-          : { ...doc, items: doc.items.filter(item => item.id !== textEditor.targetId) };
-      } else if (trimmed) {
-        finalDoc = {
-          ...doc,
-          items: [
-            ...doc.items,
-            {
-              id: createAnnotationId(),
-              kind: "text",
-              color: textEditor.color,
-              fontSize: textEditor.fontSize,
-              x: textEditor.x,
-              y: textEditor.y,
-              text: trimmed,
-            },
-          ],
-        };
-      }
-      setTextEditor(null);
-      if (finalDoc !== doc) commitDoc(finalDoc);
-      onComplete(finalDoc);
-      return;
+      setTextEditor({ ...textEditor, ...style });
+    } else if (selectedItem?.kind === "text") {
+      commitDoc({
+        ...doc,
+        items: doc.items.map(item => item.id === selectedItem.id ? { ...selectedItem, ...style } : item),
+      });
     }
-    onComplete(doc);
+  }
+
+  function handleDone() {
+    const finalDoc = textEditor ? withEditedText(doc, textEditor) : doc;
+    setTextEditor(null);
+    if (finalDoc !== doc) commitDoc(finalDoc);
+    onComplete(finalDoc);
   }
 
   function handleTextKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -946,7 +917,7 @@ export function ImageAnnotator({
       setTextEditor(null);
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       event.stopPropagation();
       commitTextEditor();
@@ -979,24 +950,35 @@ export function ImageAnnotator({
     const scale = viewTransform.scale > 0 ? viewTransform.scale : 1;
     const turn = normalizeTurn(viewTransform.turn);
     const scaledFont = textEditor.fontSize * scale;
-    const lines = textEditor.value.split(/\r?\n/);
     return {
       left: `${stagePt.x}px`,
       top: `${stagePt.y}px`,
       color: textEditor.color,
       fontSize: `${scaledFont}px`,
       lineHeight: 1.25,
-      minWidth: `${Math.max(96, scaledFont * 3)}px`,
-      rows: Math.max(1, lines.length),
-      transform: turn ? `rotate(${turn * 90}deg)` : undefined,
+      width: `${(textEditor.width ?? textEditor.fontSize * 12) * scale}px`,
+      height: `${(textEditor.height ?? textEditor.fontSize * 1.25) * scale}px`,
+      fontFamily: textEditor.family,
+      fontWeight: textEditor.bold ? 700 : textEditor.width ? 400 : 600,
+      fontStyle: textEditor.italic ? "italic" : "normal",
+      textDecoration: textEditor.underline ? "underline" : undefined,
+      textAlign: textEditor.align,
+      transform: `rotate(${turn * Math.PI / 2 + (textEditor.rotation ?? 0)}rad)`,
     };
   }, [naturalHeight, naturalWidth, stageRect, textEditor, viewTransform]);
 
   const cursorMode = spacePressed
     ? "pan"
-    : hoverHandle
-      ? "handle"
-      : tool;
+    : dragRef.current?.kind === "move"
+      ? "moving"
+      : hoverHandle
+        ? hoverHandle
+        : tool === "select" && hoverObject ? "move" : tool;
+
+  const shapeOptions = tools.filter(item => shapeTools.includes(item.id));
+  const activeShape = shapeOptions.find(item => item.id === shape)!;
+  const eraserLabel = pixelEraser ? t("Pixel eraser", "像素擦除") : t("Object eraser", "对象擦除");
+  const textStyle = textEditor ?? (selectedItem?.kind === "text" ? selectedItem : undefined);
 
   return (
     <div ref={rootRef} className="image-annotator">
@@ -1025,22 +1007,15 @@ export function ImageAnnotator({
           className="image-annotator-text-input"
           aria-label={t("Annotation text", "标注文字")}
           placeholder={t("Type text…", "输入文字…")}
-          rows={textOverlayStyle.rows}
           value={textEditor.value}
-          style={{
-            left: textOverlayStyle.left,
-            top: textOverlayStyle.top,
-            color: textOverlayStyle.color,
-            fontSize: textOverlayStyle.fontSize,
-            lineHeight: textOverlayStyle.lineHeight,
-            minWidth: textOverlayStyle.minWidth,
-            transform: textOverlayStyle.transform,
-          }}
+          style={textOverlayStyle}
           onPointerDown={event => event.stopPropagation()}
           onDoubleClick={event => event.stopPropagation()}
           onChange={event => setTextEditor({ ...textEditor, value: event.target.value })}
           onKeyDown={handleTextKeyDown}
-          onBlur={commitTextEditor}
+          onBlur={event => {
+            if (!(event.relatedTarget instanceof Element && event.relatedTarget.closest(".image-annotator-toolbar"))) commitTextEditor();
+          }}
         />
       )}
 
@@ -1048,12 +1023,14 @@ export function ImageAnnotator({
         className="image-annotator-toolbar"
         role="toolbar"
         aria-label={t("Annotation tools", "标注工具栏")}
-        onMouseDown={event => event.preventDefault()}
+        onMouseDown={event => {
+          if (!(event.target instanceof Element && event.target.closest("select"))) event.preventDefault();
+        }}
         onPointerDown={event => event.stopPropagation()}
         onDoubleClick={event => event.stopPropagation()}
       >
         <div className="annotator-group" role="group" aria-label={t("Drawing tools", "绘图工具")}>
-          {tools.map(item => (
+          {tools.filter(item => !shapeTools.includes(item.id) && item.id !== "eraser").map(item => (
             <button
               key={item.id}
               type="button"
@@ -1066,6 +1043,18 @@ export function ImageAnnotator({
               {item.icon}
             </button>
           ))}
+          <MediaSplitButton label={activeShape.label} menuLabel={t("Shapes", "形状")}
+            pressed={shapeTools.includes(tool)} run={() => selectTool(shape)}
+            choices={shapeOptions.map(item => ({
+              label: item.label, icon: item.icon,
+              run: () => { setShape(item.id as ShapeAnnotation["kind"]); selectTool(item.id); },
+            }))}>{activeShape.icon}</MediaSplitButton>
+          <MediaSplitButton label={eraserLabel} menuLabel={t("Eraser modes", "橡皮擦模式")}
+            pressed={tool === "eraser"} run={() => selectTool("eraser")}
+            choices={[false, true].map(pixel => ({
+              label: pixel ? t("Pixel eraser", "像素擦除") : t("Object eraser", "对象擦除"),
+              run: () => { setPixelEraser(pixel); selectTool("eraser"); },
+            }))}><Eraser size={16} /></MediaSplitButton>
         </div>
 
         <span className="annotator-divider" aria-hidden />
@@ -1125,7 +1114,7 @@ export function ImageAnnotator({
                     title={t(labelEn, labelZh)}
                     aria-label={t(labelEn, labelZh)}
                     aria-pressed={activeWidthLevel === level}
-                    disabled={tool === "eraser"}
+                    disabled={tool === "eraser" && !pixelEraser}
                     onClick={() => handleStrokeWidthPick(level)}
                   >
                     <span className={`annotator-stroke-dot annotator-stroke-${level}`} />
@@ -1133,6 +1122,27 @@ export function ImageAnnotator({
                 );
               })}
         </div>
+
+        {textStyle && <div className="annotator-group" role="group" aria-label={t("Text style", "文字样式")}>
+          <select aria-label={t("Font family", "字体")} value={textStyle.family ?? "system-ui"}
+            onChange={event => applyTextStyle({ family: event.target.value as TextAnnotation["family"] })}>
+            <option value="system-ui">{t("System", "系统")}</option>
+            <option value="serif">{t("Serif", "衬线")}</option>
+            <option value="monospace">{t("Monospace", "等宽")}</option>
+          </select>
+          {([
+            ["bold", t("Bold", "粗体"), Bold], ["italic", t("Italic", "斜体"), Italic],
+            ["underline", t("Underline", "下划线"), Underline],
+          ] as const).map(([key, name, Icon]) => <button type="button" key={key} className="annotator-tool-btn"
+            aria-label={name} title={name} aria-pressed={!!textStyle[key]}
+            onClick={() => applyTextStyle({ [key]: !textStyle[key] })}><Icon size={16} /></button>)}
+          {([
+            ["left", t("Align left", "左对齐"), AlignLeft], ["center", t("Center", "居中"), AlignCenter],
+            ["right", t("Align right", "右对齐"), AlignRight],
+          ] as const).map(([align, name, Icon]) => <button type="button" key={align} className="annotator-tool-btn"
+            aria-label={name} title={name} aria-pressed={(textStyle.align ?? "left") === align}
+            onClick={() => applyTextStyle({ align })}><Icon size={16} /></button>)}
+        </div>}
 
         <span className="annotator-divider" aria-hidden />
 

@@ -265,6 +265,37 @@ async fn extract_single_thumbnail(
     Ok(bytes)
 }
 
+#[cfg(windows)]
+pub async fn extract_video_cover(path: &Path, bundled_dir: Option<&Path>) -> Result<Vec<u8>> {
+    let mut cmd = new_media_command("ffmpeg", bundled_dir);
+    cmd.args([
+        "-nostdin", "-v", "error", "-max_alloc", "134217728",
+        "-protocol_whitelist", "file", "-format_whitelist", "mov,matroska,webm,avi",
+        "-max_streams", "32", "-probesize", "8388608", "-analyzeduration", "5000000",
+        "-threads", "2", "-max_pixels", "8294400", "-i",
+    ])
+    .arg(path)
+    .args([
+        "-map", "0:V:0", "-an", "-sn", "-dn", "-map_metadata", "-1", "-filter_threads", "1",
+        "-vf", "blackframe=amount=0:threshold=24,metadata=mode=select:key=lavfi.blackframe.pblack:function=less:value=98,scale=w='min(iw,640)':h='min(ih,640)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+        "-frames:v", "1", "-q:v", "4", "-threads", "2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+    ])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null())
+    .kill_on_drop(true);
+    timeout(Duration::from_secs(THUMBNAIL_TIMEOUT_SECS), async {
+        let mut child = cmd.spawn().map_err(|err| map_spawn_error("ffmpeg", err))?;
+        let stdout = child.stdout.take().context("Missing ffmpeg stdout")?;
+        let mut bytes = Vec::new();
+        stdout.take((MAX_THUMBNAIL_BYTES + 1) as u64).read_to_end(&mut bytes).await?;
+        ensure!(bytes.len() <= MAX_THUMBNAIL_BYTES, "Video cover exceeded the size limit");
+        ensure!(child.wait().await?.success(), "Video cover generation failed");
+        Ok(bytes)
+    })
+    .await
+    .context("Timed out generating video cover")?
+}
+
 pub async fn extract_thumbnails(
     path: &Path,
     count: usize,

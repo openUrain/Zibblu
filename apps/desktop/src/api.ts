@@ -182,6 +182,7 @@ export const api = {
   profileImageUrl: (id: string, version: string) => convertFileSrc(`profile_${id}_${version}`, "zibblu-media"),
   previewImageBytes: (id: string, profileVersion?: string) => invoke<ArrayBuffer>("preview_image_bytes", { id, profileVersion }),
   previewVideoCoverBytes: (id: string) => invoke<ArrayBuffer>("preview_video_cover_bytes", { id }),
+  uploadVideoCover: (id: string) => invoke<ArrayBuffer>("upload_video_cover", { id }),
   uploadImageSize: (id: string) => invoke<ImageSize>("upload_image_size", { id }),
   readUpdate: (conversation: string, through?: number, sent?: number, viewed?: number) =>
     invoke<MessageReceipt | null>("read_update", { conversation, update: { through, sent: sent === undefined ? [] : [sent], viewed } }),

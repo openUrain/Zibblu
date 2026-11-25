@@ -2101,6 +2101,19 @@ impl Client {
         open_verified_input(&self.spool(key), file.size)
     }
 
+    pub async fn staged_video(&self, id: Uuid) -> Result<(Uuid, PathBuf, std::fs::File)> {
+        self.ensure_open()?;
+        let key = (id, Direction::Upload);
+        ensure!(!self.is_suppressed_upload(id).await?, "This upload was deleted locally");
+        let job = self.job(key).await?.context("This upload is unavailable")?;
+        let conversation = job.transfer.conversation_id;
+        let file = job.transfer.attachment;
+        ensure!(file.preview_mime().is_some_and(|mime| mime.starts_with("video/")), "This upload is not a video");
+        let path = self.spool(key);
+        let handle = open_verified_input(&path, file.size)?;
+        Ok((conversation, path, handle))
+    }
+
     async fn store_job(&self, job: &Job) -> Result<()> {
         let mut db = self.db.acquire().await?;
         store_job(&mut db, job).await

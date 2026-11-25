@@ -34,6 +34,7 @@ export type PenAnnotation = {
   color: AnnotationColor;
   widthLevel: StrokeWidthLevel;
   points: ImagePoint[];
+  erase?: true;
 };
 
 export type TextAnnotation = {
@@ -44,6 +45,14 @@ export type TextAnnotation = {
   x: number;
   y: number;
   text: string;
+  width?: number;
+  height?: number;
+  rotation?: number;
+  family?: "system-ui" | "serif" | "monospace";
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  align?: "left" | "center" | "right";
 };
 
 export type ShapeAnnotation = {

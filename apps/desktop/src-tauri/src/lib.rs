@@ -137,6 +137,11 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             let label = window.label().to_owned();
+            #[cfg(windows)]
+            if label == image_viewer::LABEL && matches!(event, WindowEvent::Destroyed) {
+                image_viewer::release_closed_viewer(window.app_handle());
+                return;
+            }
             let is_main = label == "main";
             let is_chat = chat_window::is_chat_window(&label);
             if !is_main && !is_chat {
@@ -203,6 +208,7 @@ pub fn run() {
             remote_image::preview_message_image,
             remote_image::cancel_message_image,
             media::upload_image_size,
+            media::upload_video_cover,
             commands::set_read_receipts,
             commands::read_update,
             commands::hide_message,
