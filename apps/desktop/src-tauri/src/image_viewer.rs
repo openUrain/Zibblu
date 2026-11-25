@@ -1,18 +1,21 @@
 use crate::commands::{Desktop, Result as CommandResult};
-#[cfg(windows)]
 use crate::media;
 use anyhow::{Context, Result, ensure};
 #[cfg(windows)]
 use image::{ImageDecoder, metadata::Orientation};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 #[cfg(windows)]
 use std::io::Cursor;
 use std::sync::{Arc, Weak};
 #[cfg(windows)]
 use tauri::{LogicalSize, Manager, PhysicalPosition, PhysicalSize};
-use tauri::{State, WebviewWindow};
+use tauri::{AppHandle, Emitter, State, WebviewWindow, ipc::InvokeBody};
 use uuid::Uuid;
-use zibblu_core::{Attachment, Client, Direction, FileFilter, Message, Transfer};
+use zibblu_core::{
+    Attachment, Client, ConversationRequest, Direction, Directory, FileFilter, ForwardRequest,
+    ForwardTarget, MAX_PASTED_IMAGE_BYTES, MediaVariant, Message, OriginalDownloadStatus, Transfer,
+    ViewerForwardItem,
+};
 
 pub(crate) const LABEL: &str = "image-viewer";
 
@@ -20,12 +23,27 @@ pub(crate) fn close_deleted(app: &tauri::AppHandle, state: &Desktop, conversatio
     #[cfg(windows)]
     {
         let mut scope = state.image_scope.write().expect("image scope");
-        let close = scope.as_ref().is_some_and(|selection| selection.conversation == conversation
-            && (!selection.draft || include_drafts)
-            && seq.is_none_or(|seq| selection.seq == seq));
-        if close {
+        let close_id = scope
+            .as_ref()
+            .filter(|selection| {
+                selection.conversation == conversation
+                    && (!selection.draft || include_drafts)
+                    && seq.is_none_or(|seq| selection.seq == seq)
+            })
+            .map(|selection| (selection.id, selection.draft));
+        if let Some((att_id, is_draft)) = close_id {
             scope.take();
             drop(scope);
+            if !is_draft {
+                let app_handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let desktop = app_handle.state::<Desktop>();
+                    desktop.video_exports.cancel_for_attachment(att_id).await;
+                    if let Ok(client) = desktop.client().await {
+                        let _ = client.cancel_original_video_download(att_id).await;
+                    }
+                });
+            }
             if let Some(viewer) = app.get_webview_window(LABEL) {
                 let _ = viewer.close();
             }
@@ -34,9 +52,42 @@ pub(crate) fn close_deleted(app: &tauri::AppHandle, state: &Desktop, conversatio
     #[cfg(not(windows))]
     let _ = (app, state, conversation, seq, include_drafts);
 }
+
+pub(crate) fn close_recalled(app: &tauri::AppHandle, state: &Desktop, recalled: &[i64], deleted: &[i64]) {
+    #[cfg(windows)]
+    {
+        if recalled.is_empty() && deleted.is_empty() {
+            return;
+        }
+        let mut scope = state.image_scope.write().expect("image scope");
+        let close_id = scope
+            .as_ref()
+            .filter(|selection| {
+                !selection.draft && (recalled.contains(&selection.seq) || deleted.contains(&selection.seq))
+            })
+            .map(|selection| selection.id);
+        if let Some(att_id) = close_id {
+            scope.take();
+            drop(scope);
+            let app_handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let desktop = app_handle.state::<Desktop>();
+                desktop.video_exports.cancel_for_attachment(att_id).await;
+                if let Ok(client) = desktop.client().await {
+                    let _ = client.cancel_original_video_download(att_id).await;
+                }
+            });
+            if let Some(viewer) = app.get_webview_window(LABEL) {
+                let _ = viewer.close();
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (app, state, recalled, deleted);
+}
 #[cfg(any(windows, test))]
-// Full-size controls, group and column gaps, and 12px of clearance beside each caption area.
-const MIN_VIEWER_WIDTH: f64 = 8.0 * 36.0 + 4.0 * 8.0 + 2.0 * (3.0 * 44.0 + 12.0);
+// Full-size controls, group and column gaps, split button, and clearance beside each caption area.
+const MIN_VIEWER_WIDTH: f64 = 560.0;
 
 #[derive(Clone)]
 pub(crate) struct ImageScope {
@@ -54,17 +105,47 @@ impl ImageScope {
         Ok(client)
     }
 
+    fn allows_media_file(file: &Attachment) -> bool {
+        let Some(mime) = file.preview_mime() else {
+            return false;
+        };
+        if mime.starts_with("image/") {
+            return file.size <= zibblu_core::MAX_PASTED_IMAGE_BYTES as u64;
+        }
+        mime.starts_with("video/")
+    }
+
     fn allows(&self, message: &Message, cutoff: i64, now: i64) -> bool {
         message.conversation_id == self.conversation
             && message.seq > cutoff
             && !message.recalled
             && (message.local_file
                 || message.expires_at.is_none_or(|end| end > now) && message.expired.is_none())
-            && message.attachment.as_ref().is_some_and(|file| {
-                file.preview_mime()
-                    .is_some_and(|mime| mime.starts_with("image/"))
-                    && file.size <= zibblu_core::MAX_PASTED_IMAGE_BYTES as u64
-            })
+            && message.attachment.as_ref().is_some_and(Self::allows_media_file)
+    }
+
+    async fn allows_async(&self, client: &Client, message: &Message, cutoff: i64, now: i64) -> bool {
+        if self.allows(message, cutoff, now) {
+            return true;
+        }
+        if message.conversation_id != self.conversation || message.seq <= cutoff || message.recalled {
+            return false;
+        }
+        let Some(ref file) = message.attachment else {
+            return false;
+        };
+        if !Self::allows_media_file(file) {
+            return false;
+        }
+        let variant = if file.preview_mime().is_some_and(|m| m.starts_with("video/")) {
+            MediaVariant::VideoPreview
+        } else {
+            MediaVariant::ImageOriginal
+        };
+        client
+            .has_cached_media_variant(message.conversation_id, message.seq, Some(file.id), variant, &file.sha256)
+            .await
+            .unwrap_or(false)
     }
 
     async fn cutoff(&self, client: &Client) -> Result<i64> {
@@ -81,10 +162,11 @@ impl ImageScope {
 
     async fn image(&self, client: &Client) -> Result<Message> {
         let message = client.attachment(self.id).await?;
+        let cutoff = self.cutoff(client).await?;
         ensure!(
             message.seq == self.seq
-                && self.allows(&message, self.cutoff(client).await?, client.server_now()),
-            "This image has expired or is no longer available"
+                && self.allows_async(client, &message, cutoff, client.server_now()).await,
+            "This media has expired or is no longer available"
         );
         Ok(message)
     }
@@ -108,12 +190,10 @@ impl ImageScope {
                 )
                 .await?;
             let now = client.server_now();
-            if let Some(message) = page
-                .items
-                .iter()
-                .find(|message| self.allows(message, cutoff, now))
-            {
-                return Ok(Some(message.clone()));
+            for message in &page.items {
+                if self.allows_async(client, message, cutoff, now).await {
+                    return Ok(Some(message.clone()));
+                }
             }
             match page.items.last() {
                 Some(last) if page.has_more && last.seq != cursor => cursor = last.seq,
@@ -341,6 +421,16 @@ async fn image_dimensions(
     seq: i64,
     file: Attachment,
 ) -> Option<(u32, u32)> {
+    if file.preview_mime().is_some_and(|mime| mime.starts_with("video/")) {
+        if let Ok(Some((_, bytes))) = client
+            .read_media_bytes(conversation_id, seq, Some(file.id), MediaVariant::VideoCover, &file.sha256)
+            .await
+            && let Some(dims) = bytes_dimensions(bytes).await
+        {
+            return Some(dims);
+        }
+        return Some((720, 440));
+    }
     let (_, bytes) = media::image_preview(client, conversation_id, seq, file, false)
         .await
         .ok()?;
@@ -409,11 +499,26 @@ fn initial_size(dimensions: Option<(u32, u32)>, width: f64, height: f64) -> (f64
 }
 
 #[derive(Serialize)]
+pub(crate) struct ViewerVideoState {
+    has_local_original: bool,
+    has_local_preview: bool,
+    has_local_cover: bool,
+    original_size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_download: Option<OriginalDownloadStatus>,
+}
+
+#[derive(Serialize)]
 pub(crate) struct ViewerSelection {
+    conversation_id: Uuid,
+    seq: i64,
     file: Attachment,
+    media_kind: &'static str,
     previous: bool,
     next: bool,
     download: Option<Transfer>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    video: Option<ViewerVideoState>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     draft: bool,
 }
@@ -439,18 +544,19 @@ pub(crate) async fn image_viewer_selection(
             .is_some();
         authorize_draft(&state, file.id).await?;
         return Ok(ViewerSelection {
+            conversation_id: conversation,
+            seq: 0,
             file,
+            media_kind: "image",
             previous,
             next,
             download: None,
+            video: None,
             draft: true,
         });
     }
-    let file = selection
-        .image(&client)
-        .await?
-        .attachment
-        .context("Missing image")?;
+    let message = selection.image(&client).await?;
+    let file = message.attachment.context("Missing media")?;
     let cutoff = selection.cutoff(&client).await?;
     let (previous, next) = tokio::try_join!(
         selection.neighbor(&client, false, cutoff),
@@ -459,14 +565,469 @@ pub(crate) async fn image_viewer_selection(
     let download = client.transfers().await?.into_iter().find(|transfer| {
         transfer.direction == Direction::Download && transfer.attachment.id == file.id
     });
+    let is_video = file.preview_mime().is_some_and(|mime| mime.starts_with("video/"));
+    let video = if is_video {
+        let (has_orig, has_prev, has_cov, dl) = tokio::join!(
+            client.has_cached_media_variant(
+                message.conversation_id,
+                message.seq,
+                Some(file.id),
+                MediaVariant::VideoOriginal,
+                &file.sha256,
+            ),
+            client.has_cached_media_variant(
+                message.conversation_id,
+                message.seq,
+                Some(file.id),
+                MediaVariant::VideoPreview,
+                &file.sha256,
+            ),
+            client.has_cached_media_variant(
+                message.conversation_id,
+                message.seq,
+                Some(file.id),
+                MediaVariant::VideoCover,
+                &file.sha256,
+            ),
+            client.original_video_download_status(file.id),
+        );
+        Some(ViewerVideoState {
+            has_local_original: has_orig.unwrap_or(false),
+            has_local_preview: has_prev.unwrap_or(false),
+            has_local_cover: has_cov.unwrap_or(false),
+            original_size: file.size,
+            original_download: dl,
+        })
+    } else {
+        None
+    };
     authorize(&state, file.id).await?;
     Ok(ViewerSelection {
+        conversation_id: message.conversation_id,
+        seq: message.seq,
         file,
+        media_kind: if is_video { "video" } else { "image" },
         previous: previous.is_some(),
         next: next.is_some(),
         download,
+        video,
         draft: false,
     })
+}
+
+#[tauri::command]
+pub(crate) async fn viewer_download_original_video(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    id: Uuid,
+) -> CommandResult<OriginalDownloadStatus> {
+    require(window.label() == LABEL, "Open the media viewer")?;
+    let client = authorize(&state, id).await?;
+    Ok(client.start_original_video_download(id).await?)
+}
+
+#[tauri::command]
+pub(crate) async fn viewer_cancel_original_video(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    id: Uuid,
+) -> CommandResult<()> {
+    require(window.label() == LABEL, "Open the media viewer")?;
+    let client = authorize(&state, id).await?;
+    Ok(client.cancel_original_video_download(id).await?)
+}
+
+async fn authorize_video_original(
+    state: &Desktop,
+    id: Uuid,
+) -> Result<(Arc<Client>, std::path::PathBuf, Attachment)> {
+    let client = authorize(state, id).await?;
+    let message = client.attachment(id).await?;
+    let file = message.attachment.context("Missing video")?;
+    ensure!(
+        file.preview_mime().is_some_and(|mime| mime.starts_with("video/")),
+        "Only video attachments can be trimmed"
+    );
+    let path = client
+        .local_video_original_path(message.conversation_id, message.seq, &file, true)
+        .await?
+        .context("Download and verify the original video before editing")?;
+    authorize(state, id).await?;
+    Ok((client, path, file))
+}
+
+fn encode_base64(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let combined = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((combined >> 18) & 0x3f) as usize] as char);
+        out.push(TABLE[((combined >> 12) & 0x3f) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[((combined >> 6) & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(combined & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+#[tauri::command]
+pub(crate) async fn viewer_video_probe(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    id: Uuid,
+) -> CommandResult<crate::video_edit::VideoProbeInfo> {
+    require(window.label() == LABEL, "Open the media viewer")?;
+    let (_client, path, _file) = authorize_video_original(&state, id).await?;
+    let bundled = state.video_exports.bundled_ffmpeg_dir();
+    Ok(crate::video_edit::probe_video(&path, bundled.as_deref()).await?)
+}
+
+#[tauri::command]
+pub(crate) async fn viewer_video_thumbnails(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    id: Uuid,
+    count: Option<usize>,
+) -> CommandResult<Vec<String>> {
+    require(window.label() == LABEL, "Open the media viewer")?;
+    let (_client, path, _file) = authorize_video_original(&state, id).await?;
+    let bundled = state.video_exports.bundled_ffmpeg_dir();
+    let frames = crate::video_edit::extract_thumbnails(&path, count.unwrap_or(10), bundled.as_deref()).await?;
+    Ok(frames
+        .into_iter()
+        .map(|bytes| format!("data:image/jpeg;base64,{}", encode_base64(&bytes)))
+        .collect())
+}
+
+#[tauri::command]
+pub(crate) async fn viewer_start_video_export(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    id: Uuid,
+    start_sec: f64,
+    end_sec: f64,
+    duration_sec: f64,
+) -> CommandResult<crate::video_edit::VideoExportProgress> {
+    require(window.label() == LABEL, "Open the media viewer")?;
+    let (client, path, _file) = authorize_video_original(&state, id).await?;
+    Ok(state
+        .video_exports
+        .start_trim_export(
+            id,
+            &path,
+            client.media_root(),
+            Some(client.as_ref()),
+            start_sec,
+            end_sec,
+            duration_sec,
+        )
+        .await?)
+}
+
+#[tauri::command]
+pub(crate) async fn viewer_video_export_status(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    export_id: Uuid,
+) -> CommandResult<Option<crate::video_edit::VideoExportProgress>> {
+    require(window.label() == LABEL, "Open the media viewer")?;
+    Ok(state.video_exports.status(export_id))
+}
+
+#[tauri::command]
+pub(crate) async fn viewer_cancel_video_export(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    export_id: Uuid,
+) -> CommandResult<Option<crate::video_edit::VideoExportProgress>> {
+    require(window.label() == LABEL, "Open the media viewer")?;
+    Ok(state.video_exports.cancel(export_id).await)
+}
+
+#[derive(Serialize)]
+pub(crate) struct ViewerForwardTargets {
+    own_id: Uuid,
+    current_conversation_id: Uuid,
+    directory: Directory,
+}
+
+#[derive(Clone, Serialize)]
+struct ViewerMediaSentEvent {
+    sent: usize,
+    queued: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AnnotatedSendMeta {
+    source_id: Uuid,
+    batch_id: Uuid,
+    targets: Vec<ForwardTarget>,
+    file_name: String,
+}
+
+fn decode_base64(input: &str) -> Result<Vec<u8>> {
+    fn val(b: u8) -> Option<u32> {
+        match b {
+            b'A'..=b'Z' => Some((b - b'A') as u32),
+            b'a'..=b'z' => Some((b - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((b - b'0' + 52) as u32),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let bytes: Vec<u8> = input
+        .bytes()
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect();
+    ensure!(bytes.len() % 4 == 0, "Invalid metadata encoding");
+    let mut out = Vec::with_capacity((bytes.len() / 4) * 3);
+    for chunk in bytes.chunks_exact(4) {
+        let a = val(chunk[0]).context("Invalid base64 byte")?;
+        let b = val(chunk[1]).context("Invalid base64 byte")?;
+        let c = if chunk[2] == b'=' {
+            None
+        } else {
+            Some(val(chunk[2]).context("Invalid base64 byte")?)
+        };
+        let d = if chunk[3] == b'=' {
+            None
+        } else {
+            Some(val(chunk[3]).context("Invalid base64 byte")?)
+        };
+        let combined = (a << 18) | (b << 12) | (c.unwrap_or(0) << 6) | d.unwrap_or(0);
+        out.push(((combined >> 16) & 0xff) as u8);
+        if c.is_some() {
+            out.push(((combined >> 8) & 0xff) as u8);
+        }
+        if d.is_some() {
+            out.push((combined & 0xff) as u8);
+        }
+    }
+    Ok(out)
+}
+
+fn sanitize_viewer_filename(raw: &str, fallback_stem: &str, ext: &str) -> String {
+    let base = raw
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(raw)
+        .trim()
+        .trim_end_matches(['.', ' ']);
+    let cleaned: String = base
+        .chars()
+        .map(|ch| {
+            if ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_end_matches(['.', ' ']);
+    let candidate = if trimmed.is_empty() {
+        format!("{fallback_stem}.{ext}")
+    } else if !trimmed.contains('.') {
+        format!("{trimmed}.{ext}")
+    } else {
+        trimmed.to_owned()
+    };
+    if candidate.len() > 160 {
+        format!("{fallback_stem}.{ext}")
+    } else {
+        candidate
+    }
+}
+
+fn emit_viewer_media_sent(app: &AppHandle, state: &Desktop, items: &[ViewerForwardItem]) {
+    let sent = items.iter().filter(|item| item.status == "sent").count();
+    let queued = items.iter().filter(|item| item.status == "queued").count();
+    if queued > 0 {
+        state.wake_outbox();
+    }
+    if sent > 0 || queued > 0 {
+        let _ = app.emit_to("main", "viewer-media-sent", ViewerMediaSentEvent { sent, queued });
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn viewer_forward_targets(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+) -> CommandResult<ViewerForwardTargets> {
+    require(window.label() == LABEL, "Open the media viewer")?;
+    let selection = scope(&state)?;
+    require(!selection.draft, "Draft media cannot be forwarded")?;
+    let client = selection.client(&state).await?;
+    let directory = client.directory().await?;
+    Ok(ViewerForwardTargets {
+        own_id: client.user.id,
+        current_conversation_id: selection.conversation,
+        directory,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn viewer_resolve_direct_target(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    contact_id: Uuid,
+) -> CommandResult<Uuid> {
+    require(window.label() == LABEL, "Open the media viewer")?;
+    let selection = scope(&state)?;
+    require(!selection.draft, "Draft media cannot be forwarded")?;
+    let client = selection.client(&state).await?;
+    Ok(client
+        .create_conversation(ConversationRequest::Direct { contact_id })
+        .await?)
+}
+
+#[tauri::command]
+pub(crate) async fn viewer_send_unedited(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    source_id: Uuid,
+    batch_id: Uuid,
+    targets: Vec<ForwardTarget>,
+) -> CommandResult<Vec<ViewerForwardItem>> {
+    require(window.label() == LABEL, "Open the media viewer")?;
+    let client = authorize(&state, source_id).await?;
+    let items = client
+        .forward_or_queue_media(
+            source_id,
+            &ForwardRequest {
+                batch_id,
+                targets,
+                skip_attachment_ids: Vec::new(),
+            },
+        )
+        .await?;
+    emit_viewer_media_sent(&app, &state, &items);
+    Ok(items)
+}
+
+#[tauri::command]
+pub(crate) async fn viewer_send_annotated_image(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    request: tauri::ipc::Request<'_>,
+) -> CommandResult<Vec<ViewerForwardItem>> {
+    require(window.label() == LABEL, "Open the media viewer")?;
+    let encoded_meta = request
+        .headers()
+        .get("zibblu-forward-meta")
+        .and_then(|value| value.to_str().ok())
+        .context("Missing send metadata")?;
+    let meta_bytes = decode_base64(encoded_meta)?;
+    let meta: AnnotatedSendMeta = serde_json::from_slice(&meta_bytes).context("Invalid send metadata")?;
+
+    let InvokeBody::Raw(bytes) = request.body() else {
+        return Err(anyhow::anyhow!("Missing exported image payload").into());
+    };
+    require(
+        !bytes.is_empty() && bytes.len() <= MAX_PASTED_IMAGE_BYTES,
+        "Annotated images must be between 1 byte and 16 MiB",
+    )?;
+    let owned = bytes.to_vec();
+    let mime = {
+        let permit = media::IMAGE_JOBS.acquire().await.map_err(anyhow::Error::from)?;
+        let bytes_for_check = owned.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let _permit = permit;
+            crate::images::verified_mime(&bytes_for_check)
+        })
+        .await
+        .map_err(anyhow::Error::from)??
+    };
+    let ext = match mime {
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "image/bmp" => "bmp",
+        "image/gif" => "gif",
+        _ => "png",
+    };
+    let safe_name = sanitize_viewer_filename(&meta.file_name, "annotated", ext);
+    let client = authorize(&state, meta.source_id).await?;
+    let tmp_dir = client.media_root().join("tmp");
+    tokio::fs::create_dir_all(&tmp_dir)
+        .await
+        .context("Could not prepare temporary directory")?;
+    let prefix = format!("annotated-{}-", Uuid::new_v4().simple());
+    let _temp_guard = client.track_temp_prefix(&prefix);
+    let tmp_path = tmp_dir.join(format!("{prefix}export.{ext}"));
+    tokio::fs::write(&tmp_path, &owned)
+        .await
+        .context("Could not write temporary annotated image")?;
+
+    let queue_res = client
+        .queue_edited_media_batch(safe_name, tmp_path.clone(), meta.batch_id, meta.targets.clone())
+        .await;
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+    queue_res?;
+
+    let items: Vec<ViewerForwardItem> = meta
+        .targets
+        .into_iter()
+        .map(|target| ViewerForwardItem {
+            target,
+            status: "queued".into(),
+            error: None,
+            cache_error: None,
+        })
+        .collect();
+    emit_viewer_media_sent(&app, &state, &items);
+    Ok(items)
+}
+
+#[tauri::command]
+pub(crate) async fn viewer_send_trimmed_video(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    source_id: Uuid,
+    export_id: Uuid,
+    batch_id: Uuid,
+    targets: Vec<ForwardTarget>,
+    file_name: String,
+) -> CommandResult<Vec<ViewerForwardItem>> {
+    require(window.label() == LABEL, "Open the media viewer")?;
+    let client = authorize(&state, source_id).await?;
+    let path = state
+        .video_exports
+        .take_completed_path(export_id)
+        .context("Trimmed video export is not ready")?;
+    let safe_name = sanitize_viewer_filename(&file_name, "trimmed", "mp4");
+    let queue_res = client
+        .queue_edited_media_batch(safe_name, path.clone(), batch_id, targets.clone())
+        .await;
+    state.video_exports.cleanup_entry(export_id).await;
+    let _ = tokio::fs::remove_file(&path).await;
+    queue_res?;
+
+    let items: Vec<ViewerForwardItem> = targets
+        .into_iter()
+        .map(|target| ViewerForwardItem {
+            target,
+            status: "queued".into(),
+            error: None,
+            cache_error: None,
+        })
+        .collect();
+    emit_viewer_media_sent(&app, &state, &items);
+    Ok(items)
 }
 
 #[tauri::command]
@@ -512,6 +1073,7 @@ pub(crate) async fn image_viewer_step(
         return Ok(());
     }
     let client = authorize(&state, id).await?;
+    state.video_exports.cancel_for_attachment(id).await;
     let cutoff = selection.cutoff(&client).await?;
     let Some(message) = selection.neighbor(&client, forward, cutoff).await? else {
         return Ok(());

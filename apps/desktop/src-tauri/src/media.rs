@@ -13,10 +13,37 @@ use tauri::{
 };
 use tokio::sync::{Mutex, Semaphore};
 use uuid::Uuid;
-use zibblu_core::{Attachment, CHUNK_SIZE, Client, MAX_PASTED_IMAGE_BYTES, OnlineError, ProfileImage, Transfer};
+use zibblu_core::{Attachment, CHUNK_SIZE, Client, MAX_PASTED_IMAGE_BYTES, MediaVariant, OnlineError, ProfileImage, Transfer};
 
 pub(crate) static IMAGE_JOBS: Semaphore = Semaphore::const_new(2);
 static PREVIEW_LOCKS: [Mutex<()>; 16] = [const { Mutex::const_new(()) }; 16];
+
+#[tauri::command]
+pub(crate) async fn preview_video_cover_bytes(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    id: Uuid,
+) -> CommandResult<tauri::ipc::Response> {
+    let bytes = async {
+        ensure!(window.label() == "main", "Open the preview in the main window");
+        let client = state.client().await.map_err(|_| anyhow::anyhow!("Sign in to preview media"))?;
+        let message = client.preview_attachment(id).await?;
+        let file = message.attachment.context("Missing attachment")?;
+        ensure!(
+            file.preview_mime().is_some_and(|mime| mime.starts_with("video/")),
+            "Unsupported video type"
+        );
+        let bytes = client
+            .video_cover(message.conversation_id, message.seq, &file)
+            .await?
+            .map(|(_, b)| b)
+            .unwrap_or_default();
+        ensure!(state.is_current(&client).await, "The session has ended");
+        Ok::<_, anyhow::Error>(bytes)
+    }
+    .await?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
 
 #[tauri::command]
 pub(crate) async fn upload_image_size(
@@ -57,7 +84,20 @@ pub(crate) async fn preview_image_bytes(
         } else {
             let message = client.preview_attachment(id).await?;
             let file = message.attachment.context("Missing attachment")?;
-            let (_, bytes) = image_preview(&client, message.conversation_id, message.seq, file, true).await?;
+            let conv_id = message.conversation_id;
+            let seq = message.seq;
+            let (_, bytes) = image_preview(&client, conv_id, seq, file.clone(), true).await?;
+            if client
+                .has_cached_media_variant(conv_id, seq, Some(file.id), MediaVariant::ImageOriginal, &file.sha256)
+                .await
+                .is_ok_and(|present| !present)
+            {
+                let bg_client = client.clone();
+                let bg_file = file;
+                tauri::async_runtime::spawn(async move {
+                    let _ = image_preview(&bg_client, conv_id, seq, bg_file, false).await;
+                });
+            }
             client.preview_attachment(id).await?;
             bytes
         };
@@ -373,13 +413,35 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>, viewer: bool
         ensure!(std::sync::Arc::ptr_eq(&client, &scoped), "The session has ended");
     }
     let message = client.preview_attachment(id).await?;
-    let file = message.attachment.context("Missing attachment")?;
+    let file = message.attachment.clone().context("Missing attachment")?;
     let mime_hint = file.preview_mime().context("Unsupported media type")?;
+    let query = request.uri().query().and_then(|query| query.split('&').next());
     if mime_hint.starts_with("video/") {
-        let response = preview_headers(mime_hint).header(header::ACCEPT_RANGES, "bytes");
+        if query == Some("video-cover") {
+            let Some((mime, bytes)) = client
+                .video_cover(message.conversation_id, message.seq, &file)
+                .await?
+            else {
+                anyhow::bail!("Video cover unavailable");
+            };
+            ensure_current(app, &client, &file).await?;
+            return Ok(preview_headers(&mime)
+                .header(header::ACCEPT_RANGES, "none")
+                .header(header::CONTENT_LENGTH, bytes.len())
+                .body(if *request.method() == Method::HEAD {
+                    Vec::new()
+                } else {
+                    bytes
+                })?);
+        }
+        let original_only = query == Some("video-original");
+        let info = client
+            .video_stream_info(&message, &file, original_only)
+            .await?;
+        let response = preview_headers(&info.mime).header(header::ACCEPT_RANGES, "bytes");
         if *request.method() == Method::HEAD {
             return Ok(response
-                .header(header::CONTENT_LENGTH, file.size)
+                .header(header::CONTENT_LENGTH, info.total_size)
                 .body(Vec::new())?);
         }
         let range = request.headers().get(header::RANGE);
@@ -387,42 +449,36 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>, viewer: bool
             match value
                 .to_str()
                 .ok()
-                .and_then(|value| preview_range(value, file.size))
+                .and_then(|value| preview_range(value, info.total_size))
             {
-                Some(range) => range,
+                Some(bounds) => bounds,
                 None => {
                     return Ok(response
                         .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                        .header(header::CONTENT_RANGE, format!("bytes */{}", file.size))
+                        .header(header::CONTENT_RANGE, format!("bytes */{}", info.total_size))
                         .body(Vec::new())?);
                 }
             }
         } else {
-            (0, file.size - 1)
+            (0, info.total_size.saturating_sub(1))
         };
-        // Serve at most one existing transfer chunk per range.
-        let end = end.min((start / CHUNK_SIZE + 1) * CHUNK_SIZE - 1);
-        let offset = start - start % CHUNK_SIZE;
-        let expected = (file.size - offset).min(CHUNK_SIZE) as usize;
-        let chunk = client.read_attachment_chunk(id, offset, expected).await?;
-        if !message.local_file && offset == 0 && file.size <= CHUNK_SIZE && chunk.len() as u64 == file.size {
-            let _ = client
-                .remember_single_chunk_video(message.conversation_id, message.seq, &file, mime_hint, &chunk)
-                .await;
-        }
+        let chunk = client
+            .read_video_stream_range(&message, &file, start, Some(end), original_only)
+            .await?;
         ensure_current(app, &client, &file).await?;
-        let body = chunk[(start - offset) as usize..=(end - offset) as usize].to_vec();
-        return Ok(response
-            .status(StatusCode::PARTIAL_CONTENT)
-            .header(
-                header::CONTENT_RANGE,
-                format!("bytes {start}-{end}/{}", file.size),
-            )
-            .header(header::CONTENT_LENGTH, body.len())
-            .body(body)?);
+        let mut builder = preview_headers(&chunk.mime).header(header::ACCEPT_RANGES, "bytes");
+        if range.is_some() || chunk.bytes.len() as u64 != chunk.total_size {
+            builder = builder
+                .status(StatusCode::PARTIAL_CONTENT)
+                .header(
+                    header::CONTENT_RANGE,
+                    format!("bytes {}-{}/{}", chunk.start, chunk.end, chunk.total_size),
+                );
+        }
+        return Ok(builder
+            .header(header::CONTENT_LENGTH, chunk.bytes.len())
+            .body(chunk.bytes)?);
     }
-
-    let query = request.uri().query().and_then(|query| query.split('&').next());
     let (mime, bytes) = if query == Some("cached-thumbnail") {
         client
             .cached_image_variant(message.conversation_id, message.seq, Some(file.id), &file.sha256, true)

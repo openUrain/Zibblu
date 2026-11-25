@@ -38,6 +38,7 @@ impl Client {
                 PRIMARY KEY (kind, id)
              );
              CREATE TABLE IF NOT EXISTS cancelled_downloads (id TEXT PRIMARY KEY);
+             CREATE TABLE IF NOT EXISTS discarded_uploads (id TEXT PRIMARY KEY);
              CREATE TABLE IF NOT EXISTS send_failure_notices (
                 kind TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY (kind, id)
              );
@@ -148,6 +149,18 @@ impl Client {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS video_preview_partials (
+                device_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                content_key TEXT NOT NULL,
+                preview_sha256 TEXT NOT NULL,
+                preview_size INTEGER NOT NULL,
+                mime TEXT NOT NULL,
+                rel_path TEXT NOT NULL,
+                chunks_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (device_id, conversation_id, content_key)
+             );
              DROP VIEW IF EXISTS preview_eligible;
              CREATE VIEW preview_eligible AS
                 SELECT i.seq, i.conversation_id, i.attachment_id,
@@ -156,7 +169,8 @@ impl Client {
                 FROM inbox i JOIN directory d ON d.id = 1
                 JOIN json_each(d.payload, '$.conversations') c
                   ON json_extract(c.value, '$.id') = i.conversation_id
-                 AND i.seq > json_extract(c.value, '$.joined_after')
+                 AND (json_extract(c.value, '$.joined_after') IS NULL
+                      OR i.seq > json_extract(c.value, '$.joined_after'))
                 WHERE i.attachment_id IS NOT NULL
                   AND json_extract(i.payload, '$.recalled') IS NOT 1
                   AND NOT EXISTS (SELECT 1 FROM hidden_messages h WHERE h.seq = i.seq);
@@ -176,8 +190,8 @@ impl Client {
                 FROM inbox
                 UNION ALL SELECT -id, conversation_id, NULL, draft FROM outbox WHERE draft IS NOT NULL
                   AND NOT EXISTS (SELECT 1 FROM local_suppressed_sends s WHERE s.kind = 'text' AND s.id = outbox.nonce);
-             UPDATE transfers SET payload = json_set(payload, '$.status', 'queued')
-                WHERE json_extract(payload, '$.status') = 'running';";
+             UPDATE transfers SET payload = json_set(payload, '$.status', 'queued', '$.retry_at', 0)
+                WHERE json_extract(payload, '$.status') IN ('running', 'queued');";
         for statement in statements.split_terminator(';') {
             sqlx::query(statement).execute(&mut *tx).await?;
         }
@@ -308,7 +322,7 @@ impl Client {
                             .or_else(|| message.attachment.as_ref().map(|file| file.id))
                         {
                             let suppressed: bool = sqlx::query_scalar(
-                                "SELECT EXISTS(SELECT 1 FROM local_suppressed_sends WHERE kind = 'upload' AND id = ? AND conversation_id = ?)",
+                                "SELECT EXISTS(SELECT 1 FROM local_suppressed_sends WHERE kind IN ('upload', 'forward') AND id = ? AND conversation_id = ?)",
                             ).bind(id.to_string()).bind(message.conversation_id.to_string()).fetch_one(&mut *tx).await?;
                             if suppressed {
                                 sqlx::query("INSERT OR IGNORE INTO local_deleted_messages (seq, conversation_id, attachment_id) VALUES (?,?,?)")
@@ -538,7 +552,7 @@ pub(super) async fn persist_message(
     }
     let suppressed: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM local_suppressed_sends WHERE conversation_id = ?1
-            AND ((kind = 'text' AND id = ?2) OR (kind = 'upload' AND id = ?3)))",
+            AND ((kind = 'text' AND id = ?2) OR (kind IN ('upload', 'forward') AND id = ?3)))",
     ).bind(message.conversation_id.to_string())
         .bind(message.nonce.map(|id| id.to_string()))
         .bind(message.attachment.as_ref().map(|file| file.id.to_string()))
@@ -599,10 +613,11 @@ async fn apply_recall(
     files: &mut Vec<String>,
     media_paths: &mut Vec<String>,
 ) -> Result<()> {
-    let attachment_id: Option<String> = sqlx::query_scalar(
-        "SELECT attachment_id FROM inbox WHERE seq = ?1 AND attachment_id IS NOT NULL
-         UNION SELECT attachment_id FROM local_deleted_messages WHERE seq = ?1 AND attachment_id IS NOT NULL",
+    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT attachment_id, conversation_id FROM inbox WHERE seq = ?1 AND attachment_id IS NOT NULL
+         UNION SELECT attachment_id, conversation_id FROM local_deleted_messages WHERE seq = ?1 AND attachment_id IS NOT NULL",
     ).bind(recall.message_seq).fetch_optional(&mut *db).await?;
+    let (attachment_id, conv_id) = row.unwrap_or((None, None));
     if let Some(id) = attachment_id {
         media_paths.extend(media_store::release_media_refs_in_tx(&mut *db, "download", &id).await?);
     }
@@ -638,6 +653,9 @@ async fn apply_recall(
             payload = json_remove(json_set(payload, '$.text', NULL, '$.attachment', NULL, '$.recalled', json('true')),
                                  '$.reply_to', '$.expired')
          WHERE seq = ?",
-    ).bind(recall.message_seq).execute(db).await?;
+    ).bind(recall.message_seq).execute(&mut *db).await?;
+    if let Some(conv) = conv_id {
+        media_store::cleanup_unreferenced_video_partials_in_tx(&mut *db, &conv, media_paths).await?;
+    }
     Ok(())
 }

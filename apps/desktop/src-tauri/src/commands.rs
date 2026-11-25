@@ -39,6 +39,7 @@ pub(crate) struct Desktop {
     attachment_offer: StdMutex<Option<(Uuid, Vec<PathBuf>)>>,
     pub(crate) drafts: crate::attachment_drafts::AttachmentDrafts,
     pub(crate) image_scope: std::sync::RwLock<Option<crate::image_viewer::ImageScope>>,
+    pub(crate) video_exports: crate::video_edit::VideoExportRegistry,
     #[cfg(windows)]
     pub(crate) image_window: Mutex<()>,
 }
@@ -62,6 +63,7 @@ impl Desktop {
             attachment_offer: StdMutex::new(None),
             drafts: Default::default(),
             image_scope: Default::default(),
+            video_exports: Default::default(),
             #[cfg(windows)]
             image_window: Mutex::new(()),
         }
@@ -92,6 +94,10 @@ impl Desktop {
 
     pub(crate) async fn is_current(&self, client: &Arc<Client>) -> bool {
         self.session.lock().await.as_ref().is_some_and(|active| Arc::ptr_eq(active, client))
+    }
+
+    pub(crate) fn wake_outbox(&self) {
+        self.outbox_wake.notify_one();
     }
 
     pub(crate) fn offer_attachments(&self, paths: Vec<PathBuf>) -> DropOffer {
@@ -215,6 +221,7 @@ impl Desktop {
             }),
         };
         *session = Some(client.clone());
+        crate::video_edit::cleanup_stale_trim_files(client.media_root());
         *self.outbox_worker.lock().await = Some(tauri::async_runtime::spawn(run_outbox(
             app.clone(),
             client.clone(),
@@ -265,6 +272,7 @@ impl Desktop {
         if let Some(window) = app.get_webview_window(crate::image_viewer::LABEL) {
             let _ = window.destroy();
         }
+        self.video_exports.cancel_all().await;
         self.ai.lock().expect("AI state").clear();
         if let Some(task) = self.outbox_worker.lock().await.take() {
             task.abort();
@@ -648,6 +656,7 @@ pub(crate) async fn sync(app: AppHandle, state: State<'_, Desktop>) -> Result<Sy
     if let Some(lobby) = state.private.lock().await.as_ref() {
         lobby.set_memberships(crate::private_runtime::memberships(&client.membership_directory().await?));
     }
+    crate::image_viewer::close_recalled(&app, &state, &update.recalled, &update.deleted);
     Ok(update)
 }
 

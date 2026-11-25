@@ -5,7 +5,7 @@ import type { Attachment, ImageSize, Message, Transfer } from "./api";
 import { canPreview, mediaKind, readAttachmentPage } from "./attachment-media";
 import { Blank, Dialog, usePage } from "./common";
 import { AttachmentDownload, SharedFile, TransferList, UploadOverlay } from "./files";
-import { thumbnailKey, useWorkspaceImage, WorkspaceImages } from "./workspace-image";
+import { thumbnailKey, useWorkspaceImage, videoCoverKey, WorkspaceImages } from "./workspace-image";
 
 type ChatMediaScope = {
   conversation: string; revision: number; recalled: ReadonlySet<number>; hidden: ReadonlySet<number>;
@@ -29,17 +29,35 @@ function MediaTile({ message, open, fitImage, size: hint }: {
   const [attempt, setAttempt] = useState(0);
   const [onlineSize, setOnlineSize] = useState<ImageSize>();
   const [cachedLocally, setCachedLocally] = useState(Boolean(message.local_file));
+  const [initialClockOffset] = useState(() => resources?.clockOffset ?? 0);
   const access = resources?.previewAccess(message.conversation_id, message.seq);
   const allowed = !resources || !!access;
-  const cachedImage = kind === "image" && access === "cached" && canPreview(file);
-  const key = cachedImage && allowed ? thumbnailKey(message, file) : undefined;
+  const cachedMedia = (kind === "image" || kind === "video") && access === "cached" && canPreview(file);
+  const key = cachedMedia && allowed
+    ? (kind === "video" ? videoCoverKey(message, file) : thumbnailKey(message, file))
+    : undefined;
   const expires = !message.local_file && !cachedLocally && message.expires_at != null
-    ? message.expires_at - (resources?.clockOffset ?? 0) : Infinity;
-  const { url, size, failed } = useWorkspaceImage(key, file.id, undefined, expires, attempt, visible);
+    ? message.expires_at - initialClockOffset : Infinity;
+  const readCover = useCallback(() => api.previewVideoCoverBytes(file.id), [file.id]);
+  const { url, size, failed } = useWorkspaceImage(
+    key,
+    file.id,
+    undefined,
+    expires,
+    attempt,
+    visible,
+    kind === "video" ? readCover : undefined,
+  );
   useEffect(() => {
     if (message.local_file || url) setCachedLocally(true);
   }, [message.local_file, url]);
-  const status = !allowed ? "failed" : cachedImage ? (url ? "ready" : failed ? "failed" : "loading") : state;
+  // Retry briefly if a freshly sent video's cover is still being transcoded on the server.
+  useEffect(() => {
+    if (kind !== "video" || !cachedMedia || !failed || attempt >= 4 || !visible) return;
+    const timer = window.setTimeout(() => setAttempt(value => value + 1), 1500 * (attempt + 1));
+    return () => window.clearTimeout(timer);
+  }, [kind, cachedMedia, failed, attempt, visible]);
+  const status = !allowed ? "failed" : cachedMedia ? (url ? "ready" : failed ? "failed" : "loading") : state;
   // WebView can reuse a decoded image at the same URL even when the response says no-store.
   const onlineQuery = useMemo(() => access === "online" ? `view=${crypto.randomUUID()}` : "", [access]);
   const element = useRef<HTMLButtonElement>(null);
@@ -57,7 +75,7 @@ function MediaTile({ message, open, fitImage, size: hint }: {
   }, [file.id]);
 
   return <button ref={element} type="button" className="media-tile" data-ready={status === "ready" ? "" : undefined}
-    data-cached-image={cachedImage ? "" : undefined}
+    data-cached-image={cachedMedia ? "" : undefined}
     data-fit-image={fitImage ? "" : undefined} style={fitImage ? thumbnailStyle(hint ?? size ?? onlineSize) : undefined}
     onClick={() => {
       if (status === "failed" && canPreview(file)) {
@@ -67,17 +85,17 @@ function MediaTile({ message, open, fitImage, size: hint }: {
       open();
     }}
     aria-label={`Open ${kind === "video" ? "video" : "image"} ${file.name}`}>
-    {cachedImage ? url && <img key="cached" src={url} alt="" /> : visible && status !== "failed" && (kind === "image"
+    {cachedMedia ? url && <img key="cached" src={url} alt="" /> : visible && status !== "failed" && (kind === "image"
       ? <img key="online" src={api.mediaUrl(file.id, "thumbnail") + (onlineQuery ? "&" + onlineQuery : "")
         + (attempt ? "&retry=" + attempt : "")} alt="" onLoad={event => {
         if (fitImage) setOnlineSize([event.currentTarget.naturalWidth, event.currentTarget.naturalHeight]);
         setState("ready");
       }} onError={() => setState("failed")} />
-      : <video src={api.mediaUrl(file.id) + (onlineQuery ? "?" + onlineQuery : "")} muted playsInline preload="metadata"
-        onLoadedMetadata={() => setState("ready")} onError={() => setState("failed")} aria-hidden="true" />)}
+      : <img key="video-cover-online" src={api.mediaUrl(file.id, "video-cover") + (onlineQuery ? "&" + onlineQuery : "")
+        + (attempt ? "&retry=" + attempt : "")} alt="" onLoad={() => setState("ready")} onError={() => setState("failed")} />)}
     {status === "failed" ? <span className="media-tile-fallback">
       {kind === "video" ? <Video size={22} /> : <Image size={22} />}
-      <span>{file.name}</span><small>{canPreview(file) ? "Preview unavailable" : "Download to open"}</small>
+      <span>{file.name}</span><small>{canPreview(file) ? (kind === "video" ? "Tap to play" : "Preview unavailable") : "Download to open"}</small>
     </span> : <>
       {status === "loading" && <span className="media-tile-status" role="status" aria-label="Loading preview"><LoaderCircle className="preview-spinner" size={16} aria-hidden /></span>}
       {kind === "video" && status === "ready" && <span className="media-play" aria-hidden="true"><Play size={20} fill="currentColor" /></span>}

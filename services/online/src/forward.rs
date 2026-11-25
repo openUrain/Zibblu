@@ -54,6 +54,10 @@ fn validate(input: &ForwardRequest) -> Result<()> {
         }) {
         return Err(Error::bad("Choose one to nine distinct target conversations and attachment IDs."));
     }
+    let mut skipped = HashSet::new();
+    if !input.skip_attachment_ids.iter().all(|id| ids.contains(id) && skipped.insert(*id)) {
+        return Err(Error::bad("Invalid skipped forwarding target."));
+    }
     Ok(())
 }
 
@@ -147,9 +151,13 @@ pub(crate) async fn begin_upload(
             sqlx::query("DELETE FROM attachments WHERE id = $1").bind(upload_id).execute(&mut *tx).await?;
         }
     }
-    // A batch only needs its original if at least one unpublished target is currently sendable.
+    // A batch only needs its original if at least one active unpublished target is currently sendable.
+    let skip: HashSet<Uuid> = input.request.skip_attachment_ids.iter().copied().collect();
     let mut allowed = false;
     for target in &input.request.targets {
+        if skip.contains(&target.attachment_id) {
+            continue;
+        }
         let published: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM messages WHERE attachment_id = $1 AND forward_batch = $2)",
         ).bind(target.attachment_id).bind(input.request.batch_id).fetch_one(&mut *tx).await?;
@@ -291,6 +299,26 @@ async fn publish_target(
     Ok(publication)
 }
 
+async fn skipped_target(
+    app: &App, auth: &Auth, input: &ForwardRequest, target: &ForwardTarget,
+) -> Result<Publication> {
+    let mut tx = app.db.begin().await?;
+    lock_message_feed(&mut tx).await?;
+    auth.require(&mut tx).await?;
+    let existing: Option<(i64, Uuid, Uuid, Option<Uuid>)> = sqlx::query_as(
+        "SELECT seq, sender_id, conversation_id, forward_batch FROM messages WHERE attachment_id = $1",
+    ).bind(target.attachment_id).fetch_optional(&mut *tx).await?;
+    match existing {
+        Some((seq, owner, conversation, key)) => {
+            if owner != auth.user_id || conversation != target.conversation_id || key != Some(input.batch_id) {
+                return Err(Error::conflict("The forwarding attachment ID is already in use."));
+            }
+            sync::publication(&mut tx, seq).await
+        }
+        None => Err(Error::conflict("The forwarding target was cancelled.")),
+    }
+}
+
 pub(crate) async fn publish(
     State(app): State<App>, auth: Auth, Path(id): Path<Uuid>, Json(input): Json<ForwardRequest>,
 ) -> Result<Json<Vec<ForwardResult>>> {
@@ -299,9 +327,15 @@ pub(crate) async fn publish(
     auth.require(&mut tx).await?;
     batch(&mut tx, &input, id, auth.user_id).await?;
     tx.commit().await?;
+    let skip: HashSet<Uuid> = input.skip_attachment_ids.iter().copied().collect();
     let mut results = Vec::with_capacity(input.targets.len());
     for target in &input.targets {
-        let (status, publication, error) = match publish_target(&app, &auth, id, &input, target).await {
+        let outcome = if skip.contains(&target.attachment_id) {
+            skipped_target(&app, &auth, &input, target).await
+        } else {
+            publish_target(&app, &auth, id, &input, target).await
+        };
+        let (status, publication, error) = match outcome {
             Ok(stamp) => (200, Some(stamp), None),
             Err(Error(status, message)) => (status.as_u16(), None, Some(message.to_owned())),
         };

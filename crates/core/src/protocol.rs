@@ -481,10 +481,12 @@ pub struct ForwardTarget {
     pub attachment_id: Uuid,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForwardRequest {
     pub batch_id: Uuid,
     pub targets: Vec<ForwardTarget>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip_attachment_ids: Vec<Uuid>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -507,4 +509,22 @@ pub struct ForwardUploadRequest {
 pub struct ForwardUploadProgress {
     pub id: Uuid,
     pub progress: UploadProgress,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoResourceMeta {
+    pub id: String,
+    pub status: String,
+    pub mime: String,
+    #[serde(default)]
+    pub size: Option<u64>,
+    #[serde(default)]
+    pub sha256: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoMediaMetadata {
+    pub attachment_id: Uuid,
+    pub cover: VideoResourceMeta,
+    pub preview: VideoResourceMeta,
 }
