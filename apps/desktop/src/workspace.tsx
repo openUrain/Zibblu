@@ -20,7 +20,7 @@ import { orderContacts } from "./contact-order";
 import { actions, t } from "./locale";
 import { ChatList, ChatView } from "./chat";
 import { FilesView } from "./files";
-import { NearbyDevices, PrivateChatView, PrivateInvitationOverlay, PrivateTargets, usePrivateRooms } from "./private-chat";
+import { exclusivePrivateRoom, NearbyDevices, PrivateChatView, PrivateInvitationOverlay, PrivateTargets, privateSessionActive, usePrivateRooms } from "./private-chat";
 import { QrContent, ScanQr, ShareQr } from "./qr";
 import type { SharedCode } from "./qr";
 import { ProfileView } from "./profile";
@@ -86,13 +86,14 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [chatPage, setChatPage] = useState<{ id: string; page: "details" | "search" }>();
   const [mobileChat, setMobileChat] = useState(false);
   const [privateView, setPrivateView] = useState<{ id: string; conversation?: string | null }>();
-  const privateId = privateView?.id;
   const privateSelection = useRef(0);
   const [privateTargets, setPrivateTargets] = useState<Conversation>();
   const [nearby, setNearby] = useState(false);
   const [shareCode, setShareCode] = useState<SharedCode>();
   const [scanning, setScanning] = useState(false);
-  const { rooms: privateRooms, prompt } = usePrivateRooms();
+  const { rooms: privateRooms, prompt, forget: forgetPrivate } = usePrivateRooms();
+  const exclusiveRoom = nav === "Chats" && exclusivePrivateRoom(privateRooms, directory.conversations.find(chat => chat.id === selected));
+  const privateId = privateView?.id ?? (exclusiveRoom ? exclusiveRoom.id : undefined);
   const privateOpen = privateId !== undefined;
   const [revision, setRevision] = useState(0);
   const [latestAiSeq, setLatestAiSeq] = useState(0);
@@ -280,7 +281,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }, [setDraft]);
 
   useEffect(() => {
-    const connected = new Set(privateRooms.filter(room => room.phase === "connected").map(room => "private/" + room.id));
+    const connected = new Set(privateRooms.filter(room => windows ? privateSessionActive(room) : room.phase === "connected").map(room => "private/" + room.id));
     setDrafts(previous => {
       const expired = Object.keys(previous).filter(key => key.startsWith("private/") && !connected.has(key));
       if (!expired.length) return previous;
@@ -478,7 +479,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }, []);
 
   const active = directory.conversations.find(chat => chat.id === selected);
-  const pairedPrivate = !!active && privateView?.conversation === active.id;
+  const pairedPrivate = !!active && (privateView?.conversation === active.id || (!privateView && !!exclusiveRoom));
   const availablePrivate = active && privateRooms.find(room => room.conversation === active.id);
   const activeId = nav === "Chats" && !privateOpen && !profile && !quickProfile ? active?.id : undefined;
   useEffect(() => {
@@ -514,11 +515,16 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }
 
   function selectChat(id: string, page?: "details" | "search") {
+    const target = directory.conversations.find(chat => chat.id === id);
+    const room = exclusivePrivateRoom(privateRooms, target);
+    if (room) {
+      showPrivate(room.id, id);
+      return;
+    }
     if (privateView?.conversation === id && !page) {
       setMobileChat(true);
       return;
     }
-    const target = directory.conversations.find(chat => chat.id === id);
     if (target?.manual_unread) {
       void api.setConversationManualUnread(id, false).then(() => refreshLocal()).catch(() => {});
     }
@@ -684,6 +690,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   function backFromChat() {
     privateSelection.current += 1;
     if (privateOpen) setPrivateView(undefined);
+    if (windows && privateOpen) setSelected(undefined);
     setMobileChat(false);
   }
   function returnToNormal() {
@@ -691,9 +698,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     setPrivateView(undefined);
     setMobileChat(pairedPrivate);
   }
-  function privateClosed(id: string, selection: number) {
+  function privateClosed(id: string, selection: number, invalidated?: boolean) {
     setDraft("private/" + id, () => ({ text: "" }));
+    forgetPrivate(id);
     if (selection !== privateSelection.current) return;
+    if (windows && invalidated) setFailure(t("The private session ended. Send a new invitation to reconnect.", "私密会话已结束。如需继续，请重新发送邀请。"));
     setShareCode(code => code?.kind === "private" ? undefined : code);
     returnToNormal();
   }
@@ -803,8 +812,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             isContact={id => directory.contacts.some(person => person.id === id)}
             draft={drafts["private/" + privateId]?.text ?? ""}
             setDraft={change => setDraft("private/" + privateId, previous => ({ text: change(previous.text) }))}
-            back={backFromChat} showCode={showPrivateCode} onClosed={() => privateClosed(privateId, viewSelection)}
-            switchMode={pairedPrivate ? returnToNormal : undefined} />
+            back={backFromChat} showCode={showPrivateCode} onClosed={invalidated => privateClosed(privateId, viewSelection, invalidated)}
+            switchMode={pairedPrivate && !exclusiveRoom ? returnToNormal : undefined} />
           : active ? <ChatView key={active.id + ":" + (active.joined_after ?? "")} chat={active}
             own={session.user} server={session.server} revision={revision} profileOpen={!!profile} historyCache={historyCache}
             privateRoom={availablePrivate}

@@ -84,6 +84,7 @@ Rules:
 - No server relay, online forwarding or unnoticed switch back to normal mode. Connection failure means private mode is unavailable.
 - No private messages or attachments written to normal chat history. MVP private mode supports **text**; private file transfer requires a separate later decision.
 - Switching views keeps the private session available alongside ordinary chats. Ending the session or quitting the host closes the channel and clears the in-memory conversation.
+- On Windows, an established private session for a direct chat takes over that chat's list entry. Several contacts can have independent active sessions. Temporary LAN loss pauses sends, and the same two approved devices can restore the session while both retain it in memory. Ending the session returns to ordinary chat history.
 - On iPhone, invitations appear inside the foreground app. Going to the background or losing the current Wi-Fi path ends the local private session. Nearby discovery resumes when Wi-Fi is available in the app again.
 - Private content stays out of cloud AI, notifications, search indexing, out-of-session previews, analytics and logs.
 - The app cannot retract screenshots, recipient copies or guarantee removal of OS memory/swap remnants. UX copy must not claim absolute erasure.

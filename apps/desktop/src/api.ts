@@ -135,7 +135,7 @@ export type GroupInvite = { code: string; expires_at: number };
 export type GroupPreview = { id: string; title: string; member_count: number };
 export type PrivateSummary = {
   id: string; conversation: string | null; host: User; invited: User[]; participants: User[];
-  phase: "discovering" | "waiting" | "invited" | "authenticating" | "connected" | "missed" | "failed" | "ended";
+  phase: "discovering" | "waiting" | "invited" | "authenticating" | "connected" | "suspended" | "reconnecting" | "missed" | "failed" | "ended";
   open: boolean; hosted: boolean; unread: boolean;
 };
 export type PrivateList = { rooms: PrivateSummary[]; prompt: string | null };
@@ -183,6 +183,7 @@ export const api = {
   previewImageBytes: (id: string, profileVersion?: string) => invoke<ArrayBuffer>("preview_image_bytes", { id, profileVersion }),
   previewVideoCoverBytes: (id: string) => invoke<ArrayBuffer>("preview_video_cover_bytes", { id }),
   uploadVideoCover: (id: string) => invoke<ArrayBuffer>("upload_video_cover", { id }),
+  privatePreview: (enabled: boolean) => invoke<void>("private_preview", { enabled }),
   uploadImageSize: (id: string) => invoke<ImageSize>("upload_image_size", { id }),
   readUpdate: (conversation: string, through?: number, sent?: number, viewed?: number) =>
     invoke<MessageReceipt | null>("read_update", { conversation, update: { through, sent: sent === undefined ? [] : [sent], viewed } }),

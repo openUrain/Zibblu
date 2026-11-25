@@ -19,6 +19,10 @@ use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, Window,
 };
 use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Graphics::Dwm::{
+    DWMWA_DISALLOW_PEEK, DWMWA_FORCE_ICONIC_REPRESENTATION, DwmInvalidateIconicBitmaps,
+    DwmSetWindowAttribute,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     GetDiskFreeSpaceExW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
 };
@@ -28,6 +32,20 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 const TRAY_ID: &str = "zibblu-tray";
 struct TrayUnread(AtomicBool);
+
+pub(crate) fn set_private_preview(window: &WebviewWindow, private: bool) -> anyhow::Result<()> {
+    let hwnd = window.hwnd()?.0;
+    let enabled = i32::from(private);
+    for attribute in [DWMWA_FORCE_ICONIC_REPRESENTATION, DWMWA_DISALLOW_PEEK] {
+        let result = unsafe {
+            DwmSetWindowAttribute(hwnd, attribute as u32, (&enabled as *const i32).cast(), 4)
+        };
+        anyhow::ensure!(result >= 0, "Windows could not update the task switch preview");
+    }
+    let result = unsafe { DwmInvalidateIconicBitmaps(hwnd) };
+    anyhow::ensure!(result >= 0, "Windows could not refresh the task switch preview");
+    Ok(())
+}
 
 #[derive(serde::Serialize)]
 pub(crate) struct StorageVolume {

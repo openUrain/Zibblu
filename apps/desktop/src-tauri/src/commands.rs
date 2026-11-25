@@ -667,6 +667,12 @@ pub(crate) async fn sync(app: AppHandle, state: State<'_, Desktop>) -> Result<Sy
     update_tray(&app, &update.directory);
     if let Some(lobby) = state.private.lock().await.as_ref() {
         lobby.set_memberships(crate::private_runtime::memberships(&client.membership_directory().await?));
+        #[cfg(windows)]
+        for chat in &update.directory.conversations {
+            if chat.title.is_none() && lobby.has_active_conversation(chat.id) {
+                crate::chat_window::close_chat_window(&app, chat.id);
+            }
+        }
     }
     crate::image_viewer::close_recalled(&app, &state, &update.recalled, &update.deleted);
     if state
@@ -1209,6 +1215,18 @@ pub(crate) async fn private_view(
         return Err(anyhow!("Open private messages in the main window").into());
     }
     Ok(state.lobby().await?.view(id, after)?)
+}
+
+#[tauri::command]
+pub(crate) fn private_preview(window: WebviewWindow, enabled: bool) -> Result<()> {
+    if window.label() != "main" {
+        return Err(anyhow!("Open private messages in the main window").into());
+    }
+    #[cfg(windows)]
+    crate::windows_shell::set_private_preview(&window, enabled)?;
+    #[cfg(not(windows))]
+    let _ = enabled;
+    Ok(())
 }
 
 #[tauri::command]

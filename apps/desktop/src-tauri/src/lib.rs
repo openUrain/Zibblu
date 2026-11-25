@@ -261,6 +261,7 @@ pub fn run() {
             commands::private_invite_nearby,
             commands::private_list,
             commands::private_view,
+            commands::private_preview,
             commands::private_mark_read,
             commands::private_respond,
             commands::private_send,

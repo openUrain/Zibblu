@@ -24,6 +24,12 @@ pub(super) struct Consent {
     signature: Vec<u8>,
 }
 
+impl Consent {
+    pub fn device(&self) -> Result<[u8; 32]> {
+        Ok(parse(&self.certificate)?.2)
+    }
+}
+
 #[derive(Clone)]
 pub struct DeviceKey(Arc<KeyPair>);
 

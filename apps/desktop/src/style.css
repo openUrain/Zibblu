@@ -306,6 +306,8 @@ svg { vertical-align: middle; }
 }
 .chat-row:hover { background: var(--hover); }
 .chat-row.selected { background: var(--tint); }
+.chat-row.conversation-private { box-shadow: inset 2px 0 var(--accent); }
+.chat-row.conversation-private .chat-row-badges { color: var(--accent); }
 .chat-row:focus-visible { outline-offset: -2px; }
 .chat-row-text { display: grid; min-width: 0; flex: 1; gap: 4px; padding-top: 1px; }
 .chat-row-text strong, .chat-row-text small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

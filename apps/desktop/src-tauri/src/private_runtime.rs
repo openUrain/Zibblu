@@ -89,12 +89,13 @@ async fn maintain_lobby(app: &AppHandle, client: &Client) {
             .as_secs() as i64;
         {
             let mut current = desktop.private.lock().await;
-            if (current
-                .as_ref()
-                .is_some_and(|lobby| !lobby.network_matches())
-                || credential
-                    .as_ref()
-                    .is_some_and(|cert| cert.expires_at <= now))
+            let expired = credential.as_ref().is_some_and(|cert| cert.expires_at <= now);
+            let moved = current.as_ref().is_some_and(|lobby| !lobby.network_matches());
+            #[cfg(windows)]
+            if moved && !expired && let Some(lobby) = current.as_ref() {
+                lobby.suspend_transport();
+            }
+            if (expired || !cfg!(windows) && moved)
                 && let Some(lobby) = current.take()
             {
                 lobby.shutdown();
@@ -125,6 +126,15 @@ async fn maintain_lobby(app: &AppHandle, client: &Client) {
             None
         };
         let mut current = desktop.private.lock().await;
+        #[cfg(windows)]
+        if let Some(lobby) = current.as_ref() && !lobby.network_matches() {
+            *desktop.discovery.lock().expect("discovery status") =
+                if lobby.restore_transport(client.server().to_owned()).is_ok() {
+                    DiscoveryStatus::Ready
+                } else {
+                    DiscoveryStatus::Starting
+                };
+        }
         if current.is_none() {
             let lobby = match (
                 credential.as_ref().filter(|cert| cert.expires_at > now),

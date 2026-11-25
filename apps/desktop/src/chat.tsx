@@ -18,7 +18,7 @@ import { deriveDraftPreview } from "./draft-preview";
 import { decimalSize, splitFileName } from "./file-labels";
 import { FileIcon, FilesView, TransferList, useAttachmentSave } from "./files";
 import { ChatAttachment, MediaHistory, MediaViewer } from "./chat-media";
-import { privatePhaseLabel, privateTitle } from "./private-chat";
+import { exclusivePrivateRoom, privatePhaseLabel, privateTitle } from "./private-chat";
 import { RichMessage } from "./rich-message";
 import { conversationSummary, messageSummary } from "./rich-markdown";
 import { phone, ios, useIosBack } from "./ios";
@@ -76,12 +76,14 @@ export function ChatList({ chats, drafts, own, selected, open, newChat, addConta
     </form>
     <div className="chat-rows">
       {filtered.map(chat => {
+        const privateRoom = exclusivePrivateRoom(rooms, chat);
         const name = chatName(chat, own.id, remarks);
         const peer = chat.members.find(user => user.id !== own.id);
         const draftPreview = paired === chat.id ? undefined : deriveDraftPreview(drafts[chat.id]);
         return <div className="conversation-entry" key={chat.id}><button type="button"
-          className={"chat-row conversation-row" + (chat.id === selected ? " selected" : "") + (chat.pinned ? " pinned" : "")}
-          {...menu(buildChatContextMenu(chat, {
+          className={"chat-row conversation-row" + (chat.id === selected ? " selected" : "") + (chat.pinned ? " pinned" : "")
+            + (privateRoom ? " conversation-private" : "")}
+          {...(!privateRoom && menu(buildChatContextMenu(chat, {
             windows,
             onPin: pinned => onPin(chat.id, pinned),
             onRead: unread => onToggleRead(chat.id, unread),
@@ -89,10 +91,12 @@ export function ChatList({ chats, drafts, own, selected, open, newChat, addConta
             onPopout: () => onPopout(chat.id),
             onHide: () => onHide(chat.id),
             onDelete: () => onDelete(chat),
-          }))}
+          })))}
           aria-current={chat.id === selected ? "true" : undefined} onClick={() => open(chat.id)}>
           {chat.title || !peer ? <Avatar name={name} group={!!chat.title} /> : <PersonAvatar user={peer} />}
-          <span className="chat-row-text"><strong title={name}>{name}</strong><small>{paired === chat.id
+          <span className="chat-row-text"><strong title={name}>{name}</strong><small>{privateRoom
+            ? privateRoom.phase === "connected" ? t("Private chat", "私密聊天") : privatePhaseLabel[privateRoom.phase]
+            : paired === chat.id
             ? t("Private chat", "私密聊天")
             : draftPreview ? <><span className="draft-prefix">{draftPreview.prefix}</span>{" "}{draftPreview.body}</>
               : chat.preview ? conversationSummary(chat.preview) : t("New conversation", "新会话")}</small></span>
@@ -100,7 +104,10 @@ export function ChatList({ chats, drafts, own, selected, open, newChat, addConta
             <span className="chat-row-badges">
               {chat.muted && <BellOff size={13} className="chat-muted-icon" aria-label={t("Muted", "消息免打扰")} />}
               {chat.pinned && <Pin size={12} className="chat-pinned-icon" aria-label={t("Pinned", "已置顶")} />}
-              {chat.unread > 0 ? <span className="unread-count">
+              {privateRoom ? <>
+                <LockKeyhole size={13} aria-label={t("Private chat", "私密聊天")} />
+                {privateRoom.unread && <span className="unread-dot" role="img" aria-label={t("Unread private messages", "私密消息未读")} />}
+              </> : chat.unread > 0 ? <span className="unread-count">
                 <span aria-hidden="true">{chat.unread > 99 ? "99+" : chat.unread}</span>
                 <span className="sr-only">{t(`${chat.unread} unread messages`, `${chat.unread} 条未读消息`)}</span>
               </span> : chat.manual_unread ? <span className="unread-dot" role="img" aria-label={t("Marked unread", "标为未读")} title={t("Unread", "未读")} /> : null}

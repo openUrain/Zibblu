@@ -17,10 +17,11 @@ We **cannot** promise protection from: screenshots or cameras, recipients manual
 - iPhone uses system Bonjour for the declared Zibblu service and binds IPv4 QUIC to the current Wi-Fi interface. Discovery requires Local Network access. Backgrounding or changing the active Wi-Fi path closes the private lobby and removes its transcript and drafts from app-controlled state. The app covers its window while inactive to limit app-switcher previews.
 - No cloud relay, no NAT traversal via Zibblu servers, and no fallback to ordinary online chat.
 - Content must not be sent to telemetry, logs, crash reports, normal-message storage, search indices, notifications or cloud AI.
-- Private text is kept in bounded memory during the session. End, disconnect, timeout and sign-out discard local private state. Switching conversations leaves the active background session running. A restart opens no private transcript.
+- Private text is kept in bounded memory during the session. Ending, expiry and sign-out discard local private state. Windows can retain an approved two-party session through a temporary disconnect, for up to 15 minutes while disconnected. Resume requires the same account-bound devices, the original session and a newly authenticated LAN transport. Switching views keeps the session in memory. A restart opens no private transcript.
 - Ending a room keeps only its ID in a per-sign-in set when needed to reject automatic re-entry, including after network changes. An explicit scan of a valid private QR code expresses fresh consent. Private read state lives in the LAN feed and is discarded with it.
 - Connection UI must distinguish `connecting`, `verified private`, and `disconnected`. Never badge a session “private” based only on an SSID or IP range.
 - Private messages are excluded from automatic export, normal chat history and notification previews.
+- Windows uses an iconic representation in the system task switcher while the private timeline is displayed. Screenshots and recordings are available through the system.
 
 ### Message links and remote images
 
