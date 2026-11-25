@@ -16,9 +16,10 @@ use zibblu_core::private_chat::{
     PrivateSummary, PrivateView,
 };
 use zibblu_core::{
-    CachedProfile, Client, ContactNotes, ConversationRequest, Credentials, Device, Direction, Directory,
-    FileFilter, GroupInvite, GroupInvitePreview, Message, MessageReceipt, OnlineError, Page,
-    PublishAiReply, ReadUpdate, SendMessage, SyncUpdate, Transfer, User,
+    CachedProfile, Client, ContactNotes, Conversation, ConversationRequest, Credentials, Device,
+    Direction, Directory, FileFilter, GroupInvite, GroupInvitePreview, Message, MessageReceipt,
+    OnlineError, Page, PublishAiReply, ReadUpdate, SendMessage, StorageStats, SyncUpdate,
+    Transfer, User,
 };
 
 const OFFICIAL_SERVER: &str = "https://zibblu-api.openurain.com";
@@ -42,6 +43,7 @@ pub(crate) struct Desktop {
     pub(crate) video_exports: crate::video_edit::VideoExportRegistry,
     #[cfg(windows)]
     pub(crate) image_window: Mutex<()>,
+    last_sync_revision: std::sync::atomic::AtomicI64,
 }
 
 impl Desktop {
@@ -66,6 +68,7 @@ impl Desktop {
             video_exports: Default::default(),
             #[cfg(windows)]
             image_window: Mutex::new(()),
+            last_sync_revision: std::sync::atomic::AtomicI64::new(0),
         }
     }
 
@@ -220,6 +223,8 @@ impl Desktop {
                 )
             }),
         };
+        self.last_sync_revision
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         *session = Some(client.clone());
         crate::video_edit::cleanup_stale_trim_files(client.media_root());
         *self.outbox_worker.lock().await = Some(tauri::async_runtime::spawn(run_outbox(
@@ -272,8 +277,11 @@ impl Desktop {
         if let Some(window) = app.get_webview_window(crate::image_viewer::LABEL) {
             let _ = window.destroy();
         }
+        crate::chat_window::close_all_chat_windows(app);
         self.video_exports.cancel_all().await;
         self.ai.lock().expect("AI state").clear();
+        self.last_sync_revision
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         if let Some(task) = self.outbox_worker.lock().await.take() {
             task.abort();
             let _ = task.await;
@@ -310,7 +318,7 @@ async fn run_outbox(app: AppHandle, client: Arc<Client>, wake: Arc<Notify>) {
         }
         if client.flush_pending_messages().await.unwrap_or(false) {
             let _ = client.resume_queued().await;
-            let _ = app.emit_to("main", "message-outbox-changed", ());
+            let _ = app.emit("message-outbox-changed", ());
         }
     }
 }
@@ -657,12 +665,24 @@ pub(crate) async fn sync(app: AppHandle, state: State<'_, Desktop>) -> Result<Sy
         lobby.set_memberships(crate::private_runtime::memberships(&client.membership_directory().await?));
     }
     crate::image_viewer::close_recalled(&app, &state, &update.recalled, &update.deleted);
+    if state
+        .last_sync_revision
+        .swap(update.revision, std::sync::atomic::Ordering::Relaxed)
+        != update.revision
+    {
+        let _ = app.emit("zibblu-chat-changed", ());
+    }
     Ok(update)
 }
 
 #[tauri::command]
 pub(crate) async fn directory(state: State<'_, Desktop>) -> Result<Directory> {
     Ok(state.client().await?.directory().await?)
+}
+
+#[tauri::command]
+pub(crate) async fn membership_conversations(state: State<'_, Desktop>) -> Result<Vec<Conversation>> {
+    Ok(state.client().await?.membership_directory().await?.conversations)
 }
 
 #[tauri::command]
@@ -681,8 +701,17 @@ pub(crate) async fn retire_device(state: State<'_, Desktop>, id: Uuid) -> Result
 }
 
 #[tauri::command]
-pub(crate) async fn leave_group(state: State<'_, Desktop>, conversation: Uuid) -> Result<()> {
-    Ok(state.client().await?.leave_group(conversation).await?)
+pub(crate) async fn leave_group(
+    app: AppHandle,
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+) -> Result<()> {
+    state.client().await?.leave_group(conversation).await?;
+    state.ai.lock().expect("AI state").clear_conversation(conversation);
+    crate::chat_window::close_chat_window(&app, conversation);
+    let _ = app.emit("zibblu-ai-changed", conversation);
+    let _ = app.emit("zibblu-chat-changed", ());
+    Ok(())
 }
 
 #[tauri::command]
@@ -808,15 +837,18 @@ pub(crate) async fn set_read_receipts(state: State<'_, Desktop>, enabled: bool) 
 
 #[tauri::command]
 pub(crate) async fn read_update(
+    app: AppHandle,
     state: State<'_, Desktop>,
     conversation: Uuid,
     update: ReadUpdate,
 ) -> Result<Option<MessageReceipt>> {
-    Ok(state
+    let receipt = state
         .client()
         .await?
         .update_receipt(conversation, update)
-        .await?)
+        .await?;
+    let _ = app.emit("zibblu-chat-changed", ());
+    Ok(receipt)
 }
 
 #[tauri::command]
@@ -828,11 +860,13 @@ pub(crate) async fn hide_message(
 ) -> Result<()> {
     state.client().await?.hide_message(conversation, seq).await?;
     crate::image_viewer::close_deleted(&app, &state, conversation, Some(seq), false);
+    let _ = app.emit("zibblu-chat-changed", ());
     Ok(())
 }
 
 #[tauri::command]
 pub(crate) async fn hide_pending_upload(
+    app: AppHandle,
     state: State<'_, Desktop>,
     conversation: Uuid,
     id: Uuid,
@@ -840,6 +874,7 @@ pub(crate) async fn hide_pending_upload(
     let client = state.client().await?;
     client.hide_pending_upload(conversation, id).await?;
     client.resume_queued().await?;
+    let _ = app.emit("zibblu-chat-changed", ());
     Ok(())
 }
 
@@ -850,7 +885,10 @@ pub(crate) async fn clear_history(
     conversation: Uuid,
 ) -> Result<()> {
     state.client().await?.clear_received_history(conversation).await?;
+    state.ai.lock().expect("AI state").clear_conversation(conversation);
     crate::image_viewer::close_deleted(&app, &state, conversation, None, false);
+    let _ = app.emit("zibblu-ai-changed", conversation);
+    let _ = app.emit("zibblu-chat-changed", ());
     Ok(())
 }
 
@@ -863,9 +901,115 @@ pub(crate) async fn delete_conversation(
     let client = state.client().await?;
     client.delete_conversation(conversation).await?;
     state.drafts.remove_conversation(&client, conversation);
+    state.ai.lock().expect("AI state").clear_conversation(conversation);
     crate::image_viewer::close_deleted(&app, &state, conversation, None, true);
+    crate::chat_window::close_chat_window(&app, conversation);
     state.outbox_wake.notify_one();
+    let _ = app.emit("zibblu-ai-changed", conversation);
+    let _ = app.emit("zibblu-chat-changed", ());
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn set_conversation_pinned(
+    app: AppHandle,
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+    pinned: bool,
+) -> Result<()> {
+    state
+        .client()
+        .await?
+        .set_conversation_pinned(conversation, pinned)
+        .await?;
+    let _ = app.emit("zibblu-chat-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn set_conversation_manual_unread(
+    app: AppHandle,
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+    unread: bool,
+) -> Result<()> {
+    state
+        .client()
+        .await?
+        .set_conversation_manual_unread(conversation, unread)
+        .await?;
+    let _ = app.emit("zibblu-chat-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn set_conversation_muted(
+    app: AppHandle,
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+    muted: bool,
+) -> Result<()> {
+    state
+        .client()
+        .await?
+        .set_conversation_muted(conversation, muted)
+        .await?;
+    let _ = app.emit("zibblu-chat-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn hide_conversation(
+    app: AppHandle,
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+) -> Result<()> {
+    state
+        .client()
+        .await?
+        .hide_conversation(conversation)
+        .await?;
+    let _ = app.emit("zibblu-chat-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn unhide_conversation(
+    app: AppHandle,
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+) -> Result<()> {
+    state
+        .client()
+        .await?
+        .unhide_conversation(conversation)
+        .await?;
+    let _ = app.emit("zibblu-chat-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn mark_conversation_read_local(
+    app: AppHandle,
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+) -> Result<()> {
+    state
+        .client()
+        .await?
+        .mark_conversation_read_local(conversation)
+        .await?;
+    let _ = app.emit("zibblu-chat-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn open_chat_window(
+    app: AppHandle,
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+) -> Result<()> {
+    crate::chat_window::open_chat_window(&app, &state, conversation).await
 }
 
 #[tauri::command]
@@ -893,14 +1037,18 @@ pub(crate) async fn remove_contact(state: State<'_, Desktop>, user_id: Uuid) -> 
 
 #[tauri::command]
 pub(crate) async fn create_conversation(
+    app: AppHandle,
     state: State<'_, Desktop>,
     request: ConversationRequest,
 ) -> Result<Uuid> {
-    Ok(state.client().await?.create_conversation(request).await?)
+    let id = state.client().await?.create_conversation(request).await?;
+    let _ = app.emit("zibblu-chat-changed", ());
+    Ok(id)
 }
 
 #[tauri::command]
 pub(crate) async fn send_message(
+    app: AppHandle,
     state: State<'_, Desktop>,
     conversation: Uuid,
     message: SendMessage,
@@ -908,38 +1056,51 @@ pub(crate) async fn send_message(
     let client = state.client().await?;
     client.queue_message(conversation, message).await?;
     state.outbox_wake.notify_one();
+    let _ = app.emit("zibblu-chat-changed", ());
     Ok(())
 }
 
 #[tauri::command]
-pub(crate) async fn retry_message(state: State<'_, Desktop>, nonce: Uuid) -> Result<()> {
-    Ok(state.client().await?.retry_message(nonce).await?)
+pub(crate) async fn retry_message(
+    app: AppHandle,
+    state: State<'_, Desktop>,
+    nonce: Uuid,
+) -> Result<()> {
+    state.client().await?.retry_message(nonce).await?;
+    let _ = app.emit("zibblu-chat-changed", ());
+    Ok(())
 }
 
 #[tauri::command]
 pub(crate) async fn recall_message(
+    app: AppHandle,
     state: State<'_, Desktop>,
     conversation: Uuid,
     seq: i64,
 ) -> Result<()> {
-    Ok(state
+    state
         .client()
         .await?
         .recall_message(conversation, seq)
-        .await?)
+        .await?;
+    let _ = app.emit("zibblu-chat-changed", ());
+    Ok(())
 }
 
 #[tauri::command]
 pub(crate) async fn publish_ai_reply(
+    app: AppHandle,
     state: State<'_, Desktop>,
     conversation: Uuid,
     reply: PublishAiReply,
 ) -> Result<()> {
-    Ok(state
+    state
         .client()
         .await?
         .publish_ai_reply(conversation, reply)
-        .await?)
+        .await?;
+    let _ = app.emit("zibblu-chat-changed", ());
+    Ok(())
 }
 
 #[tauri::command]
@@ -950,7 +1111,7 @@ pub(crate) async fn private_start(
     open: bool,
 ) -> Result<Uuid> {
     let id = state.lobby().await?.create(conversation, invited, open)?;
-    state.ai.lock().expect("AI state").clear();
+    state.ai.lock().expect("AI state").clear_pending_views();
     Ok(id)
 }
 
@@ -976,7 +1137,7 @@ pub(crate) async fn private_invite_nearby(
     account: Option<Uuid>,
 ) -> Result<Uuid> {
     let id = state.lobby().await?.invite_nearby(device, account).await?;
-    state.ai.lock().expect("AI state").clear();
+    state.ai.lock().expect("AI state").clear_pending_views();
     Ok(id)
 }
 
@@ -1050,7 +1211,7 @@ pub(crate) async fn private_respond(
         if !active.as_ref().is_some_and(|active| Arc::ptr_eq(active, &lobby)) {
             return Ok(());
         }
-        state.ai.lock().expect("AI state").clear();
+        state.ai.lock().expect("AI state").clear_pending_views();
         let _ = app.emit_to(
             "main",
             "private-invitation-accepted",
@@ -1088,7 +1249,7 @@ pub(crate) async fn private_qr(state: State<'_, Desktop>, id: Uuid) -> Result<Pr
 #[tauri::command]
 pub(crate) async fn private_scan(state: State<'_, Desktop>, code: PrivateCode) -> Result<Uuid> {
     let id = state.lobby().await?.scan(code).await?;
-    state.ai.lock().expect("AI state").clear();
+    state.ai.lock().expect("AI state").clear_pending_views();
     Ok(id)
 }
 
@@ -1278,7 +1439,7 @@ pub(crate) async fn open_saved_attachment(
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
 
-        if window.label() != "main" {
+        if window.label() != "main" && !crate::chat_window::is_chat_window(window.label()) {
             return Err(anyhow!("Open the attachment from Shared files").into());
         }
         let client = state.client().await?;
@@ -1340,11 +1501,29 @@ pub(crate) async fn discard_transfer(
 
 #[tauri::command]
 pub(crate) async fn clear_cache(
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, Desktop>,
 ) -> Result<zibblu_core::CacheCleanupReport> {
     if window.label() != "main" {
         return Err(anyhow!("Clear cache from the main window").into());
     }
-    Ok(state.client().await?.clear_cache().await?)
+    let report = state.client().await?.clear_cache().await?;
+    let _ = app.emit("zibblu-chat-changed", ());
+    Ok(report)
+}
+
+#[tauri::command]
+pub(crate) async fn storage_stats(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+) -> Result<StorageStats> {
+    if window.label() != "main" {
+        return Err(anyhow!("Check storage usage from the main window").into());
+    }
+    let client = state.client().await?;
+    let app_dir = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf));
+    Ok(client.storage_stats(app_dir.as_deref()).await?)
 }

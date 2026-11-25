@@ -100,11 +100,11 @@
 .ios textarea { resize: none; }
 .ios :is(.chat-header, .chat-list-head, .composer-bar, .dialog-head, .profile-header, .chat-list-title, .settings-heading) :is(.icon-button, .square-primary),
 .ios :is(.dialog-actions, .private-actions, .drawer-actions, .phone-me) button,
-.ios :is(.choice, .drawer-action, .pick-contact, .ai-settings-row, .ai-mention-option, .app-menu button, .ai-file-chips .icon-button, .profile-content .button) {
+.ios :is(.choice, .drawer-action, .pick-contact, .ai-settings-row, .ai-mention-option, .app-menu button, .ai-file-chips .icon-button, .ai-job-cancel, .profile-content .button) {
   min-height: 44px;
 }
 .ios :is(.chat-header, .chat-list-head, .composer-bar, .dialog-head, .chat-list-title, .settings-heading) :is(.icon-button, .square-primary),
-.ios .ai-file-chips .icon-button { min-width: 44px; }
+.ios :is(.ai-file-chips .icon-button, .ai-job-cancel) { min-width: 44px; }
 .ios .choice-indicator { width: 22px; }
 .ios .choice { border-radius: 4px; }
 .ios .choice > span { flex: 1; }

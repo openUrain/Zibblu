@@ -11,6 +11,29 @@ export type Preferences = { server: string; official_server: string; private_qui
 export type Conversation = {
   id: string; title: string | null; members: User[]; activity_at: number; preview: string | null;
   preview_seq: number | null; latest_seq: number; unread: number; read_through: number; joined_after?: number;
+  pinned: boolean; manual_unread: boolean; muted: boolean;
+};
+export type ConversationStorage = {
+  conversation_id: string;
+  media_bytes: number;
+  chat_data_bytes: number;
+  chat_data_estimated: boolean;
+  files_bytes: number;
+  total_bytes: number;
+};
+export type StorageStats = {
+  app_bytes: number;
+  conversation_media_bytes: number;
+  database_bytes: number;
+  public_cache_and_temp_bytes: number;
+  outbox_bytes: number;
+  total_bytes: number;
+  conversations: ConversationStorage[];
+};
+export type CacheCleanupReport = {
+  removed_public_files: number;
+  removed_temp_files: number;
+  reclaimed_bytes: number;
 };
 export type MessageReceipt = { seq: number; status: "delivered" | "read" };
 export type PendingContact = { user: User; incoming: boolean; request_id: string | null; greeting: string };
@@ -133,6 +156,7 @@ export const api = {
   restoreSession: (account: SavedAccount) => invoke<Session>("restore_session", { accountId: account.user.id, server: account.server }),
   logout: () => invoke<void>("logout"),
   directory: () => invoke<Directory>("directory"),
+  membershipConversations: () => invoke<Conversation[]>("membership_conversations"),
   sync: () => invoke<SyncUpdate>("sync"),
   localUpdate: () => invoke<SyncUpdate>("local_update"),
   devices: () => invoke<Device[]>("devices"),
@@ -166,6 +190,19 @@ export const api = {
   hidePendingUpload: (conversation: string, id: string) => invoke<void>("hide_pending_upload", { conversation, id }),
   clearHistory: (conversation: string) => invoke<void>("clear_history", { conversation }),
   deleteConversation: (conversation: string) => invoke<void>("delete_conversation", { conversation }),
+  setConversationPinned: (conversation: string, pinned: boolean) =>
+    invoke<void>("set_conversation_pinned", { conversation, pinned }),
+  setConversationManualUnread: (conversation: string, unread: boolean) =>
+    invoke<void>("set_conversation_manual_unread", { conversation, unread }),
+  setConversationMuted: (conversation: string, muted: boolean) =>
+    invoke<void>("set_conversation_muted", { conversation, muted }),
+  hideConversation: (conversation: string) => invoke<void>("hide_conversation", { conversation }),
+  unhideConversation: (conversation: string) => invoke<void>("unhide_conversation", { conversation }),
+  markConversationReadLocal: (conversation: string) =>
+    invoke<void>("mark_conversation_read_local", { conversation }),
+  openChatWindow: (conversation: string) => invoke<void>("open_chat_window", { conversation }),
+  storageStats: () => invoke<StorageStats>("storage_stats"),
+  clearCache: () => invoke<CacheCleanupReport>("clear_cache"),
   takeSendFailureNotices: () => invoke<number>("take_send_failure_notices"),
   quotedMessage: (conversation: string, seq: number) => invoke<Message | null>("quoted_message", { conversation, seq }),
   create: (request: ConversationRequest) => invoke<string>("create_conversation", { request }),

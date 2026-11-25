@@ -236,7 +236,7 @@ pub(crate) fn open_message_link(
     url: String,
 ) -> Result<(), String> {
     const ERROR: &str = "Could not open this link.";
-    if window.label() != "main" {
+    if !crate::chat_window::is_chat_or_main_window(window.label()) {
         return Err(ERROR.into());
     }
     let url = web_url(&url).map_err(|_| ERROR.to_owned())?;
@@ -261,8 +261,8 @@ pub(crate) async fn preview_message_image(
         url: &str,
     ) -> Result<Response> {
         ensure!(
-            window.label() == "main",
-            "Preview is available in the main window"
+            crate::chat_window::is_chat_or_main_window(window.label()),
+            "Preview is available in chat windows"
         );
         let session = state
             .client()
@@ -311,7 +311,7 @@ pub(crate) fn cancel_message_image(
     preview: State<'_, RemotePreview>,
     id: Uuid,
 ) {
-    if window.label() == "main" {
+    if crate::chat_window::is_chat_or_main_window(window.label()) {
         preview.0.lock().expect("remote preview").cancel(id);
     }
 }

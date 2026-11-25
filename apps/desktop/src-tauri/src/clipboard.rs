@@ -4,8 +4,8 @@ use tauri::WebviewWindow;
 
 #[tauri::command]
 pub(crate) fn copy_text(window: WebviewWindow, text: String) -> Result<()> {
-    if window.label() != "main" {
-        return Err(anyhow!("Copy from the main window").into());
+    if !crate::chat_window::is_chat_or_main_window(window.label()) {
+        return Err(anyhow!("Copy from a chat window").into());
     }
     #[cfg(windows)]
     {
@@ -31,7 +31,9 @@ pub(crate) fn copy_text(window: WebviewWindow, text: String) -> Result<()> {
 pub(crate) fn paste_text(window: WebviewWindow) -> Result<Option<String>> {
     #[cfg(windows)]
     {
-        if window.label() != "main" || !window.is_focused().unwrap_or(false) {
+        if !crate::chat_window::is_chat_or_main_window(window.label())
+            || !window.is_focused().unwrap_or(false)
+        {
             return Err(anyhow!("Focus Zibblu before pasting").into());
         }
         return Ok(windows::read(window.hwnd().map_err(anyhow::Error::from)?.0 as _)?);
@@ -45,7 +47,9 @@ pub(crate) fn paste_text(window: WebviewWindow) -> Result<Option<String>> {
 
 #[cfg(windows)]
 pub(crate) fn read_bitmap(window: &WebviewWindow) -> Result<Option<Vec<u8>>> {
-    if window.label() != "main" || !window.is_focused().unwrap_or(false) {
+    if !crate::chat_window::is_chat_or_main_window(window.label())
+        || !window.is_focused().unwrap_or(false)
+    {
         return Err(anyhow!("Focus Zibblu before pasting").into());
     }
     Ok(windows::read_bitmap(
@@ -55,7 +59,9 @@ pub(crate) fn read_bitmap(window: &WebviewWindow) -> Result<Option<Vec<u8>>> {
 
 #[cfg(windows)]
 pub(crate) async fn read_files(window: &WebviewWindow) -> Result<Vec<std::path::PathBuf>> {
-    if window.label() != "main" || !window.is_focused().unwrap_or(false) {
+    if !crate::chat_window::is_chat_or_main_window(window.label())
+        || !window.is_focused().unwrap_or(false)
+    {
         return Err(anyhow!("Focus Zibblu before pasting").into());
     }
     let owner = window.hwnd().map_err(anyhow::Error::from)?.0 as isize;

@@ -25,9 +25,16 @@ pub(crate) async fn preview_video_cover_bytes(
     id: Uuid,
 ) -> CommandResult<tauri::ipc::Response> {
     let bytes = async {
-        ensure!(window.label() == "main", "Open the preview in the main window");
+        ensure!(
+            crate::chat_window::is_chat_or_main_window(window.label()),
+            "Open the preview in a chat window"
+        );
         let client = state.client().await.map_err(|_| anyhow::anyhow!("Sign in to preview media"))?;
         let message = client.preview_attachment(id).await?;
+        ensure!(
+            crate::chat_window::window_allows_conversation(window.label(), message.conversation_id),
+            "Attachment belongs to another conversation"
+        );
         let file = message.attachment.context("Missing attachment")?;
         ensure!(
             file.preview_mime().is_some_and(|mime| mime.starts_with("video/")),
@@ -52,7 +59,10 @@ pub(crate) async fn upload_image_size(
     id: Uuid,
 ) -> CommandResult<(u32, u32)> {
     let size = async {
-        ensure!(window.label() == "main", "Open the preview in the main window");
+        ensure!(
+            crate::chat_window::is_chat_or_main_window(window.label()),
+            "Open the preview in a chat window"
+        );
         let client = state.client().await.map_err(|_| anyhow::anyhow!("Sign in to preview media"))?;
         let input = client.staged_image(id).await?;
         let permit = IMAGE_JOBS.acquire().await?;
@@ -77,12 +87,19 @@ pub(crate) async fn preview_image_bytes(
     profile_version: Option<Uuid>,
 ) -> CommandResult<tauri::ipc::Response> {
     let bytes = async {
-        ensure!(window.label() == "main", "Open the preview in the main window");
+        ensure!(
+            crate::chat_window::is_chat_or_main_window(window.label()),
+            "Open the preview in a chat window"
+        );
         let client = state.client().await.map_err(|_| anyhow::anyhow!("Sign in to preview media"))?;
         let bytes = if let Some(version) = profile_version {
             profile_image(&client, id, version).await?
         } else {
             let message = client.preview_attachment(id).await?;
+            ensure!(
+                crate::chat_window::window_allows_conversation(window.label(), message.conversation_id),
+                "Attachment belongs to another conversation"
+            );
             let file = message.attachment.context("Missing attachment")?;
             let conv_id = message.conversation_id;
             let seq = message.seq;
@@ -286,8 +303,9 @@ pub(crate) fn preview(
     request: Request<Vec<u8>>,
     responder: UriSchemeResponder,
 ) {
-    let viewer = context.webview_label() == crate::image_viewer::LABEL;
-    if context.webview_label() != "main" && !viewer {
+    let webview_label = context.webview_label().to_owned();
+    let viewer = webview_label == crate::image_viewer::LABEL;
+    if !crate::chat_window::is_chat_or_main_window(&webview_label) && !viewer {
         responder.respond(
             Response::builder()
                 .status(StatusCode::NOT_FOUND)
@@ -298,7 +316,7 @@ pub(crate) fn preview(
     }
     let app = context.app_handle().clone();
     tauri::async_runtime::spawn(async move {
-        let response = match media_response(&app, request, viewer).await {
+        let response = match media_response(&app, request, &webview_label, viewer).await {
             Ok(response) => response,
             Err(_) => Response::builder()
                 .status(StatusCode::NOT_FOUND)
@@ -309,7 +327,12 @@ pub(crate) fn preview(
     });
 }
 
-async fn media_response(app: &AppHandle, request: Request<Vec<u8>>, viewer: bool) -> Result<Response<Vec<u8>>> {
+async fn media_response(
+    app: &AppHandle,
+    request: Request<Vec<u8>>,
+    webview_label: &str,
+    viewer: bool,
+) -> Result<Response<Vec<u8>>> {
     ensure!(
         *request.method() == Method::GET || *request.method() == Method::HEAD,
         "Invalid media request"
@@ -351,6 +374,12 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>, viewer: bool
             ensure!(std::sync::Arc::ptr_eq(&client, &scoped), "The session has ended");
         }
         let drafts = &app.state::<Desktop>().drafts;
+        if let Some(conv) = drafts.draft_conversation(&client, id) {
+            ensure!(
+                viewer || crate::chat_window::window_allows_conversation(webview_label, conv),
+                "Draft attachment belongs to another conversation"
+            );
+        }
         if !viewer
             && let Ok((_, _, mime, size)) = drafts.preview_video_info(&client, id).await
         {
@@ -413,6 +442,10 @@ async fn media_response(app: &AppHandle, request: Request<Vec<u8>>, viewer: bool
         ensure!(std::sync::Arc::ptr_eq(&client, &scoped), "The session has ended");
     }
     let message = client.preview_attachment(id).await?;
+    ensure!(
+        viewer || crate::chat_window::window_allows_conversation(webview_label, message.conversation_id),
+        "Attachment belongs to another conversation"
+    );
     let file = message.attachment.clone().context("Missing attachment")?;
     let mime_hint = file.preview_mime().context("Unsupported media type")?;
     let query = request.uri().query().and_then(|query| query.split('&').next());
