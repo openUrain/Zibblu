@@ -1,5 +1,4 @@
 use crate::commands::{Desktop, Result as CommandResult};
-#[cfg(windows)]
 use crate::media;
 use anyhow::{Context, Result, ensure};
 #[cfg(windows)]
@@ -9,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use std::sync::{Arc, Weak};
 #[cfg(windows)]
-use tauri::{LogicalSize, PhysicalPosition, PhysicalSize};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, ipc::InvokeBody};
+use tauri::{LogicalSize, Manager, PhysicalPosition, PhysicalSize};
+use tauri::{AppHandle, Emitter, State, WebviewWindow, ipc::InvokeBody};
 use uuid::Uuid;
 use zibblu_core::{
     Attachment, Client, ConversationRequest, Direction, Directory, FileFilter, ForwardRequest,
@@ -911,6 +910,7 @@ pub(crate) async fn viewer_send_unedited(
             &ForwardRequest {
                 batch_id,
                 targets,
+                skip_attachment_ids: Vec::new(),
             },
         )
         .await?;

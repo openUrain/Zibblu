@@ -841,6 +841,7 @@ fn forwarding_request(chats: &[Uuid]) -> ForwardRequest {
         targets: chats.iter().map(|&conversation_id| ForwardTarget {
             conversation_id, attachment_id: Uuid::new_v4(),
         }).collect(),
+        skip_attachment_ids: Vec::new(),
     }
 }
 
@@ -1815,6 +1816,281 @@ async fn viewer_direct_forward_fixed_batch_retry_revocation_and_tombstones() -> 
     alice.close().await;
     bob.close().await;
     carol.close().await;
+    server_task.abort();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn viewer_discarded_batch_target_not_republished_on_sibling_retry() -> Result<()> {
+    let db = test_db().await?;
+    let lose_response = Arc::new(AtomicU8::new(0));
+    let response_gate = lose_response.clone();
+
+    let app = zibblu_online::router_with_retention(
+        db.clone(),
+        Retention {
+            file_secs: Some(604800),
+            upload_secs: Some(86400),
+            ..Retention::default()
+        },
+    )
+    .await?
+    .layer(middleware::from_fn(move |request: Request, next: Next| {
+        let gate = response_gate.clone();
+        async move {
+            let forward = request.uri().path().ends_with("/forward");
+            let response = next.run(request).await;
+            if forward
+                && response.status() == StatusCode::OK
+                && gate
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                    .ok()
+                    == Some(1)
+            {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            }
+            response
+        }
+    }));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let server = format!("http://{}", listener.local_addr()?);
+    let server_task = tokio::spawn(async move { axum::serve(listener, app).await });
+
+    let dir_a = tempfile::tempdir()?;
+    let dir_b = tempfile::tempdir()?;
+    let dir_c = tempfile::tempdir()?;
+    let dir_d = tempfile::tempdir()?;
+    let suffix = &Uuid::new_v4().simple().to_string()[..10];
+    let pw = "discarded-batch-target-fixture";
+    let alice = sign_in(dir_a.path(), &server, &format!("dt_a_{suffix}"), pw, true).await?;
+    let bob = sign_in(dir_b.path(), &server, &format!("dt_b_{suffix}"), pw, true).await?;
+    let carol = sign_in(dir_c.path(), &server, &format!("dt_c_{suffix}"), pw, true).await?;
+    let dave = sign_in(dir_d.path(), &server, &format!("dt_d_{suffix}"), pw, true).await?;
+
+    let source_chat = direct(&alice, &bob).await?;
+    let dm_carol = direct(&bob, &carol).await?;
+    let dm_dave = direct(&bob, &dave).await?;
+    let group_ok = bob
+        .create_conversation(ConversationRequest::Group {
+            title: format!("dt-grp-{suffix}"),
+            contact_ids: vec![alice.user.id, carol.user.id],
+        })
+        .await?;
+    alice.sync().await?;
+    bob.sync().await?;
+    carol.sync().await?;
+    dave.sync().await?;
+
+    let src_file = dir_a.path().join("source.bin");
+    std::fs::write(&src_file, b"batch-discard-source-bytes")?;
+    let source_id = alice.queue_upload(source_chat, src_file).await?.attachment.id;
+    wait_transfer(&alice, source_id, Direction::Upload, |job| {
+        job.status == TransferStatus::Complete
+    })
+    .await?;
+    bob.sync().await?;
+
+    // 1. DirectForward batch: both Carol and Dave DMs fail, Carol is discarded, permissions are
+    //    restored, then ONLY Dave is retried -> Carol MUST NOT be republished on the server.
+    bob.remove_contact(carol.user.id).await?;
+    bob.remove_contact(dave.user.id).await?;
+    let direct_req = forwarding_request(&[group_ok, dm_carol, dm_dave]);
+    let group_ok_id = direct_req.targets[0].attachment_id;
+    let carol_direct_id = direct_req.targets[1].attachment_id;
+    let dave_direct_id = direct_req.targets[2].attachment_id;
+
+    let partial = bob.forward_or_queue_media(source_id, &direct_req).await?;
+    assert_eq!(partial[0].status, "sent");
+    assert_eq!(partial[1].status, "failed");
+    assert_eq!(partial[2].status, "failed");
+
+    let group_before: (i64, Option<i64>) = sqlx::query_as(
+        "SELECT seq, (extract(epoch FROM expires_at)*1000)::BIGINT FROM messages WHERE attachment_id = $1",
+    )
+    .bind(group_ok_id)
+    .fetch_one(&db)
+    .await?;
+
+    bob.discard(carol_direct_id, Direction::Upload).await?;
+    assert!(
+        !bob.transfers()
+            .await?
+            .iter()
+            .any(|t| t.attachment.id == carol_direct_id)
+    );
+
+    assert_eq!(direct(&bob, &carol).await?, dm_carol);
+    assert_eq!(direct(&bob, &dave).await?, dm_dave);
+    bob.resume(dave_direct_id, Direction::Upload).await?;
+    wait_transfer(&bob, dave_direct_id, Direction::Upload, |job| {
+        job.status == TransferStatus::Complete
+    })
+    .await?;
+
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE attachment_id = $1")
+            .bind(carol_direct_id)
+            .fetch_one(&db)
+            .await?,
+        0,
+        "discarded DirectForward target must not be republished when sibling retries"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE attachment_id = $1")
+            .bind(dave_direct_id)
+            .fetch_one(&db)
+            .await?,
+        1
+    );
+    let group_after: (i64, Option<i64>) = sqlx::query_as(
+        "SELECT seq, (extract(epoch FROM expires_at)*1000)::BIGINT FROM messages WHERE attachment_id = $1",
+    )
+    .bind(group_ok_id)
+    .fetch_one(&db)
+    .await?;
+    assert_eq!(group_before, group_after, "already published target TTL must stay unchanged");
+
+    carol.sync().await?;
+    dave.sync().await?;
+    assert!(
+        !carol
+            .messages(dm_carol, None)
+            .await?
+            .items
+            .iter()
+            .any(|m| m.attachment.as_ref().is_some_and(|a| a.id == carol_direct_id)),
+        "Carol must receive no message for discarded target"
+    );
+    assert!(
+        dave.messages(dm_dave, None)
+            .await?
+            .items
+            .iter()
+            .any(|m| m.attachment.as_ref().is_some_and(|a| a.id == dave_direct_id))
+    );
+
+    // 2. Edited media batch (ForwardGroup): leader succeeds, Carol & Dave followers fail,
+    //    Carol is discarded, permissions are restored, Dave retries -> Carol MUST NOT publish.
+    bob.remove_contact(carol.user.id).await?;
+    bob.remove_contact(dave.user.id).await?;
+    let edited_path = dir_b.path().join("edited_discard.png");
+    std::fs::write(&edited_path, b"\x89PNG\r\n\x1a\nedited-discard-fixture")?;
+    let edited_batch_id = Uuid::new_v4();
+    let edited_targets = vec![
+        ForwardTarget {
+            conversation_id: group_ok,
+            attachment_id: Uuid::new_v4(),
+        },
+        ForwardTarget {
+            conversation_id: dm_carol,
+            attachment_id: Uuid::new_v4(),
+        },
+        ForwardTarget {
+            conversation_id: dm_dave,
+            attachment_id: Uuid::new_v4(),
+        },
+    ];
+    let edited_leader_id = edited_targets[0].attachment_id;
+    let edited_carol_id = edited_targets[1].attachment_id;
+    let edited_dave_id = edited_targets[2].attachment_id;
+
+    bob.queue_edited_media_batch(
+        "edited_discard.png".into(),
+        edited_path.clone(),
+        edited_batch_id,
+        edited_targets.clone(),
+    )
+    .await?;
+    wait_transfer(&bob, edited_leader_id, Direction::Upload, |job| {
+        job.status == TransferStatus::Complete
+    })
+    .await?;
+    for expected_failed_id in [edited_carol_id, edited_dave_id] {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if bob.transfers().await?.into_iter().any(|t| {
+                    t.attachment.id == expected_failed_id && t.status == TransferStatus::Failed
+                }) {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await??;
+    }
+
+    bob.discard(edited_carol_id, Direction::Upload).await?;
+    assert_eq!(direct(&bob, &carol).await?, dm_carol);
+    assert_eq!(direct(&bob, &dave).await?, dm_dave);
+
+    // Also verify response loss on ForwardGroup follower fails closed on discard before converging.
+    lose_response.store(1, Ordering::SeqCst);
+    bob.resume(edited_dave_id, Direction::Upload).await?;
+    wait_transfer(&bob, edited_dave_id, Direction::Upload, |job| {
+        job.status == TransferStatus::Queued
+    })
+    .await?;
+    assert!(
+        bob.discard(edited_dave_id, Direction::Upload)
+            .await
+            .is_err(),
+        "unconfirmed ForwardGroup follower must fail closed on discard"
+    );
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+    bob.resume_queued().await?;
+    wait_transfer(&bob, edited_dave_id, Direction::Upload, |job| {
+        job.status == TransferStatus::Complete
+    })
+    .await?;
+
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE attachment_id = $1")
+            .bind(edited_carol_id)
+            .fetch_one(&db)
+            .await?,
+        0,
+        "discarded ForwardGroup follower must not be published when sibling follower retries"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE forward_batch = $1")
+            .bind(edited_batch_id)
+            .fetch_one(&db)
+            .await?,
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachment_chunks WHERE attachment_id = $1")
+            .bind(edited_dave_id)
+            .fetch_one(&db)
+            .await?,
+        0,
+        "retried ForwardGroup follower must reuse leader payload without re-uploading chunks"
+    );
+
+    carol.sync().await?;
+    dave.sync().await?;
+    assert!(
+        !carol
+            .messages(dm_carol, None)
+            .await?
+            .items
+            .iter()
+            .any(|m| m.attachment.as_ref().is_some_and(|a| a.id == edited_carol_id)),
+        "Carol must receive no message for discarded edited follower"
+    );
+    assert!(
+        dave.messages(dm_dave, None)
+            .await?
+            .items
+            .iter()
+            .any(|m| m.attachment.as_ref().is_some_and(|a| a.id == edited_dave_id))
+    );
+
+    alice.close().await;
+    bob.close().await;
+    carol.close().await;
+    dave.close().await;
     server_task.abort();
     Ok(())
 }

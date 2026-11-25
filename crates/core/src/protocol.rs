@@ -485,6 +485,8 @@ pub struct ForwardTarget {
 pub struct ForwardRequest {
     pub batch_id: Uuid,
     pub targets: Vec<ForwardTarget>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip_attachment_ids: Vec<Uuid>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

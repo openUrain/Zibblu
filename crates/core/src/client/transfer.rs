@@ -785,7 +785,9 @@ impl Client {
                     ensure!(
                         existing.transfer.conversation_id == target.conversation_id
                             && existing.direct_forward.as_ref().is_some_and(|df| {
-                                df.source_id == source_id && df.request == *request
+                                df.source_id == source_id
+                                    && df.request.batch_id == request.batch_id
+                                    && df.request.targets == request.targets
                             }),
                         "The forwarding batch changed. Use the original request."
                     );
@@ -799,6 +801,11 @@ impl Client {
                 self.check_capacity().await?;
             }
 
+            let normalized_request = ForwardRequest {
+                batch_id: request.batch_id,
+                targets: request.targets.clone(),
+                skip_attachment_ids: Vec::new(),
+            };
             let now = self.server_now();
             let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
             for (target, existing) in request.targets.iter().zip(existing_jobs.into_iter()) {
@@ -825,7 +832,7 @@ impl Client {
                     job.transfer.status = TransferStatus::Queued;
                     job.direct_forward = Some(DirectForward {
                         source_id,
-                        request: request.clone(),
+                        request: normalized_request.clone(),
                     });
                     store_job(&mut tx, &job).await?;
                 }
@@ -845,9 +852,11 @@ impl Client {
         let _batch_gate = self.forward_batch_gate.lock().await;
         self.ensure_open()?;
 
-        {
+        let (skip_attachment_ids, skip_set) = {
             let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
-            let mut any_unpublished = false;
+            let mut skip_attachment_ids = Vec::new();
+            let mut skip_set = std::collections::HashSet::new();
+            let mut any_active = false;
             for target in &request.targets {
                 let row: Option<String> = sqlx::query_scalar(
                     "SELECT payload FROM transfers WHERE id = ? AND direction = 'upload'",
@@ -855,19 +864,28 @@ impl Client {
                 .bind(target.attachment_id.to_string())
                 .fetch_optional(&mut *tx)
                 .await?;
+                let mut active = false;
                 if let Some(json) = row {
                     let mut job: Job = serde_json::from_str(&json)?;
-                    if job.transfer.status != TransferStatus::Complete {
-                        any_unpublished = true;
+                    if matches!(
+                        job.transfer.status,
+                        TransferStatus::Queued | TransferStatus::Running
+                    ) {
+                        active = true;
+                        any_active = true;
                         if !job.publishing {
                             job.publishing = true;
                             store_job(&mut tx, &job).await?;
                         }
                     }
                 }
+                if !active {
+                    skip_attachment_ids.push(target.attachment_id);
+                    skip_set.insert(target.attachment_id);
+                }
             }
             tx.commit().await?;
-            if !any_unpublished {
+            if !any_active {
                 return Ok(request
                     .targets
                     .iter()
@@ -880,14 +898,21 @@ impl Client {
                     })
                     .collect());
             }
-        }
+            (skip_attachment_ids, skip_set)
+        };
 
-        match self.forward_attachment(source_id, request).await {
+        let effective_request = ForwardRequest {
+            batch_id: request.batch_id,
+            targets: request.targets.clone(),
+            skip_attachment_ids,
+        };
+        match self.forward_attachment(source_id, &effective_request).await {
             Ok(results) => {
                 let mut out = Vec::with_capacity(results.len());
                 let now = self.server_now();
                 let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
                 for item in results {
+                    let is_skipped = skip_set.contains(&item.target.attachment_id);
                     let id_str = item.target.attachment_id.to_string();
                     let chat_str = item.target.conversation_id.to_string();
                     let row: Option<String> = sqlx::query_scalar(
@@ -920,7 +945,7 @@ impl Client {
                                 job.publishing = false;
                                 store_job(&mut tx, &job).await?;
                             }
-                        } else {
+                        } else if !is_skipped {
                             let transient = item.status == 408
                                 || item.status == 429
                                 || item.status >= 500;
@@ -1003,6 +1028,7 @@ impl Client {
                     })
                 );
                 for target in &request.targets {
+                    let is_skipped = skip_set.contains(&target.attachment_id);
                     let id_str = target.attachment_id.to_string();
                     let chat_str = target.conversation_id.to_string();
                     let row: Option<String> = sqlx::query_scalar(
@@ -1016,44 +1042,53 @@ impl Client {
                         let mut job: Job = serde_json::from_str(&json)?;
                         if job.transfer.status == TransferStatus::Complete {
                             already_complete = true;
-                        } else if transient {
-                            job.transfer.status = TransferStatus::Queued;
-                            job.transfer.error = Some(err.to_string());
-                            job.retry_at = now + 2_000;
-                            store_job(&mut tx, &job).await?;
-                        } else {
-                            let suppressed: bool = sqlx::query_scalar(
-                                "SELECT EXISTS(SELECT 1 FROM local_suppressed_sends WHERE kind = 'upload' AND id = ?1)
-                                 OR EXISTS(SELECT 1 FROM local_deleted_chats WHERE conversation_id = ?2)",
-                            )
-                            .bind(&id_str)
-                            .bind(&chat_str)
-                            .fetch_one(&mut *tx)
-                            .await?;
-                            if suppressed {
-                                sqlx::query("DELETE FROM transfers WHERE id = ? AND direction = 'upload'")
-                                    .bind(&id_str)
-                                    .execute(&mut *tx)
-                                    .await?;
-                                sqlx::query("INSERT OR IGNORE INTO send_failure_notices (kind, id) VALUES ('upload', ?)")
-                                    .bind(&id_str)
-                                    .execute(&mut *tx)
-                                    .await?;
-                            } else {
-                                job.transfer.status = if gone {
-                                    TransferStatus::Expired
-                                } else {
-                                    TransferStatus::Failed
-                                };
+                        } else if !is_skipped {
+                            if transient {
+                                job.transfer.status = TransferStatus::Queued;
                                 job.transfer.error = Some(err.to_string());
-                                job.publishing = false;
+                                job.retry_at = now + 2_000;
                                 store_job(&mut tx, &job).await?;
+                            } else {
+                                let suppressed: bool = sqlx::query_scalar(
+                                    "SELECT EXISTS(SELECT 1 FROM local_suppressed_sends WHERE kind = 'upload' AND id = ?1)
+                                     OR EXISTS(SELECT 1 FROM local_deleted_chats WHERE conversation_id = ?2)",
+                                )
+                                .bind(&id_str)
+                                .bind(&chat_str)
+                                .fetch_one(&mut *tx)
+                                .await?;
+                                if suppressed {
+                                    sqlx::query("DELETE FROM transfers WHERE id = ? AND direction = 'upload'")
+                                        .bind(&id_str)
+                                        .execute(&mut *tx)
+                                        .await?;
+                                    sqlx::query("INSERT OR IGNORE INTO send_failure_notices (kind, id) VALUES ('upload', ?)")
+                                        .bind(&id_str)
+                                        .execute(&mut *tx)
+                                        .await?;
+                                } else {
+                                    job.transfer.status = if gone {
+                                        TransferStatus::Expired
+                                    } else {
+                                        TransferStatus::Failed
+                                    };
+                                    job.transfer.error = Some(err.to_string());
+                                    job.publishing = false;
+                                    store_job(&mut tx, &job).await?;
+                                }
                             }
                         }
                     }
                     out.push(ViewerForwardItem {
                         target: target.clone(),
-                        status: if already_complete { "sent" } else { "queued" }.into(),
+                        status: if already_complete {
+                            "sent"
+                        } else if is_skipped {
+                            "failed"
+                        } else {
+                            "queued"
+                        }
+                        .into(),
                         error: None,
                         cache_error: None,
                     });
@@ -1381,7 +1416,12 @@ impl Client {
             job.transfer.status != TransferStatus::Complete && !published_in_inbox,
             "This attachment was already sent."
         );
-        if direction == Direction::Upload && job.direct_forward.is_some() {
+        let is_batch_forward = job.direct_forward.is_some()
+            || job
+                .forward_group
+                .as_ref()
+                .is_some_and(|group| group.leader_id != id);
+        if direction == Direction::Upload && is_batch_forward {
             if job.publishing
                 && matches!(
                     job.transfer.status,
@@ -1392,7 +1432,11 @@ impl Client {
                     "Could not verify whether this attachment was already forwarded. Reconnect and try again."
                 );
             }
-        } else if direction == Direction::Upload && job.transfer.status != TransferStatus::Expired {
+        }
+        if direction == Direction::Upload
+            && job.direct_forward.is_none()
+            && job.transfer.status != TransferStatus::Expired
+        {
             match self
                 .api
                 .send(self.api.request(Method::DELETE, &format!("/v1/files/{id}")))
@@ -1980,10 +2024,18 @@ impl Client {
                 } else {
                     group.batch_targets.clone()
                 };
+                let skip_attachment_ids: Vec<Uuid> = targets
+                    .iter()
+                    .filter(|target| target.attachment_id != id)
+                    .map(|target| target.attachment_id)
+                    .collect();
                 let req = ForwardRequest {
                     batch_id: group.batch_id,
                     targets,
+                    skip_attachment_ids,
                 };
+                job.publishing = true;
+                self.store_job(job).await?;
                 let forward_res = {
                     let _batch_gate = self.forward_batch_gate.lock().await;
                     self.forward_results(&format!("/v2/files/{}/forward", group.leader_id), &req)
@@ -1996,10 +2048,17 @@ impl Client {
                             .find(|item| item.target.attachment_id == id)
                         {
                             if let Some(stamp) = item.publication {
+                                job.publishing = false;
                                 job.transfer.received = attachment.size;
                                 return self.finish_published_upload(job, stamp, &spool).await;
                             }
                             if !matches!(item.status, 404 | 410) {
+                                let transient = item.status == 408
+                                    || item.status == 429
+                                    || item.status >= 500;
+                                if !transient {
+                                    job.publishing = false;
+                                }
                                 let status = StatusCode::from_u16(item.status)
                                     .unwrap_or(StatusCode::BAD_REQUEST);
                                 return Err(OnlineError::Rejected {
@@ -2011,6 +2070,8 @@ impl Client {
                                 .into());
                             }
                         }
+                        job.publishing = false;
+                        self.store_job(job).await?;
                     }
                     Err(err) => {
                         let missing_leader = matches!(
@@ -2021,8 +2082,27 @@ impl Client {
                             })
                         );
                         if !missing_leader {
+                            let transient = matches!(
+                                err.downcast_ref::<OnlineError>(),
+                                Some(OnlineError::Network(_))
+                            ) || matches!(
+                                err.downcast_ref::<OnlineError>(),
+                                Some(OnlineError::Rejected { status, .. })
+                                    if matches!(
+                                        *status,
+                                        StatusCode::UNAUTHORIZED
+                                            | StatusCode::TOO_MANY_REQUESTS
+                                            | StatusCode::REQUEST_TIMEOUT
+                                    ) || (status.is_server_error()
+                                        && *status != StatusCode::INSUFFICIENT_STORAGE)
+                            );
+                            if !transient {
+                                job.publishing = false;
+                            }
                             return Err(err);
                         }
+                        job.publishing = false;
+                        self.store_job(job).await?;
                     }
                 }
             }
@@ -3441,6 +3521,7 @@ mod tests {
                 conversation_id: chats[1],
                 attachment_id: Uuid::new_v4(),
             }],
+            skip_attachment_ids: Vec::new(),
         };
         let mut att = queued[0].attachment.clone();
         att.id = direct_req.targets[0].attachment_id;
