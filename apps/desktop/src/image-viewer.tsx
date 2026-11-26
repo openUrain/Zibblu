@@ -35,7 +35,7 @@ import type {
 } from "./media-viewer-types";
 import { formatTrimTime } from "./video-trimmer";
 import { VideoExportBar, VideoTrimmer } from "./video-trimmer-view";
-import { WindowControls, WindowDrag } from "./window-chrome";
+import { WindowControls, WindowDrag, windows } from "./window-chrome";
 import "./image-viewer.css";
 
 type Point = { x: number; y: number };
@@ -536,6 +536,7 @@ function ImageCanvas({
       {!loaded && !failed && <img className="image-stage-thumbnail" aria-hidden alt="" draggable={false}
         src={draft ? api.draftMediaUrl(file.id, "thumbnail") : api.mediaUrl(file.id, "cached-thumbnail")} onError={event => { event.currentTarget.hidden = true; }} />}
       {!failed && <img ref={imageRef} key={attempt} className="image-stage-original" draggable={false} alt={file.name}
+        crossOrigin={windows ? "anonymous" : undefined}
         style={{
           visibility: loaded ? "visible" : "hidden",
           transform: `translate(-50%, -50%) translate(${transform.x}px, ${transform.y}px) rotate(${view.turn * 90}deg) scale(${scale})`,

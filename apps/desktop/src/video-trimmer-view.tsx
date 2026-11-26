@@ -374,7 +374,7 @@ export function VideoTrimmer({
         <div className="video-trimmer-actions">
           <button
             type="button"
-            className="button subtle small video-trimmer-cancel-btn"
+            className="button small video-trimmer-cancel-btn"
             onClick={() => onRequestCancel(dirty)}
           >
             {t("Cancel", "取消")}

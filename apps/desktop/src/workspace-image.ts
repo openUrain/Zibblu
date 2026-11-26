@@ -13,7 +13,7 @@ export function thumbnailKey(message: Message, file: Attachment) {
 }
 
 export function videoCoverKey(message: Message, file: Attachment) {
-  return `video-cover/${message.conversation_id}/${message.seq}/${file.id}/${file.sha256}`;
+  return `video-cover/${message.conversation_id}/${message.seq}/${file.id}/${file.sha256}/${message.local_file ? "original" : "remote"}`;
 }
 
 export function useWorkspaceImage(

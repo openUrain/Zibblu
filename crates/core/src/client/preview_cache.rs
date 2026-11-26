@@ -3,6 +3,10 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::io::{Read as _, Seek as _, SeekFrom as StdSeekFrom, Write as _};
 
+fn local_video_cover_key(file: &Attachment) -> String {
+    format!("{:x}", Sha256::digest(format!("local-video-cover-v1\n{}", file.sha256)))
+}
+
 pub const IMAGE_THUMBNAIL: i64 = -2;
 
 #[derive(Clone, Debug)]
@@ -265,7 +269,7 @@ impl Client {
             .await?)
     }
 
-    pub async fn cached_video_cover(
+    pub async fn cached_local_video_cover(
         &self,
         conversation: Uuid,
         seq: i64,
@@ -275,12 +279,11 @@ impl Client {
         if !self.ensure_message_authorized_for_cache(conversation, seq).await? {
             return Ok(None);
         }
-        self.read_media_bytes(
-            conversation, seq, Some(file.id), MediaVariant::VideoCover, &file.sha256,
-        ).await
+        let key = local_video_cover_key(file);
+        self.read_media_bytes(conversation, seq, Some(file.id), MediaVariant::VideoCover, &key).await
     }
 
-    pub async fn remember_video_cover(
+    pub async fn remember_local_video_cover(
         &self,
         conversation: Uuid,
         seq: i64,
@@ -288,12 +291,13 @@ impl Client {
         bytes: &[u8],
     ) -> Result<()> {
         let sha = format!("{:x}", Sha256::digest(bytes));
+        let key = local_video_cover_key(file);
         self.commit_media_bytes(&MediaDescriptor {
             conversation_id: conversation,
             message_seq: seq,
             attachment_id: Some(file.id),
             variant: MediaVariant::VideoCover,
-            content_key: &file.sha256,
+            content_key: &key,
             expected_sha256: &sha,
             expected_size: bytes.len() as u64,
             mime: "image/jpeg",

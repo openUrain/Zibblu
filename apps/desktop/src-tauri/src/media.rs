@@ -90,7 +90,7 @@ async fn video_cover(
     #[cfg(windows)]
     {
         let _request = PREVIEW_LOCKS[file.id.as_bytes()[0] as usize % PREVIEW_LOCKS.len()].lock().await;
-        if let Some(cover) = client.cached_video_cover(conversation, seq, file).await? {
+        if let Some(cover) = client.cached_local_video_cover(conversation, seq, file).await? {
             return Ok(Some(cover));
         }
         if let Some(path) = client.local_video_original_path(conversation, seq, file, true).await? {
@@ -99,7 +99,7 @@ async fn video_cover(
             if let Ok(bytes) = crate::video_edit::extract_video_cover(&path, bundled.as_deref()).await
                 && !bytes.is_empty()
             {
-                client.remember_video_cover(conversation, seq, file, &bytes).await?;
+                client.remember_local_video_cover(conversation, seq, file, &bytes).await?;
                 return Ok(Some(("image/jpeg".into(), bytes)));
             }
         }
@@ -376,13 +376,28 @@ pub(crate) fn preview(
     }
     let app = context.app_handle().clone();
     tauri::async_runtime::spawn(async move {
-        let response = match media_response(&app, request, &webview_label, viewer).await {
+        let annotation_origin = if cfg!(windows) && viewer {
+            request.headers().get(header::ORIGIN).filter(|origin| {
+                *origin == "http://tauri.localhost"
+                    || *origin == "https://tauri.localhost"
+                    || (cfg!(debug_assertions) && *origin == "http://127.0.0.1:1420")
+            }).cloned()
+        } else {
+            None
+        };
+        let mut response = match media_response(&app, request, &webview_label, viewer).await {
             Ok(response) => response,
             Err(_) => Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body(Vec::new())
                 .unwrap(),
         };
+        if let Some(origin) = annotation_origin
+            && response.status().is_success()
+            && response.headers().get(header::CONTENT_TYPE).is_some_and(|mime| mime.as_bytes().starts_with(b"image/"))
+        {
+            response.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+        }
         responder.respond(response);
     });
 }
