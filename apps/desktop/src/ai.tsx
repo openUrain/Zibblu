@@ -16,7 +16,7 @@ import { actions, t } from "./locale";
 import { windows } from "./window-chrome";
 import { RichMessage } from "./rich-message";
 import type { Attachment, Message, User } from "./api";
-import { bytes, Choice, Dialog, People, displayName } from "./common";
+import { bytes, Choice, Dialog, People, PersonAvatar, displayName } from "./common";
 import "./ai.css";
 
 const MAX_MESSAGES = 60;
@@ -362,8 +362,8 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
   </Dialog>;
 }
 
-export function AiPromptBubble({ prompt, assistantName }: {
-  prompt: AiPrompt; assistantName?: string;
+export function AiPromptBubble({ prompt, assistantName, sender }: {
+  prompt: AiPrompt; assistantName?: string; sender: User;
 }) {
   const target = assistantName ? `@${assistantName}` : aiProviders[prompt.provider].label;
   return <div className="message-row mine ai-prompt-row">
@@ -381,6 +381,7 @@ export function AiPromptBubble({ prompt, assistantName }: {
         </small>
       </div>
     </div>
+    <span className="message-avatar"><PersonAvatar user={sender} /></span>
   </div>;
 }
 

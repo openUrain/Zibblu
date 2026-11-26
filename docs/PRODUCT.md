@@ -103,7 +103,7 @@ Rules:
 - Private mode excludes cloud AI. A future on-device AI option needs a separate privacy review.
 - Context is capped at 60 messages and bounded sequential chunking within the single authorized request when large documents require splitting. The scope selector displays the exact outbound snapshot, attachments, and destination before sending.
 - Assistant mention names match case-insensitively and must be unique across configured providers.
-- Submitted `@name` prompts appear in the sender's own timeline marked **Only visible to you** and persist locally per account, never sent to peers. AI generation shows an in-chat cancellable placeholder; replies stay local unless the invoking user explicitly shares the **reply** via **Visible to** (which never shares the local prompt).
+- Submitted `@name` prompts appear beside the sender's avatar, marked **Only visible to you**. Prompts and completed replies reappear in the account's local timeline after restart. The in-chat generation placeholder can be cancelled. **Visible to** shares the selected reply with chosen members.
 - Settings supports testing the API key and listing model IDs through the provider's HTTPS API. Enter a model ID manually when model discovery is unavailable. An advanced base URL can point to a compatible HTTPS Responses API.
 
 ## Brand

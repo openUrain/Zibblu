@@ -79,6 +79,13 @@ impl Client {
              );
              CREATE INDEX IF NOT EXISTS ai_local_prompts_chat
                 ON ai_local_prompts (conversation_id, created_at, id);
+             CREATE TABLE IF NOT EXISTS ai_local_replies (
+                id TEXT PRIMARY KEY,
+                prompt_id TEXT NOT NULL UNIQUE REFERENCES ai_local_prompts(id) ON DELETE CASCADE,
+                text TEXT NOT NULL,
+                sources TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS outbox (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, nonce TEXT NOT NULL UNIQUE, conversation_id TEXT,
                 work TEXT NOT NULL, draft TEXT, blocked INTEGER NOT NULL DEFAULT 0,

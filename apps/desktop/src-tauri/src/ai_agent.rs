@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 use tokio::sync::oneshot;
 use zibblu_core::{AiContextMessage, AiSearch, assistant::AiAgentTurn};
+pub(super) use zibblu_core::AiLocalSource as Source;
 
 const MAX_CALLS: usize = 8;
 const MAX_ATTACHMENT_REQUESTS: usize = 8;
@@ -16,27 +17,8 @@ pub(super) struct AccessView {
 
 pub(super) struct PendingAccess {
     pub(super) view: AccessView,
+    conversation: Uuid,
     answer: oneshot::Sender<bool>,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct Source {
-    pub(crate) number: usize,
-    pub(crate) conversation_id: Uuid,
-    pub(crate) seq: i64,
-    attachment_id: Option<Uuid>,
-    label: String,
-    created_at: i64,
-}
-
-impl Source {
-    pub(super) fn reference(&self) -> zibblu_core::AiSourceRef {
-        zibblu_core::AiSourceRef {
-            number: self.number,
-            seq: self.seq,
-            attachment_id: self.attachment_id,
-        }
-    }
 }
 
 struct Retrieved {
@@ -98,7 +80,7 @@ pub(crate) async fn ai_start_agent(
     let client = state.client().await?;
     let conversation = state.ai.lock().expect("AI state").view(view)?.conversation;
     ensure_normal_chat_window(&window, conversation)?;
-    ensure_available(&state, &client, conversation).await?;
+    ensure_available(&state, &client, conversation, conversation).await?;
     let prompt = prompt.trim().to_owned();
     if prompt.is_empty() || prompt.len() > MAX_AI_PROMPT_BYTES {
         return Err(anyhow::anyhow!("Enter a question within the AI prompt size limit.").into());
@@ -143,6 +125,9 @@ pub(crate) fn ai_answer_access(
             .access
             .take_if(|pending| pending.view.id == request_id)
             .context("The authorization request has ended.")?;
+        if accept {
+            job.targets.insert(pending.conversation);
+        }
         let _ = pending.answer.send(accept);
         job.conversation_id
     };
@@ -158,18 +143,12 @@ pub(crate) async fn ai_source(
     number: usize,
 ) -> CommandResult<zibblu_core::Message> {
     let client = state.client().await?;
-    let (conversation, source) = {
-        let ai = state.ai.lock().expect("AI state");
-        let reply = ai.replies.get(&reply_id).context("Source unavailable.")?;
-        let source = reply
-            .sources
-            .iter()
-            .find(|source| source.number == number)
-            .cloned()
-            .context("Source unavailable.")?;
-        (reply.conversation_id, source)
-    };
+    let reply = client.ai_reply(reply_id).await?.context("Source unavailable.")?;
+    let conversation = reply.conversation_id;
+    let source = reply.sources.iter().find(|source| source.number == number)
+        .context("Source unavailable.")?;
     ensure_normal_chat_window(&window, conversation)?;
+    ensure_available(&state, &client, conversation, source.conversation_id).await?;
     Ok(resolve_source(&state, &client, source.conversation_id, &source.reference()).await?)
 }
 
@@ -183,7 +162,7 @@ pub(crate) async fn ai_shared_source(
 ) -> CommandResult<zibblu_core::Message> {
     ensure_normal_chat_window(&window, conversation)?;
     let client = state.client().await?;
-    ensure_available(&state, &client, conversation).await?;
+    ensure_available(&state, &client, conversation, conversation).await?;
     exact(&client, conversation, reply_seq).await?;
     let reply = client
         .quoted_message(conversation, reply_seq)
@@ -204,7 +183,7 @@ async fn resolve_source(
     conversation: Uuid,
     source: &zibblu_core::AiSourceRef,
 ) -> Result<zibblu_core::Message> {
-    ensure_available(state, client, conversation).await?;
+    ensure_available(state, client, conversation, conversation).await?;
     let exact = exact(client, conversation, source.seq).await?;
     if let Some(id) = source.attachment_id {
         let attachment = exact
@@ -219,20 +198,6 @@ async fn resolve_source(
         .quoted_message(conversation, source.seq)
         .await?
         .context("Source unavailable.")
-}
-
-async fn ensure_available(state: &Desktop, client: &Arc<Client>, conversation: Uuid) -> Result<()> {
-    ensure!(state.is_current(client).await, "The session has ended.");
-    ensure!(
-        !state
-            .private
-            .lock()
-            .await
-            .as_ref()
-            .is_some_and(|lobby| lobby.has_active_conversation(conversation)),
-        "AI access is unavailable while this conversation is private."
-    );
-    client.ensure_ai_authorized(conversation, &[], &[]).await
 }
 
 fn ensure_enabled(client: &Client, assistant: &Assistant) -> Result<()> {
@@ -365,7 +330,7 @@ async fn request_access(
         return Ok(None);
     }
     let desktop = app.state::<Desktop>();
-    if ensure_available(&desktop, client, chat.id).await.is_err() {
+    if ensure_available(&desktop, client, approved.conversation_id, chat.id).await.is_err() {
         return Ok(None);
     }
     let (answer, receiver) = oneshot::channel();
@@ -386,10 +351,10 @@ async fn request_access(
         .jobs
         .get_mut(&job_id)
         .context("The task has ended.")?
-        .access = Some(PendingAccess { view, answer });
+        .access = Some(PendingAccess { view, conversation: chat.id, answer });
     let _ = app.emit(AI_CHANGED_EVENT, approved.conversation_id);
     if receiver.await.unwrap_or(false) {
-        ensure_available(&desktop, client, chat.id).await?;
+        ensure_available(&desktop, client, approved.conversation_id, chat.id).await?;
         Ok(Some(chat.id))
     } else {
         Ok(None)
@@ -438,9 +403,9 @@ pub(super) async fn execute(
     let mut call_ids = HashSet::new();
     loop {
         ensure_enabled(client, &approved.assistant.info)?;
-        ensure_available(&desktop, client, origin).await?;
+        ensure_available(&desktop, client, origin, origin).await?;
         for item in &retrieved {
-            ensure_available(&desktop, client, item.source.conversation_id).await?;
+            ensure_available(&desktop, client, origin, item.source.conversation_id).await?;
             let attachments = item
                 .attachment
                 .clone()
@@ -505,7 +470,7 @@ pub(super) async fn execute(
                 call_ids.insert(call.id.clone()) && call.arguments.len() <= MAX_AI_PROMPT_BYTES,
                 "Invalid model tool call."
             );
-            ensure_available(&desktop, client, origin).await?;
+            ensure_available(&desktop, client, origin, origin).await?;
             let output = match call.name.as_str() {
                 "request_chat" => {
                     let request: RequestArgument = serde_json::from_str(&call.arguments)?;
@@ -546,7 +511,7 @@ pub(super) async fn execute(
                     } else {
                         origin
                     };
-                    ensure_available(&desktop, client, conversation).await?;
+                    ensure_available(&desktop, client, origin, conversation).await?;
                     let mut search: AiSearch = serde_json::from_value(args)?;
                     search.files_only = call.name == "search_files";
                     if let Some(number) = search.near {
@@ -617,7 +582,7 @@ pub(super) async fn execute(
                         .find(|item| item.source.number == args.number)
                         .context("The tool requested an unavailable source.")?;
                     let conversation = item.source.conversation_id;
-                    ensure_available(&desktop, client, conversation).await?;
+                    ensure_available(&desktop, client, origin, conversation).await?;
                     let message = exact(client, conversation, item.source.seq).await?;
                     if call.name == "read_messages" && item.attachment.is_none() {
                         json!({"number":args.number,"sender":message.sender,"created_at":message.created_at,"text":message.text})
@@ -669,26 +634,22 @@ pub(super) async fn execute(
                             attachment_requests <= MAX_ATTACHMENT_REQUESTS,
                             "The task reached its attachment analysis limit."
                         );
-                        let mut analysis = Vec::new();
-                        for chunk in chunks {
-                            ensure_enabled(client, &approved.assistant.info)?;
-                            ensure_available(&desktop, client, conversation).await?;
-                            client
-                                .ensure_ai_authorized(
-                                    conversation,
-                                    &[item.source.seq],
-                                    &[(item.source.seq, file.clone())],
-                                )
-                                .await?;
-                            analysis.push(
-                                run_with_cancel(
-                                    cancel_rx,
-                                    cancelled,
-                                    provider.answer_parts(&base, model, key, chunk, notify.clone()),
-                                )
-                                .await?,
-                            );
-                        }
+                        let analysis = send_chunks(
+                            chunks,
+                            cancelled,
+                            || async {
+                                ensure_enabled(client, &approved.assistant.info)?;
+                                client.ensure_ai_authorized(
+                                    conversation, &[item.source.seq], &[(item.source.seq, file.clone())],
+                                ).await?;
+                                ensure_available(&desktop, client, origin, conversation).await
+                            },
+                            |_, _, chunk| {
+                                let mut rx = cancel_rx.clone();
+                                let request = provider.answer_parts(&base, model, key, chunk, notify.clone());
+                                async move { run_with_cancel(&mut rx, cancelled, request).await }
+                            },
+                        ).await?;
                         json!({"number":args.number,"analysis":analysis})
                     }
                 }

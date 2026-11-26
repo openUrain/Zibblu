@@ -424,9 +424,21 @@ struct Engine {
     lan: Mutex<Option<Arc<Lan>>>,
     identity: Mutex<Arc<Identity>>,
     state: Mutex<State>,
+    #[cfg(windows)]
+    on_exclusive: std::sync::OnceLock<Box<dyn Fn(Uuid) + Send + Sync>>,
 }
 
 impl Engine {
+    #[cfg(windows)]
+    fn notify_exclusive(&self, room: &Room) {
+        if room.direct_peer(self.own.id).is_some()
+            && let Some(conversation) = room.conversation
+            && let Some(callback) = self.on_exclusive.get()
+        {
+            callback(conversation);
+        }
+    }
+
     fn lan(&self) -> Result<Arc<Lan>> {
         self.lan.lock().expect("LAN transport").clone().context("The LAN is unavailable.")
     }
@@ -465,6 +477,8 @@ impl PrivateLobby {
                 dismissed,
                 ..State::default()
             }),
+            #[cfg(windows)]
+            on_exclusive: std::sync::OnceLock::new(),
         });
         let task = Mutex::new(Some(tokio::spawn(background(engine.clone(), lan))));
         Ok(Self { engine, task })
@@ -472,6 +486,11 @@ impl PrivateLobby {
 
     pub fn network_matches(&self) -> bool {
         Scope::current().is_ok_and(|scope| self.engine.lan().is_ok_and(|lan| lan.scope == scope))
+    }
+
+    #[cfg(windows)]
+    pub fn on_exclusive(&self, callback: impl Fn(Uuid) + Send + Sync + 'static) {
+        assert!(self.engine.on_exclusive.set(Box::new(callback)).is_ok());
     }
 
     #[cfg(target_os = "ios")]
@@ -657,6 +676,13 @@ impl PrivateLobby {
         }
         rooms.sort_by_key(|room| room.id);
         rooms
+    }
+
+    #[cfg(windows)]
+    pub fn has_unread(&self) -> bool {
+        let state = self.engine.state();
+        state.hosted.values().any(|host| host.summary(&self.engine.own).unread)
+            || state.guests.values().any(|guest| guest.summary(&self.engine.own).unread)
     }
 
     #[cfg(windows)]
@@ -1324,6 +1350,8 @@ async fn host_link(
             },
         );
         if let Some(approval) = approval.filter(|_| !host.can_resume) {
+            #[cfg(windows)]
+            engine.notify_exclusive(&host.room);
             admit(host, &engine.own, account, approval);
         }
     }
@@ -1371,6 +1399,8 @@ async fn host_link(
                     {
                         link.active = true;
                     }
+                    #[cfg(windows)]
+                    engine.notify_exclusive(&host.room);
                     admit(host, &engine.own, account, approval);
                 } else {
                     reject_account(host, &engine.own, account);
@@ -1592,6 +1622,8 @@ fn attach_guest_task(
                         valid_roster(&guest.room, &participants, engine.own.id),
                         "Invalid private roster."
                     );
+                    #[cfg(windows)]
+                    engine.notify_exclusive(&guest.room);
                     guest.summary.phase = Phase::Connected;
                     guest.summary.participants = participants;
                     guest.suspended_at = None;
@@ -1888,9 +1920,22 @@ mod tests {
         .await?;
         let view = bob.view(id, 0)?;
         assert!(view.summary.unread);
+        #[cfg(windows)]
+        {
+            assert!(bob.has_unread());
+            assert!(!alice.has_unread());
+        }
         assert!(!bob.mark_read(id, Uuid::new_v4(), view.messages[0].seq));
         assert!(bob.mark_read(id, view.connection, view.messages[0].seq));
         assert!(!bob.view(id, 0)?.summary.unread);
+        #[cfg(windows)]
+        assert!(!bob.has_unread());
+        alice.send(id, "Unread before exit".into())?;
+        timeout(Duration::from_secs(5), async {
+            while !bob.view(id, 0).is_ok_and(|view| view.summary.unread) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await?;
         assert!(!bob.respond(id, true)?.applied);
         alice.end(id);
         timeout(Duration::from_secs(5), async {
@@ -1899,6 +1944,8 @@ mod tests {
             }
         }).await?;
         assert!(!bob.list().iter().any(|room| room.id == id));
+        #[cfg(windows)]
+        assert!(!bob.has_unread());
         assert!(bob.respond(id, true).is_err());
         let declined = alice.invite_nearby(device, None).await?;
         timeout(Duration::from_secs(5), async {

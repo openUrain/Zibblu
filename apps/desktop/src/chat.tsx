@@ -475,6 +475,8 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
   const chatUploads = transfers.filter(job => job.direction === "upload" && job.conversation_id === chat.id);
   const pending = chatUploads.filter(job => job.status !== "complete");
   const published = new Set(page?.items.map(message => message.attachment?.id));
+  const sharedAiReplies = new Set(page?.items.filter(message => message.ai_provider && !message.recalled
+    && !message.expired && message.sender.id === own.id).map(message => message.nonce));
   useEffect(() => {
     if (!windows) return;
     setShownUploads(previous => {
@@ -514,7 +516,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
       time: promptTimeById.get(aiJob.prompt_id) ?? aiJob.created_at, rank: 2, promptId: aiJob.prompt_id,
       key: "ai-job/" + aiJob.id,
     })),
-    ...aiChat.replies.map(reply => ({
+    ...aiChat.replies.filter(reply => !sharedAiReplies.has(reply.id)).map(reply => ({
       message: undefined, reply, transfer: undefined, aiPrompt: undefined, aiJob: undefined,
       time: promptTimeById.get(reply.prompt_id) ?? reply.created_at, rank: 2, promptId: reply.prompt_id,
       key: reply.id,
@@ -649,7 +651,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
           if (aiPrompt) {
             return <Fragment key={key}>
               {newGroup && <div className="day-divider"><time dateTime={new Date(time).toISOString()}>{messageTimeLabel(time)}</time></div>}
-              <AiPromptBubble prompt={aiPrompt} assistantName={assistantByProvider.get(aiPrompt.provider)} />
+              <AiPromptBubble prompt={aiPrompt} assistantName={assistantByProvider.get(aiPrompt.provider)} sender={own} />
             </Fragment>;
           }
           if (aiJob) {
@@ -846,7 +848,6 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
     {sharingReply && <ShareAiReply key={sharingReply.id} reply={sharingReply}
       members={chat.members.filter(user => user.id !== own.id)} close={() => setSharingReply(undefined)} published={async () => {
         await refresh();
-        aiChat.dismiss(sharingReply.id);
         setSharingReply(undefined);
       }} />}
   </>;

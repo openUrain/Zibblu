@@ -113,6 +113,8 @@ impl Client {
              FROM outbox WHERE conversation_id IS NOT NULL GROUP BY conversation_id",
             "SELECT conversation_id, CAST(coalesce(sum(length(CAST(prompt_text AS BLOB))), 0) AS INTEGER)
              FROM ai_local_prompts GROUP BY conversation_id",
+            "SELECT p.conversation_id, CAST(sum(length(CAST(r.text AS BLOB)) + length(CAST(r.sources AS BLOB))) AS INTEGER)
+             FROM ai_local_replies r JOIN ai_local_prompts p ON p.id = r.prompt_id GROUP BY p.conversation_id",
             "SELECT i.conversation_id, CAST(coalesce(sum(length(p.bytes)), 0) AS INTEGER)
              FROM media_previews p JOIN inbox i ON i.seq = p.message_seq
              GROUP BY i.conversation_id",

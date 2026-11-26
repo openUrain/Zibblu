@@ -156,6 +156,11 @@ async fn maintain_lobby(app: &AppHandle, client: &Client) {
             } else {
                 DiscoveryStatus::DiscoveryFailed
             };
+            #[cfg(windows)]
+            if let Some(lobby) = &lobby {
+                let app = app.clone();
+                lobby.on_exclusive(move |conversation| crate::ai::suspend_conversation(&app, conversation));
+            }
             *current = lobby.map(Arc::new);
         }
     }
@@ -170,7 +175,10 @@ async fn run_prompts(app: &AppHandle) {
     loop {
         tick.tick().await;
         #[cfg(windows)]
-        close_exclusive_chat_windows(app, &desktop).await;
+        {
+            desktop.update_tray(app, None).await;
+            close_exclusive_chat_windows(app, &desktop).await;
+        }
         let invitation = if prompt_window(app, &desktop) == Some(INVITATION) {
             desktop.private.lock().await.as_ref().and_then(|lobby| {
                 lobby
