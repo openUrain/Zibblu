@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { Message } from "./api";
 
 export type AiProvider = "open_ai" | "deep_seek" | "grok";
-export type Assistant = { provider: AiProvider; name: string; model: string; base_url?: string | null };
+export type Assistant = { provider: AiProvider; name: string; model: string; base_url?: string | null; agent_enabled?: boolean };
 export type AiFile = { id: string; name: string; bytes: number };
 export type AiScope =
   | { kind: "prompt" }
@@ -39,12 +40,14 @@ export type AiJob = {
   prompt_id: string;
   conversation_id: string;
   provider: AiProvider;
-  phase: "downloading" | "preparing" | "generating" | "failed";
+  phase: "downloading" | "preparing" | "searching" | "generating" | "failed";
   status_text: string;
   progress?: [number, number] | null;
   error?: string | null;
   created_at: number;
+  access?: { id: string; name: string; endpoint: string } | null;
 };
+export type AiSource = { number: number; conversation_id: string; seq: number; attachment_id?: string | null; label: string; created_at: number };
 export type AiReply = {
   id: string;
   prompt_id: string;
@@ -52,6 +55,7 @@ export type AiReply = {
   provider: AiProvider;
   text: string;
   created_at: number;
+  sources?: AiSource[];
 };
 
 export const aiProviders = {
@@ -68,6 +72,15 @@ export const ai = {
     invoke<{ authenticated: boolean; models: string[] }>("ai_test_connection", { provider, baseUrl, key }),
   removeAssistant: (provider: AiProvider) =>
     invoke<Assistant[]>("ai_remove_assistant", { provider }),
+  enableAgent: (assistant: Assistant, enabled: boolean) =>
+    invoke<Assistant[]>("ai_set_agent_enabled", { provider: assistant.provider, model: assistant.model, baseUrl: assistant.base_url, enabled }),
+  startAgent: (view: string, provider: AiProvider, prompt: string) =>
+    invoke<{ id: string; created_at: number }>("ai_start_agent", { view, provider, prompt }),
+  answerAccess: (jobId: string, requestId: string, accept: boolean) =>
+    invoke<void>("ai_answer_access", { jobId, requestId, accept }),
+  source: (replyId: string, number: number) => invoke<Message>("ai_source", { replyId, number }),
+  sharedSource: (conversation: string, replySeq: number, number: number) =>
+    invoke<Message>("ai_shared_source", { conversation, replySeq, number }),
   openView: (view: string, conversation: string) => invoke<void>("ai_open_view", { view, conversation }),
   closeView: (view: string) => invoke<void>("ai_close_view", { view }),
   begin: (view: string, draft: string) => invoke<void>("ai_begin", { view, draft }),

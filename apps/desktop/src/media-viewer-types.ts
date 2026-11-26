@@ -93,6 +93,7 @@ export interface ImageAnnotatorProps {
   onChange: (next: ImageAnnotationDoc) => void;
   onComplete: (doc: ImageAnnotationDoc) => void;
   onRequestExit: () => void;
+  onPendingEditChange: (dirty: boolean) => void;
 }
 
 export interface VideoTrimRange {
@@ -125,6 +126,7 @@ export interface VideoTrimmerProps {
   thumbnails: string[]; // data URLs
   onComplete: (range: VideoTrimRange) => void;
   onRequestCancel: (dirty: boolean) => void;
+  onPendingEditChange: (dirty: boolean) => void;
 }
 
 export interface VideoExportBarProps {

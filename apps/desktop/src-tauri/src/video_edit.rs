@@ -267,6 +267,18 @@ async fn extract_single_thumbnail(
 
 #[cfg(windows)]
 pub async fn extract_video_cover(path: &Path, bundled_dir: Option<&Path>) -> Result<Vec<u8>> {
+    const SCALE: &str = "scale=w='min(iw,640)':h='min(ih,640)':force_original_aspect_ratio=decrease:force_divisible_by=2";
+    let filtered = format!("blackframe=amount=0:threshold=24,metadata=mode=select:key=lavfi.blackframe.pblack:function=less:value=98,{SCALE}");
+    if let Ok(bytes) = render_video_cover(path, bundled_dir, &filtered).await
+        && !bytes.is_empty()
+    {
+        return Ok(bytes);
+    }
+    render_video_cover(path, bundled_dir, SCALE).await
+}
+
+#[cfg(windows)]
+async fn render_video_cover(path: &Path, bundled_dir: Option<&Path>, filter: &str) -> Result<Vec<u8>> {
     let mut cmd = new_media_command("ffmpeg", bundled_dir);
     cmd.args([
         "-nostdin", "-v", "error", "-max_alloc", "134217728",
@@ -277,8 +289,9 @@ pub async fn extract_video_cover(path: &Path, bundled_dir: Option<&Path>) -> Res
     .arg(path)
     .args([
         "-map", "0:V:0", "-an", "-sn", "-dn", "-map_metadata", "-1", "-filter_threads", "1",
-        "-vf", "blackframe=amount=0:threshold=24,metadata=mode=select:key=lavfi.blackframe.pblack:function=less:value=98,scale=w='min(iw,640)':h='min(ih,640)':force_original_aspect_ratio=decrease:force_divisible_by=2",
-        "-frames:v", "1", "-q:v", "4", "-threads", "2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+        "-vf", filter,
+        "-frames:v", "1", "-pix_fmt", "yuvj420p", "-q:v", "4", "-threads", "2",
+        "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
     ])
     .stdout(Stdio::piped())
     .stderr(Stdio::null())
@@ -661,13 +674,13 @@ impl VideoExportRegistry {
             let map = self.entries.lock().expect("video export registry");
             map.iter()
                 .filter(|(_, entry)| {
-                    entry.attachment_id == attachment_id && entry.progress.status == "running"
+                    entry.attachment_id == attachment_id
                 })
                 .map(|(id, _)| *id)
                 .collect()
         };
         for id in ids {
-            let _ = self.cancel(id).await;
+            self.cleanup_entry(id).await;
         }
     }
 

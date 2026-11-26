@@ -33,9 +33,9 @@ The desktop resolves and verifies the destination before each hop, pins the veri
 
 ## AI least privilege
 
-- `@assistant` is a trigger, not blanket consent. Present a scope selector and explicit provider disclosure on every invocation.
-- The client prepares an **immutable scoped snapshot** of messages and exact file objects. AI connectors receive neither DB query access nor arbitrary filesystem access.
-- No modify/delete APIs, shell/tool execution, silent posting, autonomous actions or ongoing background collection.
+- On Windows the first use discloses the provider, relevant messages and attachments that may be sent, and task-scoped access. Each submitted `@assistant` question authorizes retrieval in its current ordinary conversation. Other conversations require fresh approval for that task. Explicit selection continues to use an immutable scoped snapshot of the selected data.
+- Autonomous retrieval uses bounded searches and validated source references. The model cannot supply database queries or paths. Every operation checks the account, conversation, task and source. Search never indexes private LAN content. A shared reply delivers source metadata only to recipients with current access, and opening a source rechecks its availability.
+- No modify/delete APIs, shell execution, silent posting or ongoing background collection.
 - Use read-only file handles for selected attachments and guard against path traversal, symlinks and scope expansion at the capability boundary.
 - Treat message/file contents as untrusted data. Instructions embedded in them cannot expand AI permissions.
 - Private-session content is not sent to cloud AI. If on-device AI is later introduced, review its actual network behavior before allowing private context.
@@ -83,7 +83,7 @@ Profile snapshots and public profile images (avatars and covers) use the signed-
 
 服务端复核每个窗口实际提供的序号及当前权限。游标与页绑定到认证的设备。设备间的同步位置彼此独立，前台查看有本设备的精确落盘证明才推进单聊回执。双方开启时，发送者只能查询当前末条自发普通单聊的状态；偏好切换后的资格从提交水位重新计算。未读计数和预览在 SQLite 按可见历史计算。
 
-Delete for me hides the message in the current SQLite profile, including search, quotes, file history and AI selection. An unfinished download remains manageable from its existing transfer record in Shared files. Other devices and other accounts retain their own views. Quotes reference a message in the same conversation and resolve against each viewer's authorized history. Normal drafts live in the signed-in renderer's memory. Private drafts also clear on session termination or disconnect.
+Delete for me hides the message in the current SQLite profile, including search, quotes, file history and AI selection. An unfinished download remains manageable from its existing transfer record in Shared files. Other devices and other accounts retain their own views. Quotes reference a message in the same conversation and resolve against each viewer's authorized history. Normal drafts live in the signed-in renderer's memory. Windows private drafts survive a temporary suspension and clear when the session terminates.
 
 Normal group join codes are renewable bearer invitations available to group members. The server stores a hash and expires each code after seven days. QR admission records a message sequence cutoff, enforced on synchronized messages, previews and file downloads. Existing group members retain the history they could already access.
 

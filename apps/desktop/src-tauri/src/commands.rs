@@ -1127,8 +1127,14 @@ pub(crate) async fn publish_ai_reply(
     app: AppHandle,
     state: State<'_, Desktop>,
     conversation: Uuid,
-    reply: PublishAiReply,
+    mut reply: PublishAiReply,
 ) -> Result<()> {
+    #[cfg(windows)]
+    {
+        reply.sources = state.ai.lock().expect("AI state").reply_sources(conversation, reply.nonce, &reply.text);
+    }
+    #[cfg(not(windows))]
+    reply.sources.clear();
     state
         .client()
         .await?

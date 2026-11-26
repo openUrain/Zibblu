@@ -144,6 +144,7 @@ impl Client {
                     text: Some(text),
                     attachment: None,
                     ai_provider,
+                    ai_sources: Vec::new(),
                     recalled: false,
                     reply_to,
                     nonce: Some(nonce),

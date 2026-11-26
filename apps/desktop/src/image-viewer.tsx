@@ -231,6 +231,7 @@ function ImageCanvas({
   const [requestedSave, setRequestedSave] = useState(false);
   const [busy, setBusy] = useState(false);
   const [annotating, setAnnotating] = useState(false);
+  const [pendingImageEdit, setPendingImageEdit] = useState(false);
   const [annotationDoc, setAnnotationDoc] = useState<ImageAnnotationDoc | null>(null);
   const [pendingDiscardAction, setPendingDiscardAction] = useState<(() => void) | null>(null);
   const [forwardOpen, setForwardOpen] = useState(false);
@@ -246,7 +247,7 @@ function ImageCanvas({
 
   useEffect(() => {
     registerCloseGuard({
-      needsConfirm: () => annotating || hasUnsentEdits,
+      needsConfirm: () => pendingImageEdit || hasUnsentEdits,
       promptClose: () => {
         setPendingDiscardAction(() => () => {
           setAnnotationDoc(null);
@@ -257,7 +258,7 @@ function ImageCanvas({
       },
     });
     return () => registerCloseGuard(undefined);
-  }, [annotating, forceCloseWindow, hasUnsentEdits, registerCloseGuard]);
+  }, [pendingImageEdit, forceCloseWindow, hasUnsentEdits, registerCloseGuard]);
 
   useEffect(() => {
     const element = stage.current!;
@@ -356,6 +357,11 @@ function ImageCanvas({
     if (busy) return;
     setBusy(true);
     await operate(async () => {
+      if (hasUnsentEdits && annotationDoc && imageRef.current) {
+        const edited = await exportAnnotatedImage(imageRef.current, annotationDoc);
+        if (await api.viewerSaveEditedImage(file.id, edited.bytes)) setNotice(t("Edited copy saved", "已保存编辑副本"));
+        return;
+      }
       const transfer = await api.save(file.id);
       if (transfer) {
         setRequestedSave(true);
@@ -565,6 +571,7 @@ function ImageCanvas({
             setAnnotating(false);
           }}
           onRequestExit={exitAnnotator}
+          onPendingEditChange={setPendingImageEdit}
         />
       )}
       {!loaded && <div className="image-viewer-note">
@@ -656,6 +663,7 @@ function VideoCanvas({
   const [busy, setBusy] = useState(false);
 
   const [trimming, setTrimming] = useState(false);
+  const [pendingVideoEdit, setPendingVideoEdit] = useState(false);
   const [previewHeight, setPreviewHeight] = useState(66);
   const [loadingTrimAssets, setLoadingTrimAssets] = useState(false);
   const [probe, setProbe] = useState<VideoProbeInfo | null>(null);
@@ -719,7 +727,7 @@ function VideoCanvas({
 
   useEffect(() => {
     registerCloseGuard({
-      needsConfirm: () => exportRunning || trimming || hasUnsentEdits,
+      needsConfirm: () => exportRunning || pendingVideoEdit || hasUnsentEdits,
       promptClose: () => {
         if (exportRunning) {
           setPendingDiscardAction(() => () => {
@@ -737,7 +745,7 @@ function VideoCanvas({
       },
     });
     return () => registerCloseGuard(undefined);
-  }, [exportRunning, forceCloseWindow, hasUnsentEdits, registerCloseGuard, trimming]);
+  }, [exportRunning, forceCloseWindow, hasUnsentEdits, pendingVideoEdit, registerCloseGuard]);
 
   // Seamlessly switch playback to the verified local original once downloaded.
   useEffect(() => {
@@ -1147,6 +1155,7 @@ function VideoCanvas({
             }
             setPendingDiscardAction(() => () => setTrimming(false));
           }}
+          onPendingEditChange={setPendingVideoEdit}
         />
         </div>
       )}

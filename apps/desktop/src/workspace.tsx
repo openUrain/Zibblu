@@ -141,9 +141,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       if (type === "avatar") return directory.avatars[id] === version;
       if (type === "cover") return (id === session.user.id || people.has(id))
         && profiles.get(id + (id === session.user.id ? "/own" : "/contact"))?.profile.cover === version;
+      if (type === "upload-cover") return transfers.some(transfer => transfer.direction === "upload"
+        && transfer.conversation_id === id && transfer.attachment.id === version && transfer.status !== "complete");
       return previewAccess(id, Number(version)) === "cached";
     });
-  }, [directory.contacts, directory.avatars, previewAccess, images, profiles, session.user.id]);
+  }, [directory.contacts, directory.avatars, previewAccess, images, profiles, session.user.id, transfers]);
   useLayoutEffect(() => () => {
     profiles.retain(() => false);
     images.retain(() => false);
@@ -293,9 +295,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
 
   useEffect(() => {
     let current = true;
-    void ai.assistants().then(value => { if (current) setAssistants(value); })
+    const refreshSettings = () => void ai.assistants().then(value => { if (current) setAssistants(value); })
       .catch(error => { if (current) setAssistantFailure(errorMessage(error)); });
-    return () => { current = false; };
+    refreshSettings();
+    const unlisten = listen("zibblu-assistant-settings", refreshSettings);
+    return () => { current = false; void unlisten.then(stop => stop()); };
   }, []);
 
   const apply = useCallback((update: SyncUpdate) => {

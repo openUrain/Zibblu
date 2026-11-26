@@ -2361,6 +2361,7 @@ async fn issues_133_130_123_cross_client_and_isolation() -> Result<()> {
             text: "Shared AI summary from Bob".to_string(),
             created_at: 1_700_000_001,
             readers: vec![alice.user.id],
+            sources: Vec::new(),
         },
     )
     .await?;

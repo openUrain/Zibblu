@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { AiProvider } from "./ai-api";
+import type { AiProvider, AiSource } from "./ai-api";
 import type { VideoExportProgress, VideoProbeInfo } from "./media-viewer-types";
 
 export type User = { id: string; handle: string };
@@ -51,7 +51,7 @@ export type Attachment = { id: string; name: string; kind: "file" | "folder"; si
 export type ImageSize = [number, number];
 export type Message = {
   seq: number; conversation_id: string; sender: User; created_at: number;
-  text: string | null; attachment: Attachment | null; ai_provider?: AiProvider; recalled: boolean;
+  text: string | null; attachment: Attachment | null; ai_provider?: AiProvider; ai_sources?: AiSource[]; recalled: boolean;
   reply_to?: number;
   nonce?: string;
   expires_at?: number;
@@ -301,6 +301,8 @@ export const api = {
       targets,
       fileName,
     }),
+  viewerSaveEditedImage: (id: string, bytes: Uint8Array) =>
+    invoke<boolean>("viewer_save_edited_image", bytes, { headers: { "zibblu-source-id": id } }),
   save: (id: string) => invoke<Transfer | null>("save_attachment", { id }),
   openSaved: (id: string) => invoke<boolean>("open_saved_attachment", { id }),
   transfers: () => invoke<Transfer[]>("transfers"),

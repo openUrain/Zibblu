@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
-import { ai } from "./ai-api";
+import { ai, aiProviders } from "./ai-api";
 import type { AiJob, AiPrompt, AiReply, Assistant } from "./ai-api";
 import { AiJobBubble, AiPromptBubble, AiRequest, AssistantMenu, ProviderLogo, ShareAiReply } from "./ai";
 import { buildChatContextMenu, sortConversationsForDisplay } from "./chat-list-menu";
@@ -464,6 +464,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
   const [recallError, setRecallError] = useState("");
   const [recalling, setRecalling] = useState<number>();
   const [sharingReply, setSharingReply] = useState<AiReply>();
+  const [sourceMessage, setSourceMessage] = useState<Message>();
   const [receipt, setReceipt] = useState<MessageReceipt | null>(null);
   const viewedBody = useRef<HTMLDivElement>(null);
   const openMenu = useMenu();
@@ -668,6 +669,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
             <PersonAvatar user={message!.sender} />
           </button>;
           const text = message?.text ?? reply?.text;
+          const sources = windows ? reply?.sources ?? message?.ai_sources : undefined;
           const file = message?.attachment;
           const download = file ? downloads.get(file.id) : undefined;
           const expiredFile = !!message && (fileExpired(message, now) || download?.status === "expired");
@@ -784,6 +786,20 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                     </div>
                     : <RichMessage text={text} cacheKey={message ?? reply} />}
                 </div>
+                {!!sources?.length && <ul className="ai-sources" aria-label={t("Sources", "来源")}>
+                  {sources.map(source => <li key={source.number}><button type="button" className="text-button"
+                    onClick={() => void (reply ? ai.source(reply.id, source.number)
+                      : ai.sharedSource(chat.id, message!.seq, source.number)).then(original => {
+                      if (!original || original.recalled || original.expired) throw new Error();
+                      if (source.attachment_id && original.attachment?.id === source.attachment_id && mediaKind(original.attachment)) {
+                        openMedia(original);
+                      } else {
+                        setSourceMessage(original);
+                      }
+                    }).catch(() => setRecallError(t("Source unavailable.", "来源不可用。")))}>
+                    [{source.number}] {source.label} <time>{dateTimeLabel(source.created_at)}</time>
+                  </button></li>)}
+                </ul>}
                 <div className="message-meta">
                   {!windows && message?.pending && <>
                     <small role="status">{message.pending.error ?? <span className="status-icon" title={t("Queued", "排队中")} aria-label={t("Queued", "排队中")} role="img" tabIndex={0}><Clock size={14} aria-hidden /></span>}</small>
@@ -820,6 +836,13 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
       page={page} loading={loading} older={older} draft={draft} setDraft={setDraft}
       sending={sending} beginSending={beginSending} endSending={endSending}
       quoteUnavailable={!!draft.quote && (recalled.has(draft.quote.seq) || hidden.has(draft.quote.seq))} />
+    {sourceMessage && <Dialog title={t("Source message", "来源消息")} close={() => setSourceMessage(undefined)}>
+      <p className="muted">{displayName(sourceMessage.sender, remarks)} · {dateTimeLabel(sourceMessage.created_at)}</p>
+      {sourceMessage.attachment
+        ? <ChatAttachment message={sourceMessage} expired={fileExpired(sourceMessage, Date.now() + clockOffset)}
+            open={() => openMedia(sourceMessage)} onChanged={changed} />
+        : <RichMessage text={sourceMessage.text} />}
+    </Dialog>}
     {sharingReply && <ShareAiReply key={sharingReply.id} reply={sharingReply}
       members={chat.members.filter(user => user.id !== own.id)} close={() => setSharingReply(undefined)} published={async () => {
         await refresh();
@@ -895,6 +918,9 @@ function Composer({ conversation, refresh, pickAttachments, pasteFiles, changed,
   const [menu, setMenu] = useState(false);
   const [menuIndex, setMenuIndex] = useState(0);
   const [request, setRequest] = useState<{ id: string; assistant: Assistant; prompt: string; text: string }>();
+  const [agentConsent, setAgentConsent] = useState<Assistant>();
+  const [agentError, setAgentError] = useState("");
+  const [agentEnabled, setAgentEnabled] = useState<Assistant>();
   const textarea = useRef<HTMLTextAreaElement>(null);
   const clipboardFileCheck = useRef<Promise<boolean> | undefined>(undefined);
   const menuId = useId();
@@ -957,6 +983,28 @@ function Composer({ conversation, refresh, pickAttachments, pasteFiles, changed,
     void api.removeDraftAttachment(id).catch(() => {});
   }
 
+  async function sendAgent(config: Assistant, enable: boolean) {
+    if (!view || !prompt || !beginSending()) return;
+    const text = draft.trim();
+    setMenu(false);
+    setFailure("");
+    setAgentError("");
+    try {
+      if (enable) {
+        await ai.enableAgent(config, true);
+        setAgentEnabled(config);
+      }
+      await ai.startAgent(view, config.provider, prompt);
+      setDraft(previous => previous.text.trim() === text ? { ...previous, text: "", nonce: undefined } : previous);
+      setAgentConsent(undefined);
+    } catch (error) {
+      if (enable) setAgentError(errorMessage(error));
+      else setFailure(errorMessage(error));
+    } finally {
+      endSending();
+    }
+  }
+
   async function send(event: FormEvent) {
     event.preventDefault();
     const text = draft.trim();
@@ -968,6 +1016,17 @@ function Composer({ conversation, refresh, pickAttachments, pasteFiles, changed,
         return;
       }
       if (!prompt || !view) return;
+      if (windows) {
+        const enabledHere = agentEnabled?.provider === assistant.provider && agentEnabled.model === assistant.model
+          && agentEnabled.base_url === assistant.base_url;
+        if (!assistant.agent_enabled && !enabledHere) {
+          setAgentError("");
+          setAgentConsent(assistant);
+        } else {
+          await sendAgent(assistant, false);
+        }
+        return;
+      }
       if (!beginSending()) return;
       const id = crypto.randomUUID();
       setMenu(false);
@@ -1175,6 +1234,22 @@ function Composer({ conversation, refresh, pickAttachments, pasteFiles, changed,
     </form>
     {previewItem && <DraftPreviewDialog item={previewItem} items={attachments}
       onSelect={setPreviewId} close={() => setPreviewId(undefined)} />}
+    {agentConsent && <Dialog title={t("Enable autonomous retrieval?", "启用 AI 自主检索？")}
+      close={() => setAgentConsent(undefined)} closeDisabled={sending}>
+      <p><strong>{aiProviders[agentConsent.provider].label} · {agentConsent.model}</strong></p>
+      <p className="muted">{agentConsent.base_url || aiProviders[agentConsent.provider].base}</p>
+      <p>{t(
+        "When you send an @AI question, the assistant may search this ordinary conversation and send relevant messages and attachments to this provider. Access is read-only. Another conversation requires approval for that task. You can turn this off in AI settings.",
+        "每次主动提交 @AI 问题时，助理可检索当前普通会话，并向该提供商发送相关消息和附件。权限仅限读取，访问其他会话须逐次批准。可在 AI 设置中关闭。",
+      )}</p>
+      {agentError && <p className="inline-error" role="alert">{agentError}</p>}
+      <div className="dialog-actions">
+        <button className="button subtle" type="button" disabled={sending} onClick={() => setAgentConsent(undefined)}>{actionLabels.cancel}</button>
+        <button className="button primary" type="button" disabled={sending} onClick={() => void sendAgent(agentConsent, true)}>
+          {t("Enable and send", "启用并发送")}
+        </button>
+      </div>
+    </Dialog>}
     {view && request && <AiRequest view={view} draft={request.id} assistant={request.assistant} prompt={request.prompt}
       messages={page?.items ?? []} hasMore={page?.has_more ?? false} loading={loading} older={older} conversation={conversation}
       close={closeRequest} sent={() => {

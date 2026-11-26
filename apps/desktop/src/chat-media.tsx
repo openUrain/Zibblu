@@ -109,9 +109,16 @@ export function ChatAttachment({ message, transfer, onChanged, open, expired, up
   message: Message; transfer?: Transfer; onChanged: () => void; open: () => void; expired: boolean; upload?: Transfer;
 }) {
   const file = message.attachment!;
-  const fitImage = useContext(WorkspaceImages) !== undefined && mediaKind(file) === "image";
+  const workspace = useContext(WorkspaceImages);
+  const fitImage = workspace !== undefined && mediaKind(file) === "image";
   const [uploadSize, setUploadSize] = useState<ImageSize>();
   const [uploadCover, setUploadCover] = useState<{ id: string; url: string }>();
+  const stagingVideo = !!upload && canPreview(file) && mediaKind(file) === "video" && navigator.userAgent.includes("Windows");
+  const readUploadCover = useCallback(() => api.uploadVideoCover(file.id), [file.id]);
+  const { url: cachedUploadCover } = useWorkspaceImage(
+    stagingVideo && workspace ? `upload-cover/${message.conversation_id}/${file.id}` : undefined,
+    file.id, undefined, Infinity, 0, true, readUploadCover,
+  );
   useEffect(() => {
     if (!upload || !fitImage || !canPreview(file)) return;
     let current = true;
@@ -119,7 +126,7 @@ export function ChatAttachment({ message, transfer, onChanged, open, expired, up
     return () => { current = false; };
   }, [!!upload, fitImage, file.id]);
   useEffect(() => {
-    if (!upload || !canPreview(file) || mediaKind(file) !== "video" || !navigator.userAgent.includes("Windows")) return;
+    if (!stagingVideo || workspace) return;
     let current = true;
     let url: string | undefined;
     void api.uploadVideoCover(file.id).then(bytes => {
@@ -128,13 +135,13 @@ export function ChatAttachment({ message, transfer, onChanged, open, expired, up
       setUploadCover({ id: file.id, url });
     }).catch(() => {});
     return () => { current = false; if (url) URL.revokeObjectURL(url); };
-  }, [!!upload, file.id]);
+  }, [stagingVideo, !!workspace, file.id]);
   if (expired || !mediaKind(file) || !canPreview(file)) {
     const previewStatus = mediaKind(file) ? "Download to open" : undefined;
     return <SharedFile {...{ message, transfer, onChanged, previewStatus, expired, upload }} />;
   }
   const size = uploadSize ?? message.preview_size;
-  const cover = uploadCover?.id === file.id ? uploadCover.url : undefined;
+  const cover = cachedUploadCover ?? (uploadCover?.id === file.id ? uploadCover.url : undefined);
   return <div className="chat-media">
     {upload ? <div className="media-tile" data-ready={cover ? "" : undefined} data-fit-image={fitImage ? "" : undefined}
       style={fitImage ? thumbnailStyle(size) : undefined}>{cover ? <img src={cover} alt="" /> : <span className="media-tile-fallback">

@@ -91,7 +91,9 @@ Rules:
 
 ## 03 — AI Assistants (explicit read-only)
 
-**User flow:** configure OpenAI, DeepSeek or Grok with a model, API key and custom assistant name → type `@name` in a normal chat → choose prompt only, selected messages (automatically including their attached images/documents) or a bounded recent range → optionally select individual text files → review the exact disclosure (including outbound attachments) and send → immediately return to the chat timeline showing the private local prompt and a cancellable generating placeholder → receive answer.
+**Windows flow:** configure a provider and custom assistant name, then submit an `@name` question in an ordinary chat. The first autonomous request shows its provider and explains its read-only access and possible disclosure. Later questions can retrieve relevant messages and attachments from the current ordinary conversation. A request for a named conversation needs explicit approval in a local card. Disable retrieval in AI settings. The timeline shows a local prompt, cancellable progress and the response with links to eligible sources.
+
+The reviewed selection flow authorizes prompt-only, chosen messages, a bounded recent range, or selected files as disclosed before sending.
 
 Rules:
 - No background access. Each request has a **fresh, one-time** authorization; it never inherits prior scopes.

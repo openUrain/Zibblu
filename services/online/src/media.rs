@@ -339,10 +339,10 @@ async fn generate(dir: &FsPath, original_size: i64) -> [&'static str; 2] {
         "-format_whitelist", FORMATS, "-max_streams", "32", "-probesize", "8388608", "-analyzeduration", "5000000",
         "-threads", "2", "-max_pixels", "8294400", "-i", "input",
     ];
-    let cover = [
+    let cover = |filter| [
         "-map", "0:V:0", "-an", "-sn", "-dn", "-map_metadata", "-1", "-filter_threads", "1",
-        "-vf", "blackframe=amount=0:threshold=24,metadata=mode=select:key=lavfi.blackframe.pblack:function=less:value=98,scale=w='min(iw,640)':h='min(ih,640)':force_original_aspect_ratio=decrease:force_divisible_by=2",
-        "-frames:v", "1", "-q:v", "4", "-threads", "2", "-f", "image2", "cover.jpg",
+        "-vf", filter,
+        "-frames:v", "1", "-pix_fmt", "yuvj420p", "-q:v", "4", "-threads", "2", "-f", "image2", "cover.jpg",
     ];
     let preview = [
         "-map", "0:V:0", "-map", "0:a:0?", "-sn", "-dn", "-map_metadata", "-1", "-map_chapters", "-1",
@@ -351,8 +351,15 @@ async fn generate(dir: &FsPath, original_size: i64) -> [&'static str; 2] {
         "-c:a", "aac", "-b:a", "96k", "-ac", "2", "-movflags", "+faststart",
         "-t", "600", "-f", "mp4", "preview.mp4",
     ];
-    let cover_status = if run(dir, "ffmpeg", &[input.as_slice(), &cover].concat(), COVER_LIMIT, 20, Stdio::null()).await.is_ok()
-        && good_size(dir, "cover.jpg", COVER_LIMIT).await.is_some() { "ready" } else { "failed" };
+    let non_black = cover("blackframe=amount=0:threshold=24,metadata=mode=select:key=lavfi.blackframe.pblack:function=less:value=98,scale=w='min(iw,640)':h='min(ih,640)':force_original_aspect_ratio=decrease:force_divisible_by=2");
+    let mut cover_ready = run(dir, "ffmpeg", &[input.as_slice(), &non_black].concat(), COVER_LIMIT, 20, Stdio::null()).await.is_ok()
+        && good_size(dir, "cover.jpg", COVER_LIMIT).await.is_some();
+    if !cover_ready && !dir.join("cover.jpg").exists() {
+        let first_frame = cover("scale=w='min(iw,640)':h='min(ih,640)':force_original_aspect_ratio=decrease:force_divisible_by=2");
+        cover_ready = run(dir, "ffmpeg", &[input.as_slice(), &first_frame].concat(), COVER_LIMIT, 20, Stdio::null()).await.is_ok()
+            && good_size(dir, "cover.jpg", COVER_LIMIT).await.is_some();
+    }
+    let cover_status = if cover_ready { "ready" } else { "failed" };
     let preview_status = if run(dir, "ffmpeg", &[input.as_slice(), &preview].concat(), PREVIEW_LIMIT, 120, Stdio::null()).await.is_ok() {
         match good_size(dir, "preview.mp4", PREVIEW_LIMIT).await {
             Some(size) if size >= original_size => "not_smaller",

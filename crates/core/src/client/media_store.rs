@@ -642,6 +642,12 @@ impl Client {
     async fn commit_media_index(&self, desc: &MediaDescriptor<'_>, rel_path: &str) -> Result<()> {
         let now = unix_millis();
         let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
+        if desc.variant == MediaVariant::VideoCover {
+            let allowed: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM preview_eligible WHERE seq = ? AND conversation_id = ?)",
+            ).bind(desc.message_seq).bind(desc.conversation_id.to_string()).fetch_one(&mut *tx).await?;
+            ensure!(allowed, "This video is no longer available");
+        }
         let blocked: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM recall_tombstones WHERE message_seq = ?1)
                  OR EXISTS(SELECT 1 FROM hidden_messages WHERE seq = ?1)
@@ -2446,6 +2452,7 @@ mod tests {
                 sha256: sha256_hex(bytes),
             }),
             ai_provider: None,
+            ai_sources: Vec::new(),
             recalled: false,
             reply_to: None,
             nonce: None,
@@ -3400,6 +3407,7 @@ mod tests {
                 sha256: sha.clone(),
             }),
             ai_provider: None,
+            ai_sources: Vec::new(),
             recalled: false,
             reply_to: None,
             nonce: None,

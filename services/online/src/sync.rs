@@ -162,6 +162,20 @@ async fn events(
                'nonce', CASE WHEN m.sender_id = $2 THEN m.nonce END,
                'expires_at', (extract(epoch FROM m.expires_at) * 1000)::BIGINT,
                'ai_provider', m.ai_provider,
+               'ai_sources', CASE WHEN live.payload AND m.ai_provider IS NOT NULL THEN coalesce((
+                   SELECT jsonb_agg(jsonb_build_object(
+                       'number', r.number, 'seq', s.seq, 'conversation_id', s.conversation_id,
+                       'created_at', s.created_at, 'attachment_id', r.attachment_id,
+                       'label', coalesce(sf.name, sa.handle)
+                   ) ORDER BY r.number)
+                   FROM ai_reply_sources r JOIN m1_visible_messages s
+                     ON s.seq = r.source_seq AND s.account_id = $2
+                   JOIN accounts sa ON sa.id = s.sender_id
+                   LEFT JOIN attachments sf ON sf.id = r.attachment_id AND sf.id = s.attachment_id
+                   WHERE r.reply_seq = m.seq AND s.recall_seq IS NULL
+                     AND coalesce(s.expires_at > statement_timestamp(), true)
+                     AND (r.attachment_id IS NULL AND s.text IS NOT NULL OR sf.id IS NOT NULL)
+               ), '[]'::jsonb) ELSE '[]'::jsonb END,
                'reply_to', CASE WHEN live.payload THEN quote.seq END,
                'text', CASE WHEN live.payload THEN m.text END,
                'attachment', CASE WHEN live.payload AND f.id IS NOT NULL THEN jsonb_build_object(

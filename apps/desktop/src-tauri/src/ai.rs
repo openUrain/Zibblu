@@ -27,6 +27,10 @@ use zibblu_core::{
 };
 
 #[cfg(windows)]
+#[path = "ai_agent.rs"]
+pub(crate) mod agent;
+
+#[cfg(windows)]
 #[path = "ai_windows.rs"]
 mod windows;
 
@@ -58,6 +62,8 @@ pub(crate) struct Assistant {
     model: String,
     #[serde(default)]
     base_url: Option<String>,
+    #[serde(default)]
+    agent_enabled: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -143,6 +149,8 @@ pub(crate) async fn ai_save_assistant(
             .find(|entry| entry.info.provider == provider)
             .filter(|_| key.is_some())
             .map(|entry| entry.protected_key.clone());
+        let agent_enabled = assistants.iter().any(|entry| entry.info.provider == provider
+            && entry.info.base_url == base_url && entry.info.model == model && entry.info.agent_enabled);
         assistants.retain(|entry| entry.info.provider != provider);
         assistants.push(StoredAssistant {
             info: Assistant {
@@ -150,6 +158,7 @@ pub(crate) async fn ai_save_assistant(
                 name,
                 model,
                 base_url,
+                agent_enabled,
             },
             protected_key,
         });
@@ -275,6 +284,7 @@ struct Approval {
     messages: Vec<AiMessage>,
     files: Vec<AiFile>,
     attachments: Vec<ApprovedAttachment>,
+    autonomous: bool,
 }
 
 struct ActiveAiJob {
@@ -290,6 +300,10 @@ struct ActiveAiJob {
     cancelled: Arc<AtomicBool>,
     cancel_notify: Arc<Notify>,
     cancel_tx: watch::Sender<bool>,
+    #[cfg(windows)]
+    autonomous: bool,
+    #[cfg(windows)]
+    access: Option<agent::PendingAccess>,
 }
 
 impl ActiveAiJob {
@@ -310,6 +324,8 @@ impl ActiveAiJob {
             progress: self.progress,
             error: self.error.clone(),
             created_at: self.created_at,
+            #[cfg(windows)]
+            access: self.access.as_ref().map(|pending| pending.view.clone()),
         }
     }
 }
@@ -325,6 +341,8 @@ pub(crate) struct AiJobView {
     progress: Option<(u64, u64)>,
     error: Option<String>,
     created_at: i64,
+    #[cfg(windows)]
+    access: Option<agent::AccessView>,
 }
 
 #[derive(Clone, Serialize)]
@@ -335,9 +353,19 @@ pub(crate) struct UnsharedAiReply {
     provider: AiProvider,
     text: String,
     created_at: i64,
+    #[cfg(windows)]
+    sources: Vec<agent::Source>,
 }
 
 impl AiState {
+    #[cfg(windows)]
+    pub(crate) fn reply_sources(&self, conversation: Uuid, reply: Uuid, text: &str) -> Vec<zibblu_core::AiSourceRef> {
+        self.replies.get(&reply)
+            .filter(|entry| entry.conversation_id == conversation && entry.text == text)
+            .map(|entry| entry.sources.iter().map(agent::Source::reference).collect())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn clear_pending_views(&mut self) {
         self.views.clear();
     }
@@ -708,6 +736,7 @@ pub(crate) async fn ai_prepare(
             messages: encoded_messages,
             files,
             attachments: approved_attachments,
+            autonomous: false,
         });
         Ok(prepared)
     })()?;
@@ -734,6 +763,12 @@ pub(crate) async fn ai_send(
         .lock()
         .expect("AI state")
         .consume(view, draft, approval)?;
+    start_ai_job(app, &state, client, approved).await
+}
+
+async fn start_ai_job(
+    app: AppHandle, state: &Desktop, client: Arc<Client>, approved: Approval,
+) -> CommandResult<SentPrompt> {
     let conversation_id = approved.conversation_id;
     let provider = approved.assistant.info.provider;
     let _base = provider.base_url(approved.assistant.info.base_url.as_deref())?;
@@ -758,7 +793,9 @@ pub(crate) async fn ai_send(
         .await?;
 
     let has_uncached = approved.attachments.iter().any(|item| !item.cached);
-    let initial_phase = if has_uncached {
+    let initial_phase = if approved.autonomous {
+        "searching"
+    } else if has_uncached {
         "downloading"
     } else if !approved.attachments.is_empty() {
         "preparing"
@@ -786,6 +823,10 @@ pub(crate) async fn ai_send(
                 cancelled: Arc::clone(&cancelled),
                 cancel_notify: Arc::clone(&cancel_notify),
                 cancel_tx,
+                #[cfg(windows)]
+                autonomous: approved.autonomous,
+                #[cfg(windows)]
+                access: None,
             },
         );
     }
@@ -1137,17 +1178,18 @@ async fn run_ai_job(
 ) {
     let conversation_id = approved.conversation_id;
     let provider = approved.assistant.info.provider;
-    let outcome = execute_ai_job(
-        &app,
-        &client,
-        job_id,
-        &approved,
-        &key,
-        &cancelled,
-        &cancel_notify,
-        &mut cancel_rx,
-    )
-    .await;
+    #[cfg(windows)]
+    let mut sources = Vec::new();
+    let outcome = async {
+        #[cfg(windows)]
+        if approved.autonomous {
+            return match agent::execute(&app, &client, job_id, &approved, &key, &cancelled, &cancel_notify, &mut cancel_rx).await {
+                Ok((text, found)) => { sources = found; Ok(text) }
+                Err(error) => Err(error),
+            };
+        }
+        execute_ai_job(&app, &client, job_id, &approved, &key, &cancelled, &cancel_notify, &mut cancel_rx).await
+    }.await;
 
     let desktop = app.state::<Desktop>();
     if !desktop.is_current(&client).await {
@@ -1172,6 +1214,8 @@ async fn run_ai_job(
                             provider,
                             text,
                             created_at: client.server_now(),
+                            #[cfg(windows)]
+                            sources,
                         },
                     );
                     true
@@ -1211,6 +1255,7 @@ mod tests {
                     name: "review".into(),
                     model: "fixture".into(),
                     base_url: None,
+                    agent_enabled: false,
                 },
                 protected_key: vec![],
             },
@@ -1219,6 +1264,7 @@ mod tests {
             messages: vec![],
             files: vec![],
             attachments: vec![],
+            autonomous: false,
         }
     }
 

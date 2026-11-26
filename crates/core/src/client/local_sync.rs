@@ -211,6 +211,8 @@ impl Client {
         for statement in statements.split_terminator(';') {
             sqlx::query(statement).execute(&mut *tx).await?;
         }
+        #[cfg(windows)]
+        initialize_ai_search(&mut tx).await?;
         let saved: Option<String> =
             sqlx::query_scalar("SELECT device_id FROM sync_checkpoint WHERE id = 1")
                 .fetch_optional(&mut *tx)
@@ -567,6 +569,49 @@ impl Client {
         super::chat_prefs::sort_conversations(&mut directory.conversations);
         Ok(directory)
     }
+}
+
+#[cfg(windows)]
+async fn initialize_ai_search(db: &mut SqliteConnection) -> Result<()> {
+    let created: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'ai_search_fts' AND type = 'table')",
+    ).fetch_one(&mut *db).await?;
+    if created { return Ok(()); }
+    sqlx::raw_sql(
+        "CREATE VIRTUAL TABLE ai_search_fts USING fts5(message, filename, content='', contentless_delete=1, tokenize='trigram');
+         INSERT INTO ai_search_fts(rowid, message, filename)
+            SELECT seq, json_extract(payload, '$.text'), json_extract(payload, '$.attachment.name') FROM inbox
+            WHERE json_extract(payload, '$.recalled') IS NOT 1
+              AND NOT EXISTS (SELECT 1 FROM hidden_messages WHERE seq = inbox.seq)
+              AND NOT EXISTS (SELECT 1 FROM local_deleted_messages WHERE seq = inbox.seq);
+         CREATE TRIGGER ai_search_insert AFTER INSERT ON inbox
+           WHEN json_extract(new.payload, '$.recalled') IS NOT 1
+            AND NOT EXISTS (SELECT 1 FROM hidden_messages WHERE seq = new.seq)
+            AND NOT EXISTS (SELECT 1 FROM local_deleted_messages WHERE seq = new.seq)
+         BEGIN
+            INSERT INTO ai_search_fts(rowid, message, filename)
+            VALUES (new.seq, json_extract(new.payload, '$.text'), json_extract(new.payload, '$.attachment.name'));
+         END;
+         CREATE TRIGGER ai_search_update AFTER UPDATE OF payload ON inbox
+         BEGIN
+            DELETE FROM ai_search_fts WHERE rowid = old.seq;
+            INSERT INTO ai_search_fts(rowid, message, filename)
+            SELECT new.seq, json_extract(new.payload, '$.text'), json_extract(new.payload, '$.attachment.name')
+            WHERE json_extract(new.payload, '$.recalled') IS NOT 1
+              AND NOT EXISTS (SELECT 1 FROM hidden_messages WHERE seq = new.seq)
+              AND NOT EXISTS (SELECT 1 FROM local_deleted_messages WHERE seq = new.seq);
+         END;
+         CREATE TRIGGER ai_search_remove AFTER DELETE ON inbox BEGIN
+            DELETE FROM ai_search_fts WHERE rowid = old.seq;
+         END;
+         CREATE TRIGGER ai_search_hide AFTER INSERT ON hidden_messages BEGIN
+            DELETE FROM ai_search_fts WHERE rowid = new.seq;
+         END;
+         CREATE TRIGGER ai_search_forget AFTER INSERT ON local_deleted_messages BEGIN
+            DELETE FROM ai_search_fts WHERE rowid = new.seq;
+         END;",
+    ).execute(&mut *db).await?;
+    Ok(())
 }
 
 pub(super) async fn persist_message(

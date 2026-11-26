@@ -15,6 +15,21 @@ pub enum AiScope {
     Prompt,
     Selected { sequences: Vec<i64> },
     Recent { limit: usize },
+    #[serde(skip)]
+    Search(AiSearch),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AiSearch {
+    #[serde(default)]
+    pub query: String,
+    pub sender: Option<String>,
+    pub since: Option<i64>,
+    pub until: Option<i64>,
+    pub near: Option<i64>,
+    #[serde(skip)]
+    pub files_only: bool,
 }
 
 struct TempCleanupGuard {
@@ -416,6 +431,39 @@ async fn scoped_context_messages(
                 .push_bind(limit as i64);
             None
         }
+        AiScope::Search(search) => {
+            ensure!(search.query.len() <= MAX_AI_PROMPT_BYTES, "Search keyword is too long");
+            if search.files_only {
+                query.push(" AND attachment_id IS NOT NULL");
+            }
+            if let Some(sender) = search.sender {
+                query.push(" AND lower(json_extract(payload, '$.sender.handle')) = lower(")
+                    .push_bind(sender).push(")");
+            }
+            if let Some(since) = search.since {
+                query.push(" AND json_extract(payload, '$.created_at') >= ").push_bind(since);
+            }
+            if let Some(until) = search.until {
+                query.push(" AND json_extract(payload, '$.created_at') <= ").push_bind(until);
+            }
+            for word in search.query.split_whitespace().take(8) {
+                if cfg!(windows) && word.chars().count() >= 3 {
+                    let field = if search.files_only { "filename" } else { "message" };
+                    query.push(" AND seq IN (SELECT rowid FROM ai_search_fts WHERE ai_search_fts MATCH ")
+                        .push_bind(format!("{field}:\"{}\"", word.replace('"', "\"\""))).push(")");
+                } else {
+                    query.push(" AND instr(lower(coalesce(json_extract(payload, ")
+                        .push(if search.files_only { "'$.attachment.name'" } else { "'$.text'" })
+                        .push("), '')), lower(").push_bind(word.to_owned()).push(")) > 0");
+                }
+            }
+            if let Some(near) = search.near.filter(|seq| *seq > 0) {
+                query.push(" ORDER BY abs(seq - ").push_bind(near).push("), seq DESC LIMIT 8");
+            } else {
+                query.push(" ORDER BY json_extract(payload, '$.created_at') DESC, seq DESC LIMIT 8");
+            }
+            None
+        }
     };
 
     let mut rows: Vec<String> = query.build_query_scalar().fetch_all(db).await?;
@@ -491,6 +539,7 @@ mod tests {
             text: text.map(str::to_owned),
             attachment,
             ai_provider: None,
+            ai_sources: Vec::new(),
             recalled,
             reply_to: None,
             nonce: None,

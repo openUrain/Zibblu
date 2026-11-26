@@ -294,6 +294,7 @@ mod tests {
             text: Some(text.into()),
             attachment: None,
             ai_provider: None,
+            ai_sources: Vec::new(),
             recalled: false,
             reply_to: None,
             nonce: None,

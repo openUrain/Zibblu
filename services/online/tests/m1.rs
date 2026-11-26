@@ -572,6 +572,7 @@ async fn normal_chat_and_files() -> Result<()> {
         text: "Scoped AI reply".into(),
         created_at: generated_at,
         readers,
+        sources: Vec::new(),
     };
     let directory_before = scanner.sync().await?;
     assert!(
@@ -659,6 +660,7 @@ async fn normal_chat_and_files() -> Result<()> {
                 text: "Latest restricted preview".into(),
                 created_at: i64::MAX,
                 readers: vec![bob.user.id],
+                sources: Vec::new(),
             },
         )
         .await?;

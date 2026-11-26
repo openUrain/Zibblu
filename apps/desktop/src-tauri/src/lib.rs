@@ -63,6 +63,7 @@ fn restrict_viewer(
                     | "viewer_resolve_direct_target"
                     | "viewer_send_unedited"
                     | "viewer_send_annotated_image"
+                    | "viewer_save_edited_image"
                     | "viewer_send_trimmed_video"
             )
         {
@@ -250,6 +251,16 @@ pub fn run() {
             ai::ai_remove_file,
             ai::ai_prepare,
             ai::ai_send,
+            #[cfg(windows)]
+            ai::agent::ai_set_agent_enabled,
+            #[cfg(windows)]
+            ai::agent::ai_start_agent,
+            #[cfg(windows)]
+            ai::agent::ai_answer_access,
+            #[cfg(windows)]
+            ai::agent::ai_source,
+            #[cfg(windows)]
+            ai::agent::ai_shared_source,
             ai::ai_prompts,
             ai::ai_jobs,
             ai::ai_replies,
@@ -296,6 +307,8 @@ pub fn run() {
             image_viewer::viewer_resolve_direct_target,
             image_viewer::viewer_send_unedited,
             image_viewer::viewer_send_annotated_image,
+            #[cfg(windows)]
+            image_viewer::viewer_save_edited_image,
             image_viewer::viewer_send_trimmed_video,
             commands::transfers,
             commands::pause_transfer,

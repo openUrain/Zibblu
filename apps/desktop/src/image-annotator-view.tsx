@@ -225,6 +225,7 @@ export function ImageAnnotator({
   onChange,
   onComplete,
   onRequestExit,
+  onPendingEditChange,
 }: ImageAnnotatorProps) {
   void imageElement;
   const rootRef = useRef<HTMLDivElement>(null);
@@ -245,6 +246,12 @@ export function ImageAnnotator({
   const [dragTick, setDragTick] = useState(0);
 
   const dragRef = useRef<DragSession | null>(null);
+  useLayoutEffect(() => {
+    const editingText = !!textEditor?.value.trim();
+    const drawing = dragRef.current !== null && dragRef.current.kind !== "text-box";
+    onPendingEditChange(editingText || drawing);
+    return () => onPendingEditChange(false);
+  }, [dragTick, onPendingEditChange, textEditor?.value]);
   const historyRef = useRef<AnnotationHistoryState>(createHistory(doc));
   const lastEmittedDocRef = useRef<ImageAnnotationDoc>(doc);
 
@@ -367,12 +374,10 @@ export function ImageAnnotator({
       }
       if (event.key === "Escape") {
         if (event.target instanceof Element && event.target.closest(".media-split-button [aria-expanded=true], .media-split-options")) return;
-        event.preventDefault();
-        event.stopPropagation();
         if (selectedId) {
+          event.preventDefault();
+          event.stopPropagation();
           setSelectedId(null);
-        } else {
-          onRequestExit();
         }
       }
     }

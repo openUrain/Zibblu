@@ -848,6 +848,7 @@ mod tests {
                 sha256: orig_sha.clone(),
             }),
             ai_provider: None,
+            ai_sources: Vec::new(),
             recalled: false,
             reply_to: None,
             nonce: None,

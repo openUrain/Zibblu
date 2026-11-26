@@ -73,7 +73,7 @@ pub(crate) async fn preview_video_cover_bytes(
             .await?
             .map(|(_, b)| b)
             .unwrap_or_default();
-        ensure!(state.is_current(&client).await, "The session has ended");
+        ensure_current(window.app_handle(), &client, &file).await?;
         Ok::<_, anyhow::Error>(bytes)
     }
     .await?;
