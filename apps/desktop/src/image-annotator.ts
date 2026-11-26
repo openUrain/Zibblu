@@ -330,7 +330,13 @@ const TEXT_FONT_FAMILY =
   '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif';
 
 export function buildCanvasFont(fontSize: number, style?: Partial<TextAnnotation>): string {
-  return `${style?.italic ? "italic " : ""}${style?.bold ? 700 : style?.width ? 400 : 600} ${fontSize}px ${style?.family ?? TEXT_FONT_FAMILY}`;
+  return `${style?.italic ? "italic " : ""}${style?.bold ? 700 : style?.width ? 400 : 600} ${fontSize}px ${annotationFontFamily(style?.family)}`;
+}
+
+export function annotationFontFamily(family?: string): string {
+  if (!family) return TEXT_FONT_FAMILY;
+  if (["system-ui", "serif", "monospace"].includes(family)) return family;
+  return `${JSON.stringify(family)}, system-ui`;
 }
 
 function estimateTextLineWidth(line: string, fontSize: number): number {
@@ -346,30 +352,17 @@ export function measureTextBounds(
   item: TextAnnotation,
   ctx?: CanvasRenderingContext2D | null,
 ): BoundsRect {
-  if (item.width && item.height) return { x: item.x, y: item.y, width: item.width, height: item.height };
-  const lines = item.text.length > 0 ? item.text.split(/\r?\n/) : [" "];
-  const lineHeight = item.fontSize * 1.25;
-  let maxWidth = item.fontSize * 0.5;
+  const { width, height } = layoutAnnotationText(item, ctx ?? textMeasurementContext());
+  return { x: item.x, y: item.y, width, height };
+}
 
-  if (ctx) {
-    ctx.save();
-    ctx.font = buildCanvasFont(item.fontSize);
-    for (const line of lines) {
-      maxWidth = Math.max(maxWidth, ctx.measureText(line || " ").width);
-    }
-    ctx.restore();
-  } else {
-    for (const line of lines) {
-      maxWidth = Math.max(maxWidth, estimateTextLineWidth(line || " ", item.fontSize));
-    }
+let textMeasurement: CanvasRenderingContext2D | null | undefined;
+
+function textMeasurementContext() {
+  if (textMeasurement === undefined && typeof document !== "undefined") {
+    textMeasurement = document.createElement("canvas").getContext("2d");
   }
-
-  return {
-    x: item.x,
-    y: item.y,
-    width: maxWidth,
-    height: Math.max(item.fontSize, lines.length * lineHeight),
-  };
+  return textMeasurement;
 }
 
 export function getItemBounds(
@@ -656,6 +649,7 @@ export function resizeTextByHandle(
     nextHeight = height * ratio;
     fontSize *= ratio;
   }
+  nextHeight = Math.max(nextHeight, layoutAnnotationText({ ...item, width: nextWidth, height: 0, fontSize }).height);
   return {
     ...item,
     ...rotateTextPoint(item, { x: west ? x + width - nextWidth : x, y: north ? y + height - nextHeight : y }),
@@ -925,35 +919,28 @@ function drawShape(ctx: CanvasRenderingContext2D, item: ShapeAnnotation, lineWid
   ctx.restore();
 }
 
-function drawText(ctx: CanvasRenderingContext2D, item: TextAnnotation): void {
-  if (!item.text) return;
-  ctx.save();
-  ctx.fillStyle = item.color;
-  ctx.font = buildCanvasFont(item.fontSize, item);
-  ctx.textAlign = item.align ?? "left";
-  ctx.textBaseline = "top";
-  ctx.translate(item.x, item.y);
-  ctx.rotate(item.rotation ?? 0);
-  if (item.width && item.height) {
-    ctx.beginPath();
-    ctx.rect(0, 0, item.width, item.height);
-    ctx.clip();
-  }
+export function layoutAnnotationText(
+  item: Pick<TextAnnotation, "text" | "width" | "height" | "fontSize" | "family" | "italic" | "bold">,
+  ctx = textMeasurementContext(),
+) {
+  const oldFont = ctx?.font;
+  if (ctx) ctx.font = buildCanvasFont(item.fontSize, item);
+  const measure = (value: string) => ctx?.measureText(value).width ?? estimateTextLineWidth(value, item.fontSize);
   const lines = item.text.split(/\r?\n/).flatMap(line => {
-    if (!item.width || ctx.measureText(line).width <= item.width) return [line];
+    if (!item.width || measure(line) <= item.width) return [line];
     const wrapped: string[] = [];
     let segment = "";
     for (const word of line.match(/\S+|\s+/gu) ?? []) {
-      if (segment && ctx.measureText(segment + word).width > item.width) {
+      if (segment && measure(segment + word) > item.width) {
         wrapped.push(segment.trimEnd());
         segment = "";
         if (!word.trim()) continue;
       }
-      if (ctx.measureText(word).width <= item.width) {
+      if (measure(word) <= item.width) {
         segment += word;
       } else {
         for (const char of word) {
-          if (segment && ctx.measureText(segment + char).width > item.width) {
+          if (segment && measure(segment + char) > item.width) {
             wrapped.push(segment);
             segment = "";
           }
@@ -965,10 +952,35 @@ function drawText(ctx: CanvasRenderingContext2D, item: TextAnnotation): void {
     return wrapped;
   });
   const lineHeight = item.fontSize * 1.25;
-  const x = item.align === "right" ? item.width ?? 0 : item.align === "center" ? (item.width ?? 0) / 2 : 0;
+  const width = item.width ?? lines.reduce((largest, line) => Math.max(largest, measure(line)), item.fontSize / 2);
+  if (ctx && oldFont !== undefined) ctx.font = oldFont;
+  return { lines, lineHeight, width, height: Math.max(item.height ?? 0, lines.length * lineHeight) };
+}
+
+export function textOutsideImage(item: TextAnnotation, imageWidth: number, imageHeight: number): boolean {
+  if (!item.text.trim()) return false;
+  const { width, lines, lineHeight } = layoutAnnotationText(item);
+  const height = lines.length * lineHeight;
+  return [
+    { x: item.x, y: item.y }, { x: item.x + width, y: item.y },
+    { x: item.x, y: item.y + height }, { x: item.x + width, y: item.y + height },
+  ].map(point => rotateTextPoint(item, point)).some(({ x, y }) =>
+    x < 0 || y < 0 || x > imageWidth || y > imageHeight);
+}
+
+function drawText(ctx: CanvasRenderingContext2D, item: TextAnnotation): void {
+  if (!item.text) return;
+  ctx.save();
+  ctx.fillStyle = item.color;
+  ctx.font = buildCanvasFont(item.fontSize, item);
+  ctx.textAlign = item.align ?? "left";
+  ctx.textBaseline = "top";
+  ctx.translate(item.x, item.y);
+  ctx.rotate(item.rotation ?? 0);
+  const { lines, lineHeight, width } = layoutAnnotationText(item, ctx);
+  const x = item.align === "right" ? width : item.align === "center" ? width / 2 : 0;
   for (let i = 0; i < lines.length; i++) {
     const y = i * lineHeight;
-    if (item.height && y >= item.height) break;
     ctx.fillText(lines[i], x, y);
     if (item.underline) {
       const width = ctx.measureText(lines[i]).width;

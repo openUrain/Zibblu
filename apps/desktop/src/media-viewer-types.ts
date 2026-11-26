@@ -48,7 +48,7 @@ export type TextAnnotation = {
   width?: number;
   height?: number;
   rotation?: number;
-  family?: "system-ui" | "serif" | "monospace";
+  family?: string;
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;

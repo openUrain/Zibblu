@@ -26,6 +26,7 @@ import {
   TEXT_SIZE_LEVELS,
   applyImageTransformToContext,
   canRedoHistory,
+  annotationFontFamily,
   canUndoHistory,
   clientToImagePoint,
   constrainBoxPoint,
@@ -37,6 +38,7 @@ import {
   hitTestSelectionHandle,
   imageToStagePoint,
   inferTextSizeLevel,
+  layoutAnnotationText,
   moveAnnotationItem,
   pushHistory,
   redoHistory,
@@ -45,11 +47,13 @@ import {
   resizeShapeByHandle,
   resizeTextByHandle,
   resolveTextFontSize,
+  textOutsideImage,
   undoHistory,
 } from "./image-annotator";
 import type { AnnotationHistoryState, SelectionHandleKind, TextSizeLevel } from "./image-annotator";
 import { t } from "./locale";
 import { MediaSplitButton } from "./media-split-button";
+import { windows } from "./window-chrome";
 import type {
   AnnotationColor,
   AnnotationTool,
@@ -160,6 +164,7 @@ const TEXT_SIZE_LABELS: Record<TextSizeLevel, [string, string]> = {
   large: ["Large text", "大号文字"],
 };
 const shapeTools: readonly AnnotationTool[] = ["line", "arrow", "rect", "ellipse"];
+const windowsFonts = ["Segoe UI", "Microsoft YaHei", "SimSun", "Arial", "Times New Roman", "Consolas"];
 
 function normalizeTurn(turn: number): number {
   return ((Math.trunc(turn) % 4) + 4) % 4;
@@ -243,6 +248,20 @@ export function ImageAnnotator({
   const [spacePressed, setSpacePressed] = useState(false);
   const [hoverHandle, setHoverHandle] = useState<SelectionHandleKind | null>(null);
   const [textEditor, setTextEditor] = useState<TextEditorState | null>(null);
+  const [availableFonts, setAvailableFonts] = useState<string[]>([]);
+  useEffect(() => {
+    if (!windows) return;
+    let current = true;
+    void Promise.all(windowsFonts.map(async family => {
+      try {
+        await new FontFace("AnnotationFontProbe", `local(${JSON.stringify(family)})`).load();
+        return family;
+      } catch {
+        return "";
+      }
+    })).then(fonts => { if (current) setAvailableFonts(fonts.filter(Boolean)); });
+    return () => { current = false; };
+  }, []);
   const [dragTick, setDragTick] = useState(0);
 
   const dragRef = useRef<DragSession | null>(null);
@@ -909,6 +928,7 @@ export function ImageAnnotator({
 
   function handleDone() {
     const finalDoc = textEditor ? withEditedText(doc, textEditor) : doc;
+    if (textOverflows) return;
     setTextEditor(null);
     if (finalDoc !== doc) commitDoc(finalDoc);
     onComplete(finalDoc);
@@ -955,15 +975,16 @@ export function ImageAnnotator({
     const scale = viewTransform.scale > 0 ? viewTransform.scale : 1;
     const turn = normalizeTurn(viewTransform.turn);
     const scaledFont = textEditor.fontSize * scale;
+    const { width, height } = layoutAnnotationText({ ...textEditor, text: textEditor.value });
     return {
       left: `${stagePt.x}px`,
       top: `${stagePt.y}px`,
       color: textEditor.color,
       fontSize: `${scaledFont}px`,
       lineHeight: 1.25,
-      width: `${(textEditor.width ?? textEditor.fontSize * 12) * scale}px`,
-      height: `${(textEditor.height ?? textEditor.fontSize * 1.25) * scale}px`,
-      fontFamily: textEditor.family,
+      width: `${width * scale}px`,
+      height: `${height * scale}px`,
+      fontFamily: annotationFontFamily(textEditor.family),
       fontWeight: textEditor.bold ? 700 : textEditor.width ? 400 : 600,
       fontStyle: textEditor.italic ? "italic" : "normal",
       textDecoration: textEditor.underline ? "underline" : undefined,
@@ -984,6 +1005,11 @@ export function ImageAnnotator({
   const activeShape = shapeOptions.find(item => item.id === shape)!;
   const eraserLabel = pixelEraser ? t("Pixel eraser", "像素擦除") : t("Object eraser", "对象擦除");
   const textStyle = textEditor ?? (selectedItem?.kind === "text" ? selectedItem : undefined);
+  const textOverflows = doc.items.some(item => item.kind === "text" && item.id !== textEditor?.targetId
+    && textOutsideImage(item, naturalWidth, naturalHeight)) || !!textEditor && textOutsideImage(
+      { ...textEditor, id: textEditor.targetId ?? "", kind: "text", text: textEditor.value },
+      naturalWidth, naturalHeight,
+    );
 
   return (
     <div ref={rootRef} className="image-annotator">
@@ -1130,10 +1156,11 @@ export function ImageAnnotator({
 
         {textStyle && <div className="annotator-group" role="group" aria-label={t("Text style", "文字样式")}>
           <select aria-label={t("Font family", "字体")} value={textStyle.family ?? "system-ui"}
-            onChange={event => applyTextStyle({ family: event.target.value as TextAnnotation["family"] })}>
+            onChange={event => applyTextStyle({ family: event.target.value })}>
             <option value="system-ui">{t("System", "系统")}</option>
             <option value="serif">{t("Serif", "衬线")}</option>
             <option value="monospace">{t("Monospace", "等宽")}</option>
+            {availableFonts.map(font => <option value={font} key={font}>{font}</option>)}
           </select>
           {([
             ["bold", t("Bold", "粗体"), Bold], ["italic", t("Italic", "斜体"), Italic],
@@ -1188,12 +1215,16 @@ export function ImageAnnotator({
           <button
             type="button"
             className="button primary small annotator-done-btn"
+            disabled={textOverflows}
             onClick={handleDone}
           >
             <Check size={14} />
             {t("Done", "完成")}
           </button>
         </div>
+        {textOverflows && <span className="inline-error" role="status">
+          {t("Move or resize the text to fit the image.", "文字超出图片，请移动文字框或缩小字号。")}
+        </span>}
       </div>
     </div>
   );
