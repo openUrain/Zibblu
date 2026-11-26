@@ -129,7 +129,7 @@ impl ImageScope {
         Ok(client)
     }
 
-    fn allows_media_file(file: &Attachment) -> bool {
+    pub(crate) fn allows_media_file(file: &Attachment) -> bool {
         let Some(mime) = file.preview_mime() else {
             return false;
         };
@@ -321,36 +321,43 @@ pub(crate) async fn open_image_viewer(
             crate::chat_window::is_chat_or_main_window(window.label()),
             "Open an image from chat",
         )?;
-        let _opening = state.image_window.lock().await;
         let client = state.client().await?;
         let message = client.attachment(id).await?;
-        require(
-            crate::chat_window::window_allows_conversation(window.label(), message.conversation_id),
-            "Open this attachment from its own chat window",
-        )?;
-        let scope = ImageScope {
-            generation: Uuid::new_v4(),
-            client: Arc::downgrade(&client),
-            conversation: message.conversation_id,
-            seq: message.seq,
-            id,
-            draft: false,
-        };
-        let file = scope
-            .image(&client)
-            .await?
-            .attachment
-            .context("Missing image")?;
-        let dimensions = image_dimensions(&client, message.conversation_id, message.seq, file).await;
-        require(state.is_current(&client).await, "The session has ended")?;
-        scope.image(&client).await?;
-        open_or_reuse_viewer(&window, &state, &client, scope, dimensions).await
+        open_chat_media(&window, &state, &client, &message, None).await
     }
     #[cfg(not(windows))]
     {
         let _ = (window, state, id);
         Err(anyhow::anyhow!("The standalone image viewer is available on Windows").into())
     }
+}
+
+#[cfg(windows)]
+pub(crate) async fn open_chat_media(
+    window: &WebviewWindow, state: &Desktop, client: &Arc<Client>, message: &Message,
+    source_origin: Option<Uuid>,
+) -> CommandResult<()> {
+    require(
+        crate::chat_window::window_allows_conversation(window.label(), message.conversation_id),
+        "Open this attachment from its own chat window",
+    )?;
+    let _opening = state.image_window.lock().await;
+    let scope = ImageScope {
+        generation: Uuid::new_v4(),
+        client: Arc::downgrade(client),
+        conversation: message.conversation_id,
+        seq: message.seq,
+        id: message.attachment.as_ref().context("Missing image")?.id,
+        draft: false,
+    };
+    let file = scope.image(client).await?.attachment.context("Missing image")?;
+    let dimensions = image_dimensions(client, message.conversation_id, message.seq, file).await;
+    require(state.is_current(client).await, "The session has ended")?;
+    scope.image(client).await?;
+    if let Some(origin) = source_origin {
+        crate::ai::ensure_available(state, client, origin, message.conversation_id).await?;
+    }
+    open_or_reuse_viewer(window, state, client, scope, dimensions).await
 }
 
 #[cfg(windows)]

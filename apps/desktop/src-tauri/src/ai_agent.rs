@@ -141,15 +141,14 @@ pub(crate) async fn ai_source(
     state: State<'_, Desktop>,
     reply_id: Uuid,
     number: usize,
-) -> CommandResult<zibblu_core::Message> {
+) -> CommandResult<Option<zibblu_core::Message>> {
     let client = state.client().await?;
     let reply = client.ai_reply(reply_id).await?.context("Source unavailable.")?;
     let conversation = reply.conversation_id;
     let source = reply.sources.iter().find(|source| source.number == number)
         .context("Source unavailable.")?;
     ensure_normal_chat_window(&window, conversation)?;
-    ensure_available(&state, &client, conversation, source.conversation_id).await?;
-    Ok(resolve_source(&state, &client, source.conversation_id, &source.reference()).await?)
+    open_source(&window, &state, &client, conversation, source.conversation_id, &source.reference()).await
 }
 
 #[tauri::command]
@@ -159,7 +158,7 @@ pub(crate) async fn ai_shared_source(
     conversation: Uuid,
     reply_seq: i64,
     number: usize,
-) -> CommandResult<zibblu_core::Message> {
+) -> CommandResult<Option<zibblu_core::Message>> {
     ensure_normal_chat_window(&window, conversation)?;
     let client = state.client().await?;
     ensure_available(&state, &client, conversation, conversation).await?;
@@ -174,16 +173,38 @@ pub(crate) async fn ai_shared_source(
         .iter()
         .find(|item| item.source.number == number)
         .context("Source unavailable.")?;
-    Ok(resolve_source(&state, &client, source.conversation_id, &source.source).await?)
+    open_source(&window, &state, &client, conversation, source.conversation_id, &source.source).await
+}
+
+fn source_media_parent(label: &str, conversation: Uuid) -> &str {
+    if crate::chat_window::window_allows_conversation(label, conversation) { label } else { "main" }
+}
+
+async fn open_source(
+    window: &WebviewWindow, state: &Desktop, client: &Arc<Client>, origin: Uuid,
+    conversation: Uuid, source: &zibblu_core::AiSourceRef,
+) -> CommandResult<Option<zibblu_core::Message>> {
+    ensure_available(state, client, origin, conversation).await?;
+    let message = resolve_source(client, conversation, source).await?;
+    if message.recalled || message.expired.is_some() {
+        return Err(anyhow::anyhow!("Source unavailable.").into());
+    }
+    if message.attachment.as_ref().is_some_and(|file|
+        Some(file.id) == source.attachment_id && crate::image_viewer::ImageScope::allows_media_file(file))
+    {
+        let label = source_media_parent(window.label(), conversation);
+        let parent = window.app_handle().get_webview_window(label).context("Open the main chat window")?;
+        crate::image_viewer::open_chat_media(&parent, state, client, &message, Some(origin)).await?;
+        return Ok(None);
+    }
+    Ok(Some(message))
 }
 
 async fn resolve_source(
-    state: &Desktop,
     client: &Arc<Client>,
     conversation: Uuid,
     source: &zibblu_core::AiSourceRef,
 ) -> Result<zibblu_core::Message> {
-    ensure_available(state, client, conversation, conversation).await?;
     let exact = exact(client, conversation, source.seq).await?;
     if let Some(id) = source.attachment_id {
         let attachment = exact
@@ -198,6 +219,18 @@ async fn resolve_source(
         .quoted_message(conversation, source.seq)
         .await?
         .context("Source unavailable.")
+}
+
+#[cfg(test)]
+#[test]
+fn cited_media_uses_an_authorized_parent_window() {
+    let origin = Uuid::new_v4();
+    let target = Uuid::new_v4();
+    let label = crate::chat_window::window_label(origin);
+    assert!(!crate::chat_window::window_allows_conversation(&label, target));
+    assert_eq!(source_media_parent(&label, target), "main");
+    assert_eq!(source_media_parent(&label, origin), label);
+    assert_eq!(source_media_parent("main", target), "main");
 }
 
 fn ensure_enabled(client: &Client, assistant: &Assistant) -> Result<()> {

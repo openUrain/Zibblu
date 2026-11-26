@@ -78,9 +78,9 @@ export const ai = {
     invoke<{ id: string; created_at: number }>("ai_start_agent", { view, provider, prompt }),
   answerAccess: (jobId: string, requestId: string, accept: boolean) =>
     invoke<void>("ai_answer_access", { jobId, requestId, accept }),
-  source: (replyId: string, number: number) => invoke<Message>("ai_source", { replyId, number }),
+  source: (replyId: string, number: number) => invoke<Message | null>("ai_source", { replyId, number }),
   sharedSource: (conversation: string, replySeq: number, number: number) =>
-    invoke<Message>("ai_shared_source", { conversation, replySeq, number }),
+    invoke<Message | null>("ai_shared_source", { conversation, replySeq, number }),
   openView: (view: string, conversation: string) => invoke<void>("ai_open_view", { view, conversation }),
   closeView: (view: string) => invoke<void>("ai_close_view", { view }),
   begin: (view: string, draft: string) => invoke<void>("ai_begin", { view, draft }),

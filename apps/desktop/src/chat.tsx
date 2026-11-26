@@ -792,12 +792,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                   {sources.map(source => <li key={source.number}><button type="button" className="text-button"
                     onClick={() => void (reply ? ai.source(reply.id, source.number)
                       : ai.sharedSource(chat.id, message!.seq, source.number)).then(original => {
-                      if (!original || original.recalled || original.expired) throw new Error();
-                      if (source.attachment_id && original.attachment?.id === source.attachment_id && mediaKind(original.attachment)) {
-                        openMedia(original);
-                      } else {
-                        setSourceMessage(original);
-                      }
+                      if (original) setSourceMessage(original);
                     }).catch(() => setRecallError(t("Source unavailable.", "来源不可用。")))}>
                     [{source.number}] {source.label} <time>{dateTimeLabel(source.created_at)}</time>
                   </button></li>)}
