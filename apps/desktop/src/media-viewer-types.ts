@@ -34,6 +34,7 @@ export type PenAnnotation = {
   color: AnnotationColor;
   widthLevel: StrokeWidthLevel;
   points: ImagePoint[];
+  erase?: true;
 };
 
 export type TextAnnotation = {
@@ -44,6 +45,14 @@ export type TextAnnotation = {
   x: number;
   y: number;
   text: string;
+  width?: number;
+  height?: number;
+  rotation?: number;
+  family?: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  align?: "left" | "center" | "right";
 };
 
 export type ShapeAnnotation = {
@@ -84,6 +93,7 @@ export interface ImageAnnotatorProps {
   onChange: (next: ImageAnnotationDoc) => void;
   onComplete: (doc: ImageAnnotationDoc) => void;
   onRequestExit: () => void;
+  onPendingEditChange: (dirty: boolean) => void;
 }
 
 export interface VideoTrimRange {
@@ -116,6 +126,7 @@ export interface VideoTrimmerProps {
   thumbnails: string[]; // data URLs
   onComplete: (range: VideoTrimRange) => void;
   onRequestCancel: (dirty: boolean) => void;
+  onPendingEditChange: (dirty: boolean) => void;
 }
 
 export interface VideoExportBarProps {

@@ -17,10 +17,11 @@ We **cannot** promise protection from: screenshots or cameras, recipients manual
 - iPhone uses system Bonjour for the declared Zibblu service and binds IPv4 QUIC to the current Wi-Fi interface. Discovery requires Local Network access. Backgrounding or changing the active Wi-Fi path closes the private lobby and removes its transcript and drafts from app-controlled state. The app covers its window while inactive to limit app-switcher previews.
 - No cloud relay, no NAT traversal via Zibblu servers, and no fallback to ordinary online chat.
 - Content must not be sent to telemetry, logs, crash reports, normal-message storage, search indices, notifications or cloud AI.
-- Private text is kept in bounded memory during the session. End, disconnect, timeout and sign-out discard local private state. Switching conversations leaves the active background session running. A restart opens no private transcript.
+- Private text is kept in bounded memory during the session. Ending, expiry and sign-out discard local private state. Windows can retain an approved two-party session through a temporary disconnect, for up to 15 minutes while disconnected. Resume requires the same account-bound devices, the original session and a newly authenticated LAN transport. Switching views keeps the session in memory. A restart opens no private transcript.
 - Ending a room keeps only its ID in a per-sign-in set when needed to reject automatic re-entry, including after network changes. An explicit scan of a valid private QR code expresses fresh consent. Private read state lives in the LAN feed and is discarded with it.
 - Connection UI must distinguish `connecting`, `verified private`, and `disconnected`. Never badge a session “private” based only on an SSID or IP range.
 - Private messages are excluded from automatic export, normal chat history and notification previews.
+- Windows uses an iconic representation in the system task switcher while the private timeline is displayed. Screenshots and recordings are available through the system.
 
 ### Message links and remote images
 
@@ -32,9 +33,9 @@ The desktop resolves and verifies the destination before each hop, pins the veri
 
 ## AI least privilege
 
-- `@assistant` is a trigger, not blanket consent. Present a scope selector and explicit provider disclosure on every invocation.
-- The client prepares an **immutable scoped snapshot** of messages and exact file objects. AI connectors receive neither DB query access nor arbitrary filesystem access.
-- No modify/delete APIs, shell/tool execution, silent posting, autonomous actions or ongoing background collection.
+- On Windows the first use discloses the provider, relevant messages and attachments that may be sent, and task-scoped access. Each submitted `@assistant` question authorizes retrieval in its current ordinary conversation. Other conversations require fresh approval for that task. Explicit selection continues to use an immutable scoped snapshot of the selected data.
+- Autonomous retrieval uses bounded searches and validated source references. The model cannot supply database queries or paths. Every operation checks the account, conversation, task and source. Search never indexes private LAN content. A shared reply delivers source metadata only to recipients with current access, and opening a source rechecks its availability.
+- No modify/delete APIs, shell execution, silent posting or ongoing background collection.
 - Use read-only file handles for selected attachments and guard against path traversal, symlinks and scope expansion at the capability boundary.
 - Treat message/file contents as untrusted data. Instructions embedded in them cannot expand AI permissions.
 - Private-session content is not sent to cloud AI. If on-device AI is later introduced, review its actual network behavior before allowing private context.
@@ -42,7 +43,7 @@ The desktop resolves and verifies the destination before each hop, pins the veri
 - iPhone keeps provider keys, the saved sign-in and installation credentials in device-only Keychain items accessible while the device is unlocked. Assistant settings store a provider-bound reference. The document picker grants access to a selected sandbox copy, which is read as a bounded UTF-8 snapshot for the current AI request.
 - The native app verifies normal-chat membership, reads only the explicitly selected messages (including their bound attachments when supported) and snapshots UTF-8 files from a native picker through read-only handles. Reparse points, nonlocal path forms and picked files larger than 32 KiB are rejected. Authorized message attachments (JPG/PNG/WebP, PDF, DOCX, TXT/Markdown, XLSX/CSV) reuse verified local media when available or are fetched on demand after confirmation with length and SHA-256 verification into temporary files released upon completion, cancellation, or error; unsupported formats and unreadable/scanned-only inputs fail explicitly without automatic model switching.
 - The send action consumes one in-memory authorization for up to 60 messages and bounded sequential chunks (up to 8 chunks per authorized task when an extracted attachment exceeds single-request limits), sending only the reviewed prompt, selected messages, bound attachments, and picked files to the disclosed HTTPS endpoint with normal certificate validation, including OS-trusted roots for managed gateways. Redirects and retries are disabled. OpenAI and xAI requests set `store: false`. DeepSeek's Responses API is stateless. Provider-side handling remains subject to the provider's terms.
-- Submitted prompts persist only in the local signed-in account's `ai_local_prompts` SQLite table (never transmitted over M1 outbox/sync or visible to other members) alongside a cancellable in-memory generation placeholder; unshared replies stay in memory for the current sign-in. Cancelling aborts in-flight work and clears the placeholder while retaining the local prompt. When the user explicitly shares a reply, only the reply is published (never the local prompt) in one PostgreSQL transaction filtered by the selected audience. Conversation previews use locally held history.
+- Submitted prompts and completed local replies persist in the signed-in account's SQLite profile. Generation placeholders and permissions remain in memory. Cancelling aborts in-flight work and clears the placeholder while retaining the local prompt. A Windows private transition cancels AI tasks originating in or authorized to read that conversation. Explicit sharing publishes the selected reply and authorized source references for the selected audience. Conversation previews use locally held history.
 
 ## Ordinary chats and files
 
@@ -64,6 +65,8 @@ M1 使用 Argon2id 保存密码摘要。服务端保存七天会话令牌和安�
 
 Windows 和 iOS 的普通聊天预览只访问当前认证资料。接收的会话目录附带本账号的历史截止点，缺少该字段时仍走原有在线预览。临时预览读写复核最近同步的成员状态、截止点、附件有效期、撤回和本机隐藏状态。离线期间其他设备的权限变化在下次成功同步时生效。
 
+Windows 视频封面优先使用已核验的本机原片，缓存仍绑定附件、会话与本机账号。发送中的封面只从同账号、同会话的应用暂存文件生成。封面生成器只读取受限的视频容器和本地文件，限制输出与运行时间。
+
 SQLite 落盘后才发送元数据 ACK。完整保存并校验长度和 SHA-256 后，设备才提交独立的文件内容 ACK。未授权请求统一按不可见处理，授权用户可收到过期回应。内容响应使用 `Cache-Control: private, no-store`。服务端清理只结束数据的在线可用性，WAL、数据库备份、快照和代理需执行各自的留存与访问控制。
 
 Local attachment paths come from a native picker, an explicitly confirmed drop, or a confirmed Windows File Explorer paste. The native app holds the path list behind a single-use ticket and reads files under the current OS account when the user confirms. Pasted images supply bounded image bytes, without a path. Client-side previews of original attachments use the same authenticated chunk access as downloads. Image previews check SHA-256 and serve a content type derived from the validated bytes with `nosniff`. Image decoding is limited by input size, dimensions and decoded pixels. Animations are limited to 240 frames and 64 million canvas pixels in total. The app does not extract received archives.
@@ -80,7 +83,7 @@ Profile snapshots and public profile images (avatars and covers) use the signed-
 
 服务端复核每个窗口实际提供的序号及当前权限。游标与页绑定到认证的设备。设备间的同步位置彼此独立，前台查看有本设备的精确落盘证明才推进单聊回执。双方开启时，发送者只能查询当前末条自发普通单聊的状态；偏好切换后的资格从提交水位重新计算。未读计数和预览在 SQLite 按可见历史计算。
 
-Delete for me hides the message in the current SQLite profile, including search, quotes, file history and AI selection. An unfinished download remains manageable from its existing transfer record in Shared files. Other devices and other accounts retain their own views. Quotes reference a message in the same conversation and resolve against each viewer's authorized history. Normal drafts live in the signed-in renderer's memory. Private drafts also clear on session termination or disconnect.
+Delete for me hides the message in the current SQLite profile, including search, quotes, file history and AI selection. An unfinished download remains manageable from its existing transfer record in Shared files. Other devices and other accounts retain their own views. Quotes reference a message in the same conversation and resolve against each viewer's authorized history. Normal drafts live in the signed-in renderer's memory. Windows private drafts survive a temporary suspension and clear when the session terminates.
 
 Normal group join codes are renewable bearer invitations available to group members. The server stores a hash and expires each code after seven days. QR admission records a message sequence cutoff, enforced on synchronized messages, previews and file downloads. Existing group members retain the history they could already access.
 

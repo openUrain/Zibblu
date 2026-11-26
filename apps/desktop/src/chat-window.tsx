@@ -75,11 +75,14 @@ export function ChatWindow() {
 
   useEffect(() => {
     let active = true;
-    void ai.assistants().then(value => {
+    const refreshSettings = () => void ai.assistants().then(value => {
       if (active) setAssistants(value);
     }).catch(() => {});
+    refreshSettings();
+    const unlisten = listen("zibblu-assistant-settings", refreshSettings);
     return () => {
       active = false;
+      void unlisten.then(stop => stop());
     };
   }, []);
 

@@ -4,21 +4,94 @@ use crate::{
 };
 use sha2::{Digest, Sha256};
 use std::{
+    ffi::OsString,
     fs::{File, TryLockError},
+    os::windows::ffi::{OsStrExt, OsStringExt},
     path::Path,
+    sync::atomic::{AtomicBool, Ordering},
     thread,
     time::Duration,
 };
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::utils::config::WindowConfig;
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, Window,
 };
 use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Graphics::Dwm::{
+    DWMWA_DISALLOW_PEEK, DWMWA_FORCE_ICONIC_REPRESENTATION, DwmInvalidateIconicBitmaps,
+    DwmSetWindowAttribute,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    GetDiskFreeSpaceExW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     FindWindowW, IsIconic, SW_HIDE, SW_RESTORE, SW_SHOW, SetForegroundWindow, ShowWindowAsync,
 };
+
+const TRAY_ID: &str = "zibblu-tray";
+struct TrayUnread(AtomicBool);
+
+pub(crate) fn set_private_preview(window: &WebviewWindow, private: bool) -> anyhow::Result<()> {
+    let hwnd = window.hwnd()?.0;
+    let enabled = i32::from(private);
+    for attribute in [DWMWA_FORCE_ICONIC_REPRESENTATION, DWMWA_DISALLOW_PEEK] {
+        let result = unsafe {
+            DwmSetWindowAttribute(hwnd, attribute as u32, (&enabled as *const i32).cast(), 4)
+        };
+        anyhow::ensure!(result >= 0, "Windows could not update the task switch preview");
+    }
+    let result = unsafe { DwmInvalidateIconicBitmaps(hwnd) };
+    anyhow::ensure!(result >= 0, "Windows could not refresh the task switch preview");
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct StorageVolume {
+    name: String,
+    zibblu_bytes: u64,
+    total_bytes: Option<u64>,
+    free_bytes: Option<u64>,
+}
+
+pub(crate) fn storage_volumes(paths: [(Option<&Path>, u64); 2]) -> Vec<StorageVolume> {
+    let mut volumes: Vec<(Vec<u16>, StorageVolume)> = Vec::new();
+    for (path, bytes) in paths {
+        let mut root = vec![0u16; 32768];
+        let mut volume_id = [0u16; 64];
+        let found = path.is_some_and(|path| {
+            let path: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+            unsafe { GetVolumePathNameW(path.as_ptr(), root.as_mut_ptr(), root.len() as u32) != 0 }
+        });
+        let key = if found
+            && unsafe {
+                GetVolumeNameForVolumeMountPointW(root.as_ptr(), volume_id.as_mut_ptr(), volume_id.len() as u32)
+            } != 0
+        {
+            volume_id.split(|value| *value == 0).next().unwrap_or_default().to_vec()
+        } else {
+            root.split(|value| *value == 0).next().unwrap_or_default().to_vec()
+        };
+        if let Some((_, volume)) = volumes.iter_mut().find(|(id, _)| *id == key) {
+            volume.zibblu_bytes = volume.zibblu_bytes.saturating_add(bytes);
+            continue;
+        }
+        let name = OsString::from_wide(root.split(|value| *value == 0).next().unwrap_or_default());
+        let (mut total, mut free) = (0, 0);
+        let readable = found
+            && unsafe { GetDiskFreeSpaceExW(root.as_ptr(), std::ptr::null_mut(), &mut total, &mut free) } != 0
+            && total > 0
+            && free <= total;
+        volumes.push((key, StorageVolume {
+            name: name.to_string_lossy().trim_end_matches('\\').into(),
+            zibblu_bytes: bytes,
+            total_bytes: readable.then_some(total),
+            free_bytes: readable.then_some(free),
+        }));
+    }
+    volumes.into_iter().map(|(_, volume)| volume).collect()
+}
 
 pub(crate) fn claim_profile(data: &Path) -> anyhow::Result<Option<(File, String)>> {
     let data = data.canonicalize()?;
@@ -118,7 +191,7 @@ pub(crate) fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show-zibblu", "Show Zibblu", true, None::<&str>)?;
     let exit = MenuItem::with_id(app, "exit-zibblu", "Exit Zibblu", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &exit])?;
-    TrayIconBuilder::new()
+    TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Zibblu")
         .icon(app.default_window_icon().expect("Zibblu icon").clone())
         .menu(&menu)
@@ -131,8 +204,9 @@ pub(crate) fn create_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_tray_icon_event(|tray, event| {
             if matches!(
                 event,
-                TrayIconEvent::DoubleClick {
+                TrayIconEvent::Click {
                     button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
                     ..
                 }
             ) {
@@ -140,7 +214,43 @@ pub(crate) fn create_tray(app: &AppHandle) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+    app.manage(TrayUnread(AtomicBool::new(false)));
     Ok(())
+}
+
+pub(crate) fn set_tray_unread(app: &AppHandle, unread: bool) {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    let state = app.state::<TrayUnread>();
+    if state.0.load(Ordering::Relaxed) == unread {
+        return;
+    }
+    let Some(icon) = app.default_window_icon() else {
+        return;
+    };
+    let icon = if unread {
+        let (width, height) = (icon.width(), icon.height());
+        let mut rgba = icon.rgba().to_vec();
+        let radius = f64::from(width.min(height)) * 0.15;
+        let center_x = f64::from(width) - radius - 1.0;
+        let center_y = radius + 1.0;
+        for y in 0..height {
+            for x in 0..width {
+                let distance = (f64::from(x) - center_x).hypot(f64::from(y) - center_y);
+                if distance <= radius {
+                    let offset = ((y * width + x) * 4) as usize;
+                    rgba[offset..offset + 4].copy_from_slice(&[224, 39, 62, 255]);
+                }
+            }
+        }
+        tauri::image::Image::new_owned(rgba, width, height)
+    } else {
+        icon.clone()
+    };
+    if tray.set_icon(Some(icon)).is_ok() {
+        state.0.store(unread, Ordering::Relaxed);
+    }
 }
 
 pub(crate) fn request_close(window: &Window) {

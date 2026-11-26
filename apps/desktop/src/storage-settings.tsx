@@ -24,7 +24,45 @@ export type StorageStats = {
   outbox_bytes: number;
   total_bytes: number;
   conversations: ConversationStorage[];
+  volumes?: StorageVolume[];
 };
+
+type StorageVolume = {
+  name: string;
+  zibblu_bytes: number;
+  total_bytes: number | null;
+  free_bytes: number | null;
+};
+
+function DiskUsage({ volume }: { volume: StorageVolume }) {
+  const { total_bytes: total, free_bytes: free, zibblu_bytes: zibblu } = volume;
+  const used = total !== null && free !== null ? total - free : null;
+  const parts = used !== null && free !== null && zibblu <= used
+    ? [
+        { label: "Zibblu", bytes: zibblu },
+        { label: t("Other used space", "其他占用"), bytes: used - zibblu },
+        { label: t("Free space", "剩余空间"), bytes: free },
+      ]
+    : [];
+  return <div className="storage-volume">
+    <div className="storage-volume-heading">
+      <strong>{volume.name || t("Unknown volume", "未知磁盘")}</strong>
+      {used !== null && total !== null
+        ? <span>{decimalSize(used)} / {decimalSize(total)}</span>
+        : <span>{t("Capacity unavailable", "无法读取磁盘容量")}</span>}
+    </div>
+    {total !== null && parts.length > 0 && <>
+      <div className="storage-volume-bar" aria-hidden="true">
+        {parts.map(part => <span key={part.label} style={{ width: `${part.bytes / total * 100}%` }} />)}
+      </div>
+      <ul className="storage-volume-legend">{parts.map(part =>
+        <li key={part.label}>{part.label} {decimalSize(part.bytes)}</li>,
+      )}</ul>
+    </>}
+    {parts.length === 0 && <span className="muted">Zibblu {decimalSize(zibblu)}{used !== null
+      ? ` · ${t("Usage breakdown unavailable", "无法计算占用分布")}` : ""}</span>}
+  </div>;
+}
 
 export type CacheCleanupReport = {
   removed_public_files: number;
@@ -127,7 +165,12 @@ export function StorageSettings({
     );
   }, [stats]);
 
-  const globalCategories = stats ? [
+  const globalCategories = stats?.volumes ? [
+    { key: "app", label: t("Application", "应用程序"), value: stats.app_bytes },
+    { key: "media", label: t("Media & files", "媒体与文件"), value: stats.conversation_media_bytes + stats.outbox_bytes },
+    { key: "db", label: t("Chat content", "聊天内容"), value: stats.database_bytes },
+    { key: "cache", label: t("Cache & temporary content", "缓存与临时内容"), value: stats.public_cache_and_temp_bytes },
+  ] : stats ? [
     { key: "app", label: t("Application", "应用程序"), value: stats.app_bytes },
     { key: "media", label: t("Conversation media & files", "普通会话媒体与附件"), value: stats.conversation_media_bytes },
     { key: "db", label: t("Chat database", "聊天数据库"), value: stats.database_bytes },
@@ -152,11 +195,12 @@ export function StorageSettings({
     <div className="storage-settings">
       <section className="settings-group" aria-labelledby="storage-overview-title">
         <h2 id="storage-overview-title">{t("Storage", "存储空间")}</h2>
-        <div className="settings-row storage-summary-row">
-          <div className="storage-summary-main">
+        {stats?.volumes?.map(volume => <DiskUsage key={volume.name} volume={volume} />)}
+        <div className={"settings-row storage-summary-row" + (stats?.volumes ? " storage-volume-actions" : "")}>
+          {!stats?.volumes && <div className="storage-summary-main">
             <span className="storage-summary-label">{t("Total storage used", "总占用")}</span>
             <strong className="storage-summary-total">{stats ? decimalSize(stats.total_bytes) : "—"}</strong>
-          </div>
+          </div>}
           <button
             className="button primary storage-clear-button"
             type="button"
@@ -187,6 +231,8 @@ export function StorageSettings({
           </div>
         )}
         {stats && (
+          <>
+          {stats.volumes && <h2>{t("Storage usage details", "空间占用详情")}</h2>}
           <dl className="storage-breakdown">
             {globalCategories.map(item => (
               <div className="settings-row storage-breakdown-row" key={item.key}>
@@ -195,6 +241,7 @@ export function StorageSettings({
               </div>
             ))}
           </dl>
+          </>
         )}
       </section>
 

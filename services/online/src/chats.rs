@@ -494,6 +494,8 @@ pub(crate) async fn publish_ai_reply(
         || input.readers.is_empty()
         || input.readers.len() >= MAX_GROUP_MEMBERS
         || input.readers.contains(&auth.user_id)
+        || input.sources.len() > 64
+        || input.sources.iter().any(|source| source.number == 0 || source.number > 64 || source.seq <= 0)
     {
         return Err(Error::bad(
             "Choose chat members and an AI reply up to 24 KiB.",
@@ -547,6 +549,17 @@ pub(crate) async fn publish_ai_reply(
     .bind(&readers)
     .execute(&mut *tx)
     .await?;
+    for source in input.sources {
+        sqlx::query(
+            "INSERT INTO ai_reply_sources (reply_seq, number, source_seq, attachment_id)
+             SELECT $1, $2, m.seq, $3 FROM m1_visible_messages m
+             WHERE m.seq = $4 AND m.account_id = $5 AND m.recall_seq IS NULL
+               AND coalesce(m.expires_at > statement_timestamp(), true)
+               AND ($3::uuid IS NULL AND m.text IS NOT NULL OR m.attachment_id = $3)
+             ON CONFLICT DO NOTHING",
+        ).bind(seq).bind(source.number as i32).bind(source.attachment_id).bind(source.seq).bind(auth.user_id)
+            .execute(&mut *tx).await?;
+    }
     sync::dispatch(&mut tx, seq).await?;
     let publication = sync::publication(&mut tx, seq).await?;
     tx.commit().await?;

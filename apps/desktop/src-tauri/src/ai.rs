@@ -16,7 +16,7 @@ use tokio::sync::{Notify, watch};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 use zibblu_core::{
-    AiLocalPrompt, AiScope, Attachment, AttachmentKind, Client, MAX_AI_PROMPT_BYTES,
+    AiLocalPrompt, AiLocalReply, AiScope, Attachment, AttachmentKind, Client, MAX_AI_PROMPT_BYTES,
     assistant::{
         AiCancelledError, AiFile, AiMessage, AiProvider, AiSnapshot, ModelDiscovery, valid_model_id,
     },
@@ -25,6 +25,10 @@ use zibblu_core::{
         build_chunked_requests, check_supported_attachment_for_provider, extract_attachment,
     },
 };
+
+#[cfg(windows)]
+#[path = "ai_agent.rs"]
+pub(crate) mod agent;
 
 #[cfg(windows)]
 #[path = "ai_windows.rs"]
@@ -58,6 +62,8 @@ pub(crate) struct Assistant {
     model: String,
     #[serde(default)]
     base_url: Option<String>,
+    #[serde(default)]
+    agent_enabled: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -143,6 +149,8 @@ pub(crate) async fn ai_save_assistant(
             .find(|entry| entry.info.provider == provider)
             .filter(|_| key.is_some())
             .map(|entry| entry.protected_key.clone());
+        let agent_enabled = assistants.iter().any(|entry| entry.info.provider == provider
+            && entry.info.base_url == base_url && entry.info.model == model && entry.info.agent_enabled);
         assistants.retain(|entry| entry.info.provider != provider);
         assistants.push(StoredAssistant {
             info: Assistant {
@@ -150,6 +158,7 @@ pub(crate) async fn ai_save_assistant(
                 name,
                 model,
                 base_url,
+                agent_enabled,
             },
             protected_key,
         });
@@ -244,7 +253,6 @@ pub(crate) async fn ai_remove_assistant(
 pub(crate) struct AiState {
     views: HashMap<Uuid, NormalView>,
     jobs: HashMap<Uuid, ActiveAiJob>,
-    replies: HashMap<Uuid, UnsharedAiReply>,
 }
 
 struct NormalView {
@@ -275,6 +283,7 @@ struct Approval {
     messages: Vec<AiMessage>,
     files: Vec<AiFile>,
     attachments: Vec<ApprovedAttachment>,
+    autonomous: bool,
 }
 
 struct ActiveAiJob {
@@ -290,6 +299,12 @@ struct ActiveAiJob {
     cancelled: Arc<AtomicBool>,
     cancel_notify: Arc<Notify>,
     cancel_tx: watch::Sender<bool>,
+    #[cfg(windows)]
+    autonomous: bool,
+    #[cfg(windows)]
+    access: Option<agent::PendingAccess>,
+    #[cfg(windows)]
+    targets: std::collections::HashSet<Uuid>,
 }
 
 impl ActiveAiJob {
@@ -310,6 +325,8 @@ impl ActiveAiJob {
             progress: self.progress,
             error: self.error.clone(),
             created_at: self.created_at,
+            #[cfg(windows)]
+            access: self.access.as_ref().map(|pending| pending.view.clone()),
         }
     }
 }
@@ -325,19 +342,34 @@ pub(crate) struct AiJobView {
     progress: Option<(u64, u64)>,
     error: Option<String>,
     created_at: i64,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct UnsharedAiReply {
-    id: Uuid,
-    prompt_id: Uuid,
-    conversation_id: Uuid,
-    provider: AiProvider,
-    text: String,
-    created_at: i64,
+    #[cfg(windows)]
+    access: Option<agent::AccessView>,
 }
 
 impl AiState {
+    #[cfg(windows)]
+    fn suspend_conversation(&mut self, conversation: Uuid) -> Vec<Uuid> {
+        self.views.retain(|_, view| view.conversation != conversation);
+        let mut origins = Vec::new();
+        self.jobs.retain(|_, job| {
+            if job.conversation_id == conversation || job.targets.contains(&conversation) {
+                job.cancel();
+                origins.push(job.conversation_id);
+                false
+            } else {
+                true
+            }
+        });
+        origins
+    }
+
+    fn begin_saving(&mut self, id: Uuid) -> bool {
+        let Some(job) = self.jobs.get_mut(&id) else { return false; };
+        if job.cancelled.load(Ordering::Acquire) { return false; }
+        job.phase = "saving".into();
+        true
+    }
+
     pub(crate) fn clear_pending_views(&mut self) {
         self.views.clear();
     }
@@ -347,7 +379,6 @@ impl AiState {
             job.cancel();
         }
         self.views.clear();
-        self.replies.clear();
     }
 
     pub(crate) fn clear_conversation(&mut self, conversation: Uuid) {
@@ -361,8 +392,6 @@ impl AiState {
         for id in cancel_ids {
             self.jobs.remove(&id);
         }
-        self.replies
-            .retain(|_, reply| reply.conversation_id != conversation);
         for view in self.views.values_mut() {
             if view.conversation == conversation {
                 view.draft = None;
@@ -396,6 +425,43 @@ impl AiState {
         let mut request = self.view(view)?.draft.take().expect("checked draft");
         Ok(request.approval.take().expect("checked approval"))
     }
+}
+
+#[cfg(windows)]
+pub(crate) fn suspend_conversation(app: &AppHandle, conversation: Uuid) {
+    let desktop = app.state::<Desktop>();
+    let origins = desktop.ai.lock().expect("AI state").suspend_conversation(conversation);
+    if !origins.is_empty() {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            for origin in origins {
+                let _ = app.emit(AI_CHANGED_EVENT, origin);
+            }
+        });
+    }
+}
+
+#[cfg(any(windows, test))]
+fn ensure_ordinary(origin: Uuid, target: Uuid, is_private: impl Fn(Uuid) -> bool) -> Result<()> {
+    if is_private(origin) || (target != origin && is_private(target)) {
+        return Err(AiCancelledError.into());
+    }
+    Ok(())
+}
+
+pub(crate) async fn ensure_available(state: &Desktop, client: &Arc<Client>, origin: Uuid, target: Uuid) -> Result<()> {
+    ensure!(state.is_current(client).await, "The session has ended.");
+    #[cfg(windows)]
+    {
+        let lobby = state.private.lock().await;
+        ensure_ordinary(origin, target, |id| {
+            lobby.as_ref().is_some_and(|lobby| lobby.has_active_conversation(id))
+        })?;
+    }
+    if origin != target {
+        client.ensure_ai_authorized(origin, &[], &[]).await?;
+    }
+    client.ensure_ai_authorized(target, &[], &[]).await
 }
 
 fn ensure_normal_chat_window(window: &WebviewWindow, conversation: Uuid) -> Result<()> {
@@ -609,6 +675,7 @@ pub(crate) async fn ai_prepare(
         request.preparing = Some(id);
         ai.view(view)?.conversation
     };
+    ensure_available(&state, &client, conversation, conversation).await?;
     let context_messages = client
         .ai_context_messages(conversation, selection.scope)
         .await?;
@@ -708,6 +775,7 @@ pub(crate) async fn ai_prepare(
             messages: encoded_messages,
             files,
             attachments: approved_attachments,
+            autonomous: false,
         });
         Ok(prepared)
     })()?;
@@ -734,7 +802,14 @@ pub(crate) async fn ai_send(
         .lock()
         .expect("AI state")
         .consume(view, draft, approval)?;
+    start_ai_job(app, &state, client, approved).await
+}
+
+async fn start_ai_job(
+    app: AppHandle, state: &Desktop, client: Arc<Client>, approved: Approval,
+) -> CommandResult<SentPrompt> {
     let conversation_id = approved.conversation_id;
+    ensure_available(state, &client, conversation_id, conversation_id).await?;
     let provider = approved.assistant.info.provider;
     let _base = provider.base_url(approved.assistant.info.base_url.as_deref())?;
     let bytes = protect_key(provider, &approved.assistant.protected_key, false)?;
@@ -747,18 +822,10 @@ pub(crate) async fn ai_send(
 
     let prompt_id = Uuid::new_v4();
     let created_at = client.server_now();
-    client
-        .insert_ai_prompt(&AiLocalPrompt {
-            id: prompt_id,
-            conversation_id,
-            provider,
-            prompt_text: approved.prompt.clone(),
-            created_at,
-        })
-        .await?;
-
     let has_uncached = approved.attachments.iter().any(|item| !item.cached);
-    let initial_phase = if has_uncached {
+    let initial_phase = if approved.autonomous {
+        "searching"
+    } else if has_uncached {
         "downloading"
     } else if !approved.attachments.is_empty() {
         "preparing"
@@ -786,8 +853,24 @@ pub(crate) async fn ai_send(
                 cancelled: Arc::clone(&cancelled),
                 cancel_notify: Arc::clone(&cancel_notify),
                 cancel_tx,
+                #[cfg(windows)]
+                autonomous: approved.autonomous,
+                #[cfg(windows)]
+                access: None,
+                #[cfg(windows)]
+                targets: Default::default(),
             },
         );
+    }
+    if let Err(error) = client.insert_ai_prompt(&AiLocalPrompt {
+        id: prompt_id,
+        conversation_id,
+        provider,
+        prompt_text: approved.prompt.clone(),
+        created_at,
+    }).await {
+        state.ai.lock().expect("AI state").jobs.remove(&prompt_id);
+        return Err(error.into());
     }
     let _ = app.emit(AI_CHANGED_EVENT, conversation_id);
 
@@ -840,17 +923,10 @@ pub(crate) async fn ai_jobs(
 pub(crate) async fn ai_replies(
     state: State<'_, Desktop>,
     conversation: Uuid,
-) -> CommandResult<Vec<UnsharedAiReply>> {
-    let _client = state.client().await?;
-    let ai = state.ai.lock().expect("AI state");
-    let mut replies: Vec<UnsharedAiReply> = ai
-        .replies
-        .values()
-        .filter(|reply| reply.conversation_id == conversation)
-        .cloned()
-        .collect();
-    replies.sort_by_key(|reply| (reply.created_at, reply.id));
-    Ok(replies)
+) -> CommandResult<Vec<AiLocalReply>> {
+    let client = state.client().await?;
+    ensure_available(&state, &client, conversation, conversation).await?;
+    Ok(client.list_ai_replies(conversation).await?)
 }
 
 #[tauri::command]
@@ -861,6 +937,9 @@ pub(crate) fn ai_cancel_job(
 ) -> CommandResult<()> {
     let conversation = {
         let mut ai = state.ai.lock().expect("AI state");
+        if ai.jobs.get(&job_id).is_some_and(|job| job.phase == "saving") {
+            return Ok(());
+        }
         ai.jobs.remove(&job_id).map(|job| {
             job.cancel();
             job.conversation_id
@@ -882,15 +961,12 @@ pub(crate) fn ai_dismiss_job(
 }
 
 #[tauri::command]
-pub(crate) fn ai_dismiss_reply(
+pub(crate) async fn ai_dismiss_reply(
     app: AppHandle,
     state: State<'_, Desktop>,
     id: Uuid,
 ) -> CommandResult<()> {
-    let conversation = {
-        let mut ai = state.ai.lock().expect("AI state");
-        ai.replies.remove(&id).map(|reply| reply.conversation_id)
-    };
+    let conversation = state.client().await?.dismiss_ai_reply(id).await?;
     if let Some(conversation) = conversation {
         let _ = app.emit(AI_CHANGED_EVENT, conversation);
     }
@@ -1045,7 +1121,10 @@ async fn execute_ai_job(
             }
             Ok(extracted)
         },
-        || client.ensure_ai_authorized(conversation_id, &approved.message_seqs, &granted),
+        || async {
+            client.ensure_ai_authorized(conversation_id, &approved.message_seqs, &granted).await?;
+            ensure_available(&app.state::<Desktop>(), client, conversation_id, conversation_id).await
+        },
         |idx, total, parts| {
             let status_text = if total > 1 {
                 format!("{}/{}", idx + 1, total)
@@ -1120,6 +1199,9 @@ where
             return Err(AiCancelledError.into());
         }
         recheck().await?;
+        if cancelled.load(Ordering::Acquire) {
+            return Err(AiCancelledError.into());
+        }
         answers.push(send(idx, total, parts).await?);
     }
     Ok(answers)
@@ -1137,58 +1219,70 @@ async fn run_ai_job(
 ) {
     let conversation_id = approved.conversation_id;
     let provider = approved.assistant.info.provider;
-    let outcome = execute_ai_job(
-        &app,
-        &client,
-        job_id,
-        &approved,
-        &key,
-        &cancelled,
-        &cancel_notify,
-        &mut cancel_rx,
-    )
-    .await;
+    #[cfg(windows)]
+    let mut sources = Vec::new();
+    let outcome = async {
+        ensure_available(&app.state::<Desktop>(), &client, conversation_id, conversation_id).await?;
+        #[cfg(windows)]
+        if approved.autonomous {
+            return match agent::execute(&app, &client, job_id, &approved, &key, &cancelled, &cancel_notify, &mut cancel_rx).await {
+                Ok((text, found)) => { sources = found; Ok(text) }
+                Err(error) => Err(error),
+            };
+        }
+        execute_ai_job(&app, &client, job_id, &approved, &key, &cancelled, &cancel_notify, &mut cancel_rx).await
+    }.await;
 
     let desktop = app.state::<Desktop>();
     if !desktop.is_current(&client).await {
         return;
     }
 
+    let outcome = match outcome {
+        Ok(text) => {
+            if !desktop.ai.lock().expect("AI state").begin_saving(job_id) { return; }
+            let reply = AiLocalReply {
+                id: Uuid::new_v4(),
+                prompt_id: job_id,
+                conversation_id,
+                provider,
+                text,
+                created_at: client.server_now(),
+                #[cfg(windows)]
+                sources,
+                #[cfg(not(windows))]
+                sources: Vec::new(),
+            };
+            let saved = client.insert_ai_reply(&reply).await;
+            {
+                let mut ai = desktop.ai.lock().expect("AI state");
+                match saved {
+                    Ok(_) => { ai.jobs.remove(&job_id); }
+                    Err(error) => if let Some(job) = ai.jobs.get_mut(&job_id) {
+                        job.phase = "failed".into();
+                        job.progress = None;
+                        job.error = Some(error.to_string());
+                    },
+                }
+            }
+            let _ = app.emit(AI_CHANGED_EVENT, conversation_id);
+            return;
+        }
+        Err(error) => error,
+    };
     let emit = {
         let mut ai = desktop.ai.lock().expect("AI state");
         if cancelled.load(Ordering::Acquire) || !ai.jobs.contains_key(&job_id) {
             false
         } else {
-            match outcome {
-                Ok(text) => {
-                    ai.jobs.remove(&job_id);
-                    let reply_id = Uuid::new_v4();
-                    ai.replies.insert(
-                        reply_id,
-                        UnsharedAiReply {
-                            id: reply_id,
-                            prompt_id: job_id,
-                            conversation_id,
-                            provider,
-                            text,
-                            created_at: client.server_now(),
-                        },
-                    );
-                    true
-                }
-                Err(error) => {
-                    if error.downcast_ref::<AiCancelledError>().is_some()
-                        || error.to_string() == "Cancelled"
-                    {
-                        ai.jobs.remove(&job_id);
-                    } else if let Some(job) = ai.jobs.get_mut(&job_id) {
-                        job.phase = "failed".into();
-                        job.progress = None;
-                        job.error = Some(error.to_string());
-                    }
-                    true
-                }
+            if outcome.is::<AiCancelledError>() || outcome.to_string() == "Cancelled" {
+                ai.jobs.remove(&job_id);
+            } else if let Some(job) = ai.jobs.get_mut(&job_id) {
+                job.phase = "failed".into();
+                job.progress = None;
+                job.error = Some(outcome.to_string());
             }
+            true
         }
     };
 
@@ -1211,6 +1305,7 @@ mod tests {
                     name: "review".into(),
                     model: "fixture".into(),
                     base_url: None,
+                    agent_enabled: false,
                 },
                 protected_key: vec![],
             },
@@ -1219,6 +1314,7 @@ mod tests {
             messages: vec![],
             files: vec![],
             attachments: vec![],
+            autonomous: false,
         }
     }
 
@@ -1323,10 +1419,46 @@ mod tests {
     }
 
     #[test]
+    fn private_origin_or_target_stops_follow_up_provider_requests() {
+        use std::cell::Cell;
+        let origin = Uuid::new_v4();
+        let target = Uuid::new_v4();
+        let unrelated = Uuid::new_v4();
+        for (read_from, enters_private, expected) in [
+            (origin, origin, 1),
+            (target, origin, 1),
+            (target, target, 1),
+            (target, unrelated, 3),
+        ] {
+            let sends = Cell::new(0);
+            let cancelled = AtomicBool::new(false);
+            let result = tauri::async_runtime::block_on(send_chunks(
+                vec!["first", "second", "third"],
+                &cancelled,
+                || std::future::ready(ensure_ordinary(origin, read_from, |chat| {
+                    sends.get() > 0 && chat == enters_private
+                })),
+                |_, _, chunk| {
+                    sends.set(sends.get() + 1);
+                    std::future::ready(Ok(chunk.to_owned()))
+                },
+            ));
+            assert_eq!(sends.get(), expected);
+            if expected == 1 {
+                assert!(result.unwrap_err().is::<AiCancelledError>());
+            } else {
+                assert!(result.is_ok());
+            }
+        }
+    }
+
+    #[test]
     fn ai_job_cancel_prevents_resurrection_and_preserves_other_chats() {
         let mut ai = AiState::default();
         let c1 = Uuid::new_v4();
         let c2 = Uuid::new_v4();
+        #[cfg(windows)]
+        let target = Uuid::new_v4();
         let j1 = Uuid::new_v4();
         let j2 = Uuid::new_v4();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -1348,6 +1480,12 @@ mod tests {
                 cancelled: Arc::clone(&cancelled),
                 cancel_notify: Arc::new(Notify::new()),
                 cancel_tx: tx1,
+                #[cfg(windows)]
+                autonomous: true,
+                #[cfg(windows)]
+                access: None,
+                #[cfg(windows)]
+                targets: [target].into_iter().collect(),
             },
         );
         ai.jobs.insert(
@@ -1365,10 +1503,18 @@ mod tests {
                 cancelled: Arc::new(AtomicBool::new(false)),
                 cancel_notify: Arc::new(Notify::new()),
                 cancel_tx: tx2,
+                #[cfg(windows)]
+                autonomous: false,
+                #[cfg(windows)]
+                access: None,
+                #[cfg(windows)]
+                targets: Default::default(),
             },
         );
 
-        // Cancel j1.
+        #[cfg(windows)]
+        assert_eq!(ai.suspend_conversation(target), vec![c1]);
+        #[cfg(not(windows))]
         if let Some(job) = ai.jobs.remove(&j1) {
             job.cancel();
         }
@@ -1378,7 +1524,7 @@ mod tests {
 
         // Simulate late arrival after cancellation: must not insert reply or re-add job.
         assert!(cancelled.load(Ordering::Acquire) || !ai.jobs.contains_key(&j1));
-        assert!(ai.replies.is_empty());
+        assert!(!ai.begin_saving(j1));
 
         // Clear conversation c2 removes j2 only.
         ai.clear_conversation(c2);

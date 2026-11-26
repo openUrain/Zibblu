@@ -44,7 +44,7 @@ export type BoundsRect = {
   height: number;
 };
 
-export type SelectionHandleKind = "start" | "end" | "nw" | "ne" | "sw" | "se";
+export type SelectionHandleKind = "start" | "end" | "nw" | "ne" | "sw" | "se" | "n" | "e" | "s" | "w" | "rotate";
 
 export type SelectionHandle = {
   kind: SelectionHandleKind;
@@ -329,8 +329,14 @@ export function applyImageTransformToContext(
 const TEXT_FONT_FAMILY =
   '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif';
 
-export function buildCanvasFont(fontSize: number): string {
-  return `600 ${fontSize}px ${TEXT_FONT_FAMILY}`;
+export function buildCanvasFont(fontSize: number, style?: Partial<TextAnnotation>): string {
+  return `${style?.italic ? "italic " : ""}${style?.bold ? 700 : style?.width ? 400 : 600} ${fontSize}px ${annotationFontFamily(style?.family)}`;
+}
+
+export function annotationFontFamily(family?: string): string {
+  if (!family) return TEXT_FONT_FAMILY;
+  if (["system-ui", "serif", "monospace"].includes(family)) return family;
+  return `${JSON.stringify(family)}, system-ui`;
 }
 
 function estimateTextLineWidth(line: string, fontSize: number): number {
@@ -346,29 +352,17 @@ export function measureTextBounds(
   item: TextAnnotation,
   ctx?: CanvasRenderingContext2D | null,
 ): BoundsRect {
-  const lines = item.text.length > 0 ? item.text.split(/\r?\n/) : [" "];
-  const lineHeight = item.fontSize * 1.25;
-  let maxWidth = item.fontSize * 0.5;
+  const { width, height } = layoutAnnotationText(item, ctx ?? textMeasurementContext());
+  return { x: item.x, y: item.y, width, height };
+}
 
-  if (ctx) {
-    ctx.save();
-    ctx.font = buildCanvasFont(item.fontSize);
-    for (const line of lines) {
-      maxWidth = Math.max(maxWidth, ctx.measureText(line || " ").width);
-    }
-    ctx.restore();
-  } else {
-    for (const line of lines) {
-      maxWidth = Math.max(maxWidth, estimateTextLineWidth(line || " ", item.fontSize));
-    }
+let textMeasurement: CanvasRenderingContext2D | null | undefined;
+
+function textMeasurementContext() {
+  if (textMeasurement === undefined && typeof document !== "undefined") {
+    textMeasurement = document.createElement("canvas").getContext("2d");
   }
-
-  return {
-    x: item.x,
-    y: item.y,
-    width: maxWidth,
-    height: Math.max(item.fontSize, lines.length * lineHeight),
-  };
+  return textMeasurement;
 }
 
 export function getItemBounds(
@@ -415,7 +409,31 @@ export function getItemBounds(
   };
 }
 
-export function getSelectionHandles(item: ImageAnnotationItem): SelectionHandle[] {
+function rotateTextPoint(item: TextAnnotation, point: ImagePoint, inverse = false): ImagePoint {
+  const angle = (item.rotation ?? 0) * (inverse ? -1 : 1);
+  const sin = Math.sin(angle);
+  const cos = Math.cos(angle);
+  const x = point.x - item.x;
+  const y = point.y - item.y;
+  return { x: item.x + x * cos - y * sin, y: item.y + x * sin + y * cos };
+}
+
+export function getSelectionHandles(item: ImageAnnotationItem, viewScale = 1): SelectionHandle[] {
+  if (item.kind === "text") {
+    const { x, y, width, height } = measureTextBounds(item);
+    const handles: SelectionHandle[] = [
+      { kind: "nw", x, y },
+      { kind: "n", x: x + width / 2, y },
+      { kind: "ne", x: x + width, y },
+      { kind: "e", x: x + width, y: y + height / 2 },
+      { kind: "se", x: x + width, y: y + height },
+      { kind: "s", x: x + width / 2, y: y + height },
+      { kind: "sw", x, y: y + height },
+      { kind: "w", x, y: y + height / 2 },
+      { kind: "rotate", x: x + width / 2, y: y - 24 / safeScale(viewScale) },
+    ];
+    return handles.map(handle => ({ ...rotateTextPoint(item, handle), kind: handle.kind }));
+  }
   if (item.kind === "line" || item.kind === "arrow") {
     return [
       { kind: "start", x: item.x1, y: item.y1 },
@@ -443,7 +461,7 @@ export function hitTestSelectionHandle(
   viewScale: number,
   handleScreenRadius = 10,
 ): SelectionHandleKind | null {
-  const handles = getSelectionHandles(item);
+  const handles = getSelectionHandles(item, viewScale);
   if (handles.length === 0) return null;
   const r = handleScreenRadius / safeScale(viewScale);
   for (const handle of handles) {
@@ -567,8 +585,11 @@ export function hitTestItem(
   ctx?: CanvasRenderingContext2D | null,
   prevPoint?: ImagePoint,
 ): boolean {
+  if (item.kind === "pen" && item.erase) return false;
   const screenPad = 10 / safeScale(viewScale);
   if (item.kind === "text") {
+    point = rotateTextPoint(item, point, true);
+    const previous = prevPoint && rotateTextPoint(item, prevPoint, true);
     const bounds = measureTextBounds(item, ctx);
     const pad = Math.min(screenPad, item.fontSize * 0.35);
     const minX = bounds.x - pad;
@@ -583,14 +604,14 @@ export function hitTestItem(
     ) {
       return true;
     }
-    if (prevPoint) {
+    if (previous) {
       const edges: [ImagePoint, ImagePoint][] = [
         [{ x: minX, y: minY }, { x: maxX, y: minY }],
         [{ x: maxX, y: minY }, { x: maxX, y: maxY }],
         [{ x: maxX, y: maxY }, { x: minX, y: maxY }],
         [{ x: minX, y: maxY }, { x: minX, y: minY }],
       ];
-      return edges.some(([e1, e2]) => segmentToSegmentDistance(prevPoint, point, e1, e2) === 0);
+      return edges.some(([e1, e2]) => segmentToSegmentDistance(previous, point, e1, e2) === 0);
     }
     return false;
   }
@@ -601,6 +622,41 @@ export function hitTestItem(
     return hitTestPen(item, point, tolerance, prevPoint);
   }
   return hitTestShape(item, point, tolerance, prevPoint);
+}
+
+export function resizeTextByHandle(
+  item: TextAnnotation, handle: SelectionHandleKind, point: ImagePoint, start: ImagePoint,
+): TextAnnotation {
+  const { x, y, width, height } = measureTextBounds(item);
+  if (handle === "rotate") {
+    const angle = Math.atan2(point.y - y, point.x - x) - Math.atan2(start.y - y, start.x - x);
+    return { ...item, rotation: (item.rotation ?? 0) + angle };
+  }
+  const local = rotateTextPoint(item, point, true);
+  const origin = rotateTextPoint(item, start, true);
+  const dx = local.x - origin.x;
+  const dy = local.y - origin.y;
+  const west = handle.includes("w");
+  const north = handle.includes("n");
+  const dw = west ? -dx : handle.includes("e") ? dx : 0;
+  const dh = north ? -dy : handle.includes("s") ? dy : 0;
+  let nextWidth = Math.max(item.fontSize, width + dw);
+  let nextHeight = Math.max(item.fontSize * 1.25, height + dh);
+  let fontSize = item.fontSize;
+  if (handle.length === 2) {
+    const ratio = Math.max(8 / fontSize, 1 + (dw * width + dh * height) / (width ** 2 + height ** 2));
+    nextWidth = width * ratio;
+    nextHeight = height * ratio;
+    fontSize *= ratio;
+  }
+  nextHeight = Math.max(nextHeight, layoutAnnotationText({ ...item, width: nextWidth, height: 0, fontSize }).height);
+  return {
+    ...item,
+    ...rotateTextPoint(item, { x: west ? x + width - nextWidth : x, y: north ? y + height - nextHeight : y }),
+    width: nextWidth,
+    height: nextHeight,
+    fontSize,
+  };
 }
 
 export function hitTestAnnotation(
@@ -863,17 +919,74 @@ function drawShape(ctx: CanvasRenderingContext2D, item: ShapeAnnotation, lineWid
   ctx.restore();
 }
 
+export function layoutAnnotationText(
+  item: Pick<TextAnnotation, "text" | "width" | "height" | "fontSize" | "family" | "italic" | "bold">,
+  ctx = textMeasurementContext(),
+) {
+  const oldFont = ctx?.font;
+  if (ctx) ctx.font = buildCanvasFont(item.fontSize, item);
+  const measure = (value: string) => ctx?.measureText(value).width ?? estimateTextLineWidth(value, item.fontSize);
+  const lines = item.text.split(/\r?\n/).flatMap(line => {
+    if (!item.width || measure(line) <= item.width) return [line];
+    const wrapped: string[] = [];
+    let segment = "";
+    for (const word of line.match(/\S+|\s+/gu) ?? []) {
+      if (segment && measure(segment + word) > item.width) {
+        wrapped.push(segment.trimEnd());
+        segment = "";
+        if (!word.trim()) continue;
+      }
+      if (measure(word) <= item.width) {
+        segment += word;
+      } else {
+        for (const char of word) {
+          if (segment && measure(segment + char) > item.width) {
+            wrapped.push(segment);
+            segment = "";
+          }
+          segment += char;
+        }
+      }
+    }
+    wrapped.push(segment);
+    return wrapped;
+  });
+  const lineHeight = item.fontSize * 1.25;
+  const width = item.width ?? lines.reduce((largest, line) => Math.max(largest, measure(line)), item.fontSize / 2);
+  if (ctx && oldFont !== undefined) ctx.font = oldFont;
+  return { lines, lineHeight, width, height: Math.max(item.height ?? 0, lines.length * lineHeight) };
+}
+
+export function textOutsideImage(item: TextAnnotation, imageWidth: number, imageHeight: number): boolean {
+  if (!item.text.trim()) return false;
+  const { width, lines, lineHeight } = layoutAnnotationText(item);
+  const height = lines.length * lineHeight;
+  return [
+    { x: item.x, y: item.y }, { x: item.x + width, y: item.y },
+    { x: item.x, y: item.y + height }, { x: item.x + width, y: item.y + height },
+  ].map(point => rotateTextPoint(item, point)).some(({ x, y }) =>
+    x < 0 || y < 0 || x > imageWidth || y > imageHeight);
+}
+
 function drawText(ctx: CanvasRenderingContext2D, item: TextAnnotation): void {
   if (!item.text) return;
   ctx.save();
   ctx.fillStyle = item.color;
-  ctx.font = buildCanvasFont(item.fontSize);
-  ctx.textAlign = "left";
+  ctx.font = buildCanvasFont(item.fontSize, item);
+  ctx.textAlign = item.align ?? "left";
   ctx.textBaseline = "top";
-  const lines = item.text.split(/\r?\n/);
-  const lineHeight = item.fontSize * 1.25;
+  ctx.translate(item.x, item.y);
+  ctx.rotate(item.rotation ?? 0);
+  const { lines, lineHeight, width } = layoutAnnotationText(item, ctx);
+  const x = item.align === "right" ? width : item.align === "center" ? width / 2 : 0;
   for (let i = 0; i < lines.length; i++) {
-    ctx.fillText(lines[i], item.x, item.y + i * lineHeight);
+    const y = i * lineHeight;
+    ctx.fillText(lines[i], x, y);
+    if (item.underline) {
+      const width = ctx.measureText(lines[i]).width;
+      const left = item.align === "right" ? x - width : item.align === "center" ? x - width / 2 : x;
+      ctx.fillRect(left, y + item.fontSize, width, Math.max(1, item.fontSize / 16));
+    }
   }
   ctx.restore();
 }
@@ -896,7 +1009,15 @@ export function renderAnnotationDoc(
   for (const item of doc.items) {
     if (options?.hiddenIds?.has(item.id)) continue;
     if (item.kind === "pen") {
-      drawPen(ctx, item, resolveStrokeWidth(item.widthLevel, naturalWidth, naturalHeight));
+      const width = resolveStrokeWidth(item.widthLevel, naturalWidth, naturalHeight);
+      if (item.erase) {
+        ctx.save();
+        ctx.globalCompositeOperation = "destination-out";
+        drawPen(ctx, item, width * 3);
+        ctx.restore();
+      } else {
+        drawPen(ctx, item, width);
+      }
     } else if (item.kind === "text") {
       drawText(ctx, item);
     } else {
@@ -917,18 +1038,25 @@ export function renderSelectionChrome(
   const strokePx = 1.5 / scale;
   const handleRadius = 5 / scale;
   const bounds = getItemBounds(item, naturalWidth, naturalHeight, ctx);
-  const pad = item.kind === "text" ? 4 / scale : 0;
 
   ctx.save();
   if (item.kind !== "line" && item.kind !== "arrow") {
     ctx.strokeStyle = "#634FB4";
     ctx.lineWidth = strokePx;
     ctx.setLineDash([5 / scale, 4 / scale]);
-    ctx.strokeRect(bounds.x - pad, bounds.y - pad, bounds.width + pad * 2, bounds.height + pad * 2);
+    ctx.save();
+    if (item.kind === "text") {
+      ctx.translate(bounds.x, bounds.y);
+      ctx.rotate(item.rotation ?? 0);
+      ctx.strokeRect(0, 0, bounds.width, bounds.height);
+    } else {
+      ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+    }
+    ctx.restore();
     ctx.setLineDash([]);
   }
 
-  const handles = getSelectionHandles(item);
+  const handles = getSelectionHandles(item, viewScale);
   for (const handle of handles) {
     ctx.beginPath();
     ctx.arc(handle.x, handle.y, handleRadius, 0, Math.PI * 2);
@@ -989,7 +1117,17 @@ export async function exportAnnotatedImage(
   }
 
   ctx.drawImage(img, 0, 0, naturalWidth, naturalHeight);
-  renderAnnotationDoc(ctx, { ...doc, naturalWidth, naturalHeight });
+  if (doc.items.some(item => item.kind === "pen" && item.erase)) {
+    const overlay = document.createElement("canvas");
+    overlay.width = naturalWidth;
+    overlay.height = naturalHeight;
+    const overlayContext = overlay.getContext("2d");
+    if (!overlayContext) throw new Error("无法创建标注图层 / Failed to create annotation layer");
+    renderAnnotationDoc(overlayContext, { ...doc, naturalWidth, naturalHeight });
+    ctx.drawImage(overlay, 0, 0);
+  } else {
+    renderAnnotationDoc(ctx, { ...doc, naturalWidth, naturalHeight });
+  }
 
   const pngBytes = await canvasToBytes(canvas, "image/png");
   if (pngBytes.byteLength <= MAX_EXPORT_BYTES) {

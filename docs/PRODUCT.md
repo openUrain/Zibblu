@@ -38,6 +38,8 @@ iPhone and iPad use the same sign-in and sync flows. Choose a file from the syst
 
 Registration asks for the new password twice. On Windows, the main window starts centered in the work area of its initial display. The first close asks whether to exit or hide to the system tray. Settings lets you change this local preference. Minimize still uses the taskbar. The tray can show the same window or exit the app. Launching again with the same data directory restores its window. Separate directories can run independent clients.
 
+On Windows, a left click on the tray icon restores and activates the main window. The tray icon marks unread ordinary conversations, including muted conversations. Storage settings show capacity by volume and keep cache cleanup limited to eligible Zibblu files.
+
 **User flow:** sign in → find a username → send a contact request → wait for approval → send messages or start a group → share files and find them in Files.
 
 Initial functional scope:
@@ -82,13 +84,16 @@ Rules:
 - No server relay, online forwarding or unnoticed switch back to normal mode. Connection failure means private mode is unavailable.
 - No private messages or attachments written to normal chat history. MVP private mode supports **text**; private file transfer requires a separate later decision.
 - Switching views keeps the private session available alongside ordinary chats. Ending the session or quitting the host closes the channel and clears the in-memory conversation.
+- On Windows, an established private session for a direct chat takes over that chat's list entry. Several contacts can have independent active sessions. Temporary LAN loss pauses sends, and the same two approved devices can restore the session while both retain it in memory. Ending the session returns to ordinary chat history.
 - On iPhone, invitations appear inside the foreground app. Going to the background or losing the current Wi-Fi path ends the local private session. Nearby discovery resumes when Wi-Fi is available in the app again.
 - Private content stays out of cloud AI, notifications, search indexing, out-of-session previews, analytics and logs.
 - The app cannot retract screenshots, recipient copies or guarantee removal of OS memory/swap remnants. UX copy must not claim absolute erasure.
 
 ## 03 — AI Assistants (explicit read-only)
 
-**User flow:** configure OpenAI, DeepSeek or Grok with a model, API key and custom assistant name → type `@name` in a normal chat → choose prompt only, selected messages (automatically including their attached images/documents) or a bounded recent range → optionally select individual text files → review the exact disclosure (including outbound attachments) and send → immediately return to the chat timeline showing the private local prompt and a cancellable generating placeholder → receive answer.
+**Windows flow:** configure a provider and custom assistant name, then submit an `@name` question in an ordinary chat. The first autonomous request shows its provider and explains its read-only access and possible disclosure. Later questions can retrieve relevant messages and attachments from the current ordinary conversation. A request for a named conversation needs explicit approval in a local card. Disable retrieval in AI settings. The timeline shows a local prompt, cancellable progress and the response with links to eligible sources.
+
+The reviewed selection flow authorizes prompt-only, chosen messages, a bounded recent range, or selected files as disclosed before sending.
 
 Rules:
 - No background access. Each request has a **fresh, one-time** authorization; it never inherits prior scopes.
@@ -98,7 +103,7 @@ Rules:
 - Private mode excludes cloud AI. A future on-device AI option needs a separate privacy review.
 - Context is capped at 60 messages and bounded sequential chunking within the single authorized request when large documents require splitting. The scope selector displays the exact outbound snapshot, attachments, and destination before sending.
 - Assistant mention names match case-insensitively and must be unique across configured providers.
-- Submitted `@name` prompts appear in the sender's own timeline marked **Only visible to you** and persist locally per account, never sent to peers. AI generation shows an in-chat cancellable placeholder; replies stay local unless the invoking user explicitly shares the **reply** via **Visible to** (which never shares the local prompt).
+- Submitted `@name` prompts appear beside the sender's avatar, marked **Only visible to you**. Prompts and completed replies reappear in the account's local timeline after restart. The in-chat generation placeholder can be cancelled. **Visible to** shares the selected reply with chosen members.
 - Settings supports testing the API key and listing model IDs through the provider's HTTPS API. Enter a model ID manually when model discovery is unavailable. An advanced base URL can point to a compatible HTTPS Responses API.
 
 ## Brand

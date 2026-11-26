@@ -11,8 +11,8 @@ mod staging;
 mod storage_stats;
 mod transfer;
 
-pub use ai_context::{AiContextMessage, AiScope, AuthorizedAiAttachment};
-pub use ai_prompts::AiLocalPrompt;
+pub use ai_context::{AiContextMessage, AiScope, AiSearch, AuthorizedAiAttachment};
+pub use ai_prompts::{AiLocalPrompt, AiLocalReply, AiLocalSource};
 pub use chat_prefs::{ConversationPrefState, sort_conversations};
 pub use media_store::{
     CacheCleanupReport, ConsistencyReport, MediaDescriptor, MediaVariant, PublicResourceKind,

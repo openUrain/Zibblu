@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { AiProvider } from "./ai-api";
+import type { AiProvider, AiSource } from "./ai-api";
 import type { VideoExportProgress, VideoProbeInfo } from "./media-viewer-types";
 
 export type User = { id: string; handle: string };
@@ -51,7 +51,7 @@ export type Attachment = { id: string; name: string; kind: "file" | "folder"; si
 export type ImageSize = [number, number];
 export type Message = {
   seq: number; conversation_id: string; sender: User; created_at: number;
-  text: string | null; attachment: Attachment | null; ai_provider?: AiProvider; recalled: boolean;
+  text: string | null; attachment: Attachment | null; ai_provider?: AiProvider; ai_sources?: AiSource[]; recalled: boolean;
   reply_to?: number;
   nonce?: string;
   expires_at?: number;
@@ -135,7 +135,7 @@ export type GroupInvite = { code: string; expires_at: number };
 export type GroupPreview = { id: string; title: string; member_count: number };
 export type PrivateSummary = {
   id: string; conversation: string | null; host: User; invited: User[]; participants: User[];
-  phase: "discovering" | "waiting" | "invited" | "authenticating" | "connected" | "missed" | "failed" | "ended";
+  phase: "discovering" | "waiting" | "invited" | "authenticating" | "connected" | "suspended" | "reconnecting" | "missed" | "failed" | "ended";
   open: boolean; hosted: boolean; unread: boolean;
 };
 export type PrivateList = { rooms: PrivateSummary[]; prompt: string | null };
@@ -182,6 +182,8 @@ export const api = {
   profileImageUrl: (id: string, version: string) => convertFileSrc(`profile_${id}_${version}`, "zibblu-media"),
   previewImageBytes: (id: string, profileVersion?: string) => invoke<ArrayBuffer>("preview_image_bytes", { id, profileVersion }),
   previewVideoCoverBytes: (id: string) => invoke<ArrayBuffer>("preview_video_cover_bytes", { id }),
+  uploadVideoCover: (id: string) => invoke<ArrayBuffer>("upload_video_cover", { id }),
+  privatePreview: (enabled: boolean) => invoke<void>("private_preview", { enabled }),
   uploadImageSize: (id: string) => invoke<ImageSize>("upload_image_size", { id }),
   readUpdate: (conversation: string, through?: number, sent?: number, viewed?: number) =>
     invoke<MessageReceipt | null>("read_update", { conversation, update: { through, sent: sent === undefined ? [] : [sent], viewed } }),
@@ -299,6 +301,8 @@ export const api = {
       targets,
       fileName,
     }),
+  viewerSaveEditedImage: (id: string, bytes: Uint8Array) =>
+    invoke<boolean>("viewer_save_edited_image", bytes, { headers: { "zibblu-source-id": id } }),
   save: (id: string) => invoke<Transfer | null>("save_attachment", { id }),
   openSaved: (id: string) => invoke<boolean>("open_saved_attachment", { id }),
   transfers: () => invoke<Transfer[]>("transfers"),

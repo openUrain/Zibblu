@@ -5,6 +5,7 @@ import type { Attachment, ImageSize, Message, Transfer } from "./api";
 import { canPreview, mediaKind, readAttachmentPage } from "./attachment-media";
 import { Blank, Dialog, usePage } from "./common";
 import { AttachmentDownload, SharedFile, TransferList, UploadOverlay } from "./files";
+import { t } from "./locale";
 import { thumbnailKey, useWorkspaceImage, videoCoverKey, WorkspaceImages } from "./workspace-image";
 
 type ChatMediaScope = {
@@ -95,7 +96,8 @@ function MediaTile({ message, open, fitImage, size: hint }: {
         + (attempt ? "&retry=" + attempt : "")} alt="" onLoad={() => setState("ready")} onError={() => setState("failed")} />)}
     {status === "failed" ? <span className="media-tile-fallback">
       {kind === "video" ? <Video size={22} /> : <Image size={22} />}
-      <span>{file.name}</span><small>{canPreview(file) ? (kind === "video" ? "Tap to play" : "Preview unavailable") : "Download to open"}</small>
+      <span>{file.name}</span><small>{canPreview(file) ? (kind === "video"
+        ? t("Play video", "播放视频") : t("Preview unavailable", "无法预览")) : t("Download to open", "下载后打开")}</small>
     </span> : <>
       {status === "loading" && <span className="media-tile-status" role="status" aria-label="Loading preview"><LoaderCircle className="preview-spinner" size={16} aria-hidden /></span>}
       {kind === "video" && status === "ready" && <span className="media-play" aria-hidden="true"><Play size={20} fill="currentColor" /></span>}
@@ -107,24 +109,44 @@ export function ChatAttachment({ message, transfer, onChanged, open, expired, up
   message: Message; transfer?: Transfer; onChanged: () => void; open: () => void; expired: boolean; upload?: Transfer;
 }) {
   const file = message.attachment!;
-  const fitImage = useContext(WorkspaceImages) !== undefined && mediaKind(file) === "image";
+  const workspace = useContext(WorkspaceImages);
+  const fitImage = workspace !== undefined && mediaKind(file) === "image";
   const [uploadSize, setUploadSize] = useState<ImageSize>();
+  const [uploadCover, setUploadCover] = useState<{ id: string; url: string }>();
+  const stagingVideo = !!upload && canPreview(file) && mediaKind(file) === "video" && navigator.userAgent.includes("Windows");
+  const readUploadCover = useCallback(() => api.uploadVideoCover(file.id), [file.id]);
+  const { url: cachedUploadCover } = useWorkspaceImage(
+    stagingVideo && workspace ? `upload-cover/${message.conversation_id}/${file.id}` : undefined,
+    file.id, undefined, Infinity, 0, true, readUploadCover,
+  );
   useEffect(() => {
     if (!upload || !fitImage || !canPreview(file)) return;
     let current = true;
     void api.uploadImageSize(file.id).then(size => { if (current) setUploadSize(size); }).catch(() => {});
     return () => { current = false; };
   }, [!!upload, fitImage, file.id]);
+  useEffect(() => {
+    if (!stagingVideo || workspace) return;
+    let current = true;
+    let url: string | undefined;
+    void api.uploadVideoCover(file.id).then(bytes => {
+      if (!current || !bytes.byteLength) return;
+      url = URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" }));
+      setUploadCover({ id: file.id, url });
+    }).catch(() => {});
+    return () => { current = false; if (url) URL.revokeObjectURL(url); };
+  }, [stagingVideo, !!workspace, file.id]);
   if (expired || !mediaKind(file) || !canPreview(file)) {
     const previewStatus = mediaKind(file) ? "Download to open" : undefined;
     return <SharedFile {...{ message, transfer, onChanged, previewStatus, expired, upload }} />;
   }
   const size = uploadSize ?? message.preview_size;
+  const cover = cachedUploadCover ?? (uploadCover?.id === file.id ? uploadCover.url : undefined);
   return <div className="chat-media">
-    {upload ? <div className="media-tile" data-fit-image={fitImage ? "" : undefined}
-      style={fitImage ? thumbnailStyle(size) : undefined}><span className="media-tile-fallback">
+    {upload ? <div className="media-tile" data-ready={cover ? "" : undefined} data-fit-image={fitImage ? "" : undefined}
+      style={fitImage ? thumbnailStyle(size) : undefined}>{cover ? <img src={cover} alt="" /> : <span className="media-tile-fallback">
       {mediaKind(file) === "video" ? <Video size={22} /> : <Image size={22} />}
-      <span>{file.name}</span></span><UploadOverlay upload={upload} /></div>
+      <span>{file.name}</span></span>}<UploadOverlay upload={upload} /></div>
       : <MediaTile key={file.id} message={message} open={open} fitImage={fitImage} size={size} />}
     {transfer && <AttachmentDownload file={file} transfer={transfer} onChanged={onChanged} hideSave />}
   </div>;

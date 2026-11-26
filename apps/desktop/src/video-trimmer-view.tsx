@@ -28,6 +28,7 @@ export function VideoTrimmer({
   thumbnails,
   onComplete,
   onRequestCancel,
+  onPendingEditChange,
 }: VideoTrimmerProps) {
   const durationSec = probe.duration_sec > 0 ? probe.duration_sec : 0;
   const computeInitial = () => clampTrimRange(
@@ -56,6 +57,10 @@ export function VideoTrimmer({
   rangeRef.current = range;
 
   const dirty = !trimRangesEqual(baselineRange, history.present);
+  useEffect(() => {
+    onPendingEditChange(!trimRangesEqual(baselineRange, range));
+    return () => onPendingEditChange(false);
+  }, [baselineRange, onPendingEditChange, range]);
 
   useEffect(() => {
     const initial = baselineRef.current.range;
@@ -369,7 +374,7 @@ export function VideoTrimmer({
         <div className="video-trimmer-actions">
           <button
             type="button"
-            className="button subtle small video-trimmer-cancel-btn"
+            className="button small video-trimmer-cancel-btn"
             onClick={() => onRequestCancel(dirty)}
           >
             {t("Cancel", "取消")}

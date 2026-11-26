@@ -48,6 +48,10 @@ Small, durable decisions only. Add a dated entry when an actual choice changes; 
 
 普通聊天视频的原片保留独立下载及校验语义。封面、压缩预览是原片的有期限独立资源，由现有在线服务异步处理，不引入额外消息或队列服务。衍生资源继承访问它的独立附件授权与期限，物理原片及衍生资源由转发引用共同保留；预览不比原片小或生成失败时保留原片下载。使用增量表和原有 PostgreSQL 分块存储、配额与 feed 锁，兼容旧客户端。客户端播放及缓存使用现有授权接口，见 [ARCHITECTURE](ARCHITECTURE.md#视频衍生资源)。
 
+## D-021 · Windows 私密聊天与 AI 自主检索
+
+[Issue #154](https://github.com/openUrain/Zibblu/issues/154) 确认同一联系人在 Windows 私密会话期间使用单一入口，不同联系人可独立并行。已同意的设备可在 LAN 暂时恢复时重新认证会话。AI 首次启用须披露外发范围，随后每次主动提交只授权当前普通会话，跨会话资料须单独同意。分享引用以接收者的当前访问权限为准。
+
 ## Open decisions
 
 1. Online-message encryption protocol and key lifecycle; do not claim E2EE until implemented.

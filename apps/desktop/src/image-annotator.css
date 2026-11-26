@@ -28,8 +28,17 @@
   cursor: default;
 }
 
-.image-annotator-canvas[data-tool="handle"] {
-  cursor: pointer;
+.image-stage[data-pannable] .image-annotator-canvas[data-tool="select"] { cursor: grab; }
+.image-annotator-canvas[data-tool="move"] { cursor: move; }
+.image-annotator-canvas[data-tool="moving"] { cursor: grabbing; }
+.image-annotator-canvas:is([data-tool="nw"], [data-tool="se"]) { cursor: nwse-resize; }
+.image-annotator-canvas:is([data-tool="ne"], [data-tool="sw"]) { cursor: nesw-resize; }
+.image-annotator-canvas:is([data-tool="n"], [data-tool="s"]) { cursor: ns-resize; }
+.image-annotator-canvas:is([data-tool="e"], [data-tool="w"]) { cursor: ew-resize; }
+.image-annotator-canvas[data-tool="rotate"] { cursor: alias; }
+.image-annotator-canvas:is([data-tool="start"], [data-tool="end"]) { cursor: move; }
+.image-annotator-canvas[data-tool="pen"] {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M3 21l2-6L17 3l4 4L9 19z' fill='%231d1d1f' stroke='white' stroke-width='1.5'/%3E%3C/svg%3E") 3 21, crosshair;
 }
 
 .image-annotator-canvas[data-tool="text"] {
@@ -47,21 +56,22 @@
 
 .image-annotator-text-input {
   position: absolute;
+  pointer-events: auto;
   z-index: 30;
   transform-origin: 0 0;
   width: auto;
-  min-height: 28px;
-  max-width: min(384px, 70vw);
   margin: 0;
-  padding: 4px 8px;
+  padding: 0;
   border: 1px solid var(--accent);
   border-radius: 4px;
   background: color-mix(in srgb, var(--panel) 88%, transparent);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   font-weight: 600;
   resize: none;
-  overflow: hidden;
-  white-space: pre;
+  box-sizing: content-box;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   outline: none;
   box-shadow: var(--shadow);
 }
@@ -69,7 +79,7 @@
 .image-annotator-toolbar {
   position: absolute;
   left: 50%;
-  bottom: 16px;
+  top: 8px;
   transform: translateX(-50%);
   z-index: 30;
   pointer-events: auto;
@@ -84,6 +94,10 @@
   border: 1px solid var(--line);
   border-radius: 8px;
   box-shadow: var(--shadow);
+}
+.image-annotator-toolbar .media-split-options {
+  max-height: min(144px, calc(100dvh - 120px));
+  overflow: auto;
 }
 
 .annotator-group {

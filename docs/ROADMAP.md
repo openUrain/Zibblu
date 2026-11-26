@@ -27,7 +27,7 @@ Scope:
 - Ghost control in direct and group chats, in-app full-window invitations, lower-right prompts when minimized on Windows, QR rooms, account-wide approval, and authenticated local transport.
 - Clear verified/private/failed states.
 - Memory-scoped conversation and session keys.
-- End/disconnect/timeout cleanup and view-independent sessions. Support routed internal subnets under an explicit company LAN policy.
+- View-independent sessions and cleanup on end or expiry. On Windows, approved two-party sessions may reconnect over an eligible LAN while both devices retain the session in memory. Support routed internal subnets under an explicit company LAN policy.
 - No server transcripts, no cloud AI, no private-content notifications or indexing.
 
 **Done when:** two LAN peers start by consent, exchange text, close and see no persisted private history; out-of-LAN/unreachable peers cannot silently send via cloud.
@@ -40,8 +40,8 @@ Scope:
 
 Scope:
 - User-configured AI providers and custom mention names.
-- Before every request, choose a bounded message range or selection; optionally choose exact files.
-- Preview what data goes to a remote provider, then send that snapshot only.
+- On Windows, first approve read-only autonomous retrieval for the configured provider. Each submitted question scopes retrieval to the current ordinary conversation and prompts separately before accessing a named other conversation.
+- Explicit selections send only the disclosed snapshot. Autonomous replies include verified sources, with source access checked when opening or sharing them.
 - Show response in chat according to an explicit visibility choice.
 - No file/chat mutation, arbitrary file system access, background access or private-mode cloud context.
 

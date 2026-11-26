@@ -10,6 +10,8 @@ use std::sync::{Arc, Weak};
 #[cfg(windows)]
 use tauri::{LogicalSize, Manager, PhysicalPosition, PhysicalSize};
 use tauri::{AppHandle, Emitter, State, WebviewWindow, ipc::InvokeBody};
+#[cfg(windows)]
+use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 use zibblu_core::{
     Attachment, Client, ConversationRequest, Direction, Directory, FileFilter, ForwardRequest,
@@ -18,6 +20,22 @@ use zibblu_core::{
 };
 
 pub(crate) const LABEL: &str = "image-viewer";
+
+#[cfg(windows)]
+pub(crate) fn release_closed_viewer(app: &AppHandle) {
+    let desktop = app.state::<Desktop>();
+    let scope = desktop.image_scope.write().expect("image scope").take();
+    if let Some(scope) = scope.filter(|scope| !scope.draft) {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let desktop = app.state::<Desktop>();
+            desktop.video_exports.cancel_for_attachment(scope.id).await;
+            if let Ok(client) = scope.client(&desktop).await {
+                let _ = client.cancel_original_video_download(scope.id).await;
+            }
+        });
+    }
+}
 
 pub(crate) fn close_deleted(app: &tauri::AppHandle, state: &Desktop, conversation: Uuid, seq: Option<i64>, include_drafts: bool) {
     #[cfg(windows)]
@@ -91,11 +109,17 @@ const MIN_VIEWER_WIDTH: f64 = 560.0;
 
 #[derive(Clone)]
 pub(crate) struct ImageScope {
+    generation: Uuid,
     client: Weak<Client>,
     conversation: Uuid,
     seq: i64,
     id: Uuid,
     draft: bool,
+}
+
+fn viewer_generation(state: &Desktop, id: Uuid) -> Result<Uuid> {
+    state.image_scope.read().expect("image scope").as_ref().filter(|scope| scope.id == id)
+        .map(|scope| scope.generation).context("The media viewer has closed")
 }
 
 impl ImageScope {
@@ -105,7 +129,7 @@ impl ImageScope {
         Ok(client)
     }
 
-    fn allows_media_file(file: &Attachment) -> bool {
+    pub(crate) fn allows_media_file(file: &Attachment) -> bool {
         let Some(mime) = file.preview_mime() else {
             return false;
         };
@@ -269,6 +293,7 @@ pub(crate) async fn open_draft_image_viewer(
         let (latest_conv, _) = state.drafts.draft_image_entry(&client, id)?;
         require(latest_conv == conversation, "This draft image is no longer available")?;
         let scope = ImageScope {
+            generation: Uuid::new_v4(),
             client: Arc::downgrade(&client),
             conversation,
             seq: 0,
@@ -296,35 +321,43 @@ pub(crate) async fn open_image_viewer(
             crate::chat_window::is_chat_or_main_window(window.label()),
             "Open an image from chat",
         )?;
-        let _opening = state.image_window.lock().await;
         let client = state.client().await?;
         let message = client.attachment(id).await?;
-        require(
-            crate::chat_window::window_allows_conversation(window.label(), message.conversation_id),
-            "Open this attachment from its own chat window",
-        )?;
-        let scope = ImageScope {
-            client: Arc::downgrade(&client),
-            conversation: message.conversation_id,
-            seq: message.seq,
-            id,
-            draft: false,
-        };
-        let file = scope
-            .image(&client)
-            .await?
-            .attachment
-            .context("Missing image")?;
-        let dimensions = image_dimensions(&client, message.conversation_id, message.seq, file).await;
-        require(state.is_current(&client).await, "The session has ended")?;
-        scope.image(&client).await?;
-        open_or_reuse_viewer(&window, &state, &client, scope, dimensions).await
+        open_chat_media(&window, &state, &client, &message, None).await
     }
     #[cfg(not(windows))]
     {
         let _ = (window, state, id);
         Err(anyhow::anyhow!("The standalone image viewer is available on Windows").into())
     }
+}
+
+#[cfg(windows)]
+pub(crate) async fn open_chat_media(
+    window: &WebviewWindow, state: &Desktop, client: &Arc<Client>, message: &Message,
+    source_origin: Option<Uuid>,
+) -> CommandResult<()> {
+    require(
+        crate::chat_window::window_allows_conversation(window.label(), message.conversation_id),
+        "Open this attachment from its own chat window",
+    )?;
+    let _opening = state.image_window.lock().await;
+    let scope = ImageScope {
+        generation: Uuid::new_v4(),
+        client: Arc::downgrade(client),
+        conversation: message.conversation_id,
+        seq: message.seq,
+        id: message.attachment.as_ref().context("Missing image")?.id,
+        draft: false,
+    };
+    let file = scope.image(client).await?.attachment.context("Missing image")?;
+    let dimensions = image_dimensions(client, message.conversation_id, message.seq, file).await;
+    require(state.is_current(client).await, "The session has ended")?;
+    scope.image(client).await?;
+    if let Some(origin) = source_origin {
+        crate::ai::ensure_available(state, client, origin, message.conversation_id).await?;
+    }
+    open_or_reuse_viewer(window, state, client, scope, dimensions).await
 }
 
 #[cfg(windows)]
@@ -636,8 +669,15 @@ pub(crate) async fn viewer_download_original_video(
     id: Uuid,
 ) -> CommandResult<OriginalDownloadStatus> {
     require(window.label() == LABEL, "Open the media viewer")?;
+    let generation = viewer_generation(&state, id)?;
     let client = authorize(&state, id).await?;
-    Ok(client.start_original_video_download(id).await?)
+    require(viewer_generation(&state, id)? == generation, "The media viewer has closed")?;
+    let download = client.start_original_video_download(id).await?;
+    if viewer_generation(&state, id).is_err() {
+        let _ = client.cancel_original_video_download(id).await;
+    }
+    require(viewer_generation(&state, id)? == generation, "The media viewer has closed")?;
+    Ok(download)
 }
 
 #[tauri::command]
@@ -733,8 +773,10 @@ pub(crate) async fn viewer_start_video_export(
     duration_sec: f64,
 ) -> CommandResult<crate::video_edit::VideoExportProgress> {
     require(window.label() == LABEL, "Open the media viewer")?;
+    let generation = viewer_generation(&state, id)?;
     let (client, path, _file) = authorize_video_original(&state, id).await?;
-    Ok(state
+    require(viewer_generation(&state, id)? == generation, "The media viewer has closed")?;
+    let export = state
         .video_exports
         .start_trim_export(
             id,
@@ -745,7 +787,12 @@ pub(crate) async fn viewer_start_video_export(
             end_sec,
             duration_sec,
         )
-        .await?)
+        .await?;
+    if viewer_generation(&state, id).ok() != Some(generation) {
+        state.video_exports.cleanup_entry(export.export_id).await;
+        return Err(anyhow::anyhow!("The media viewer has closed").into());
+    }
+    Ok(export)
 }
 
 #[tauri::command]
@@ -1006,6 +1053,54 @@ pub(crate) async fn viewer_send_annotated_image(
     Ok(items)
 }
 
+#[cfg(windows)]
+#[tauri::command]
+pub(crate) async fn viewer_save_edited_image(
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    request: tauri::ipc::Request<'_>,
+) -> CommandResult<bool> {
+    require(window.label() == LABEL, "Open the media viewer")?;
+    let id: Uuid = request.headers().get("zibblu-source-id").and_then(|value| value.to_str().ok())
+        .context("Missing image attachment")?.parse().context("Invalid image attachment")?;
+    let generation = viewer_generation(&state, id)?;
+    let client = authorize(&state, id).await?;
+    let source = client.preview_attachment(id).await?.attachment.context("Image is unavailable")?;
+    let InvokeBody::Raw(bytes) = request.body() else {
+        return Err(anyhow::anyhow!("Missing exported image payload").into());
+    };
+    require(!bytes.is_empty() && bytes.len() <= MAX_PASTED_IMAGE_BYTES, "Annotated images must be at most 16 MiB")?;
+    let owned = bytes.clone();
+    let display = window.clone();
+    let selection = tauri::async_runtime::spawn_blocking(move || {
+        let ext = match crate::images::verified_mime(&owned)? {
+            "image/png" => "png",
+            "image/jpeg" => "jpg",
+            _ => anyhow::bail!("The edited copy must be PNG or JPEG"),
+        };
+        let stem = source.name.rsplit_once('.').map_or(source.name.as_str(), |(stem, _)| stem);
+        let name = sanitize_viewer_filename(&format!("{stem}_annotated.{ext}"), "annotated", ext);
+        let path = display.dialog().file().set_parent(&display).set_title("Save edited copy")
+            .set_file_name(name).blocking_save_file().map(|path| path.into_path()).transpose()?;
+        Ok::<_, anyhow::Error>(path.map(|path| (path, owned)))
+    }).await.context("Save dialog was interrupted")??;
+    let Some((destination, bytes)) = selection else { return Ok(false); };
+    let current = authorize(&state, id).await?;
+    require(Arc::ptr_eq(&client, &current) && viewer_generation(&state, id)? == generation,
+        "The image viewer has closed")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::io::Write;
+        let parent = destination.parent().context("Choose a local directory")?;
+        let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+        temp.write_all(&bytes)?;
+        temp.as_file().sync_all()?;
+        temp.persist_noclobber(destination).map_err(|error| error.error)
+            .context("Choose a new filename for the edited copy")?;
+        Ok::<_, anyhow::Error>(())
+    }).await.context("Saving the edited copy was interrupted")??;
+    Ok(true)
+}
+
 #[tauri::command]
 pub(crate) async fn viewer_send_trimmed_video(
     app: AppHandle,
@@ -1070,6 +1165,7 @@ pub(crate) async fn image_viewer_step(
         #[cfg(not(windows))]
         let _ = bytes;
         let next = ImageScope {
+            generation: Uuid::new_v4(),
             id: next_id,
             ..selection.clone()
         };
@@ -1094,6 +1190,7 @@ pub(crate) async fn image_viewer_step(
     };
     let file = message.attachment.context("Missing image")?;
     let next = ImageScope {
+        generation: Uuid::new_v4(),
         seq: message.seq,
         id: file.id,
         ..selection.clone()

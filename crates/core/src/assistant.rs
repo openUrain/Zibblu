@@ -41,6 +41,17 @@ pub struct ModelDiscovery {
     pub models: Vec<String>,
 }
 
+pub struct AiToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+pub enum AiAgentTurn {
+    Calls { calls: Vec<AiToolCall>, replay: Vec<Value> },
+    Answer(String),
+}
+
 impl AiProvider {
     pub fn supports_image_input(self) -> bool {
         matches!(self, Self::OpenAi | Self::Grok)
@@ -122,6 +133,53 @@ impl AiProvider {
         let http = provider_client(Duration::from_secs(120))?;
         let request = self.request_parts(&http, base, model, key, &parts)?;
         exchange(&http, request, cancel).await
+    }
+
+    pub async fn agent_turn(
+        self,
+        base: &Url,
+        model: &str,
+        key: &str,
+        input: &[Value],
+        tools: &[Value],
+        require_tool: bool,
+    ) -> Result<AiAgentTurn> {
+        ensure!(serde_json::to_vec(input)?.len() <= MAX_INPUT_BYTES,
+            "AI retrieval reached its context limit. Ask a narrower question.");
+        let http = provider_client(Duration::from_secs(120))?;
+        let mut request = json!({
+            "model": model, "input": input, "tools": tools, "parallel_tool_calls": false,
+            "tool_choice": if require_tool { "required" } else { "auto" },
+            "max_output_tokens": 4096,
+        });
+        if self == Self::DeepSeek {
+            request["reasoning"] = json!({ "effort": "none" });
+        } else {
+            request["store"] = json!(false);
+        }
+        if self == Self::OpenAi {
+            request["include"] = json!(["reasoning.encrypted_content"]);
+        }
+        let response = http.post(base.join("responses")?).bearer_auth(key).json(&request).send().await
+            .map_err(|_| anyhow::anyhow!("Could not reach the AI provider"))?;
+        let body = response_body(response).await
+            .context("The configured provider and model must support Responses API function calls")?;
+        let response: Value = serde_json::from_slice(&body).context("Invalid AI provider response")?;
+        ensure!(response["status"].as_str().is_none_or(|status| status == "completed"),
+            "The model did not complete the requested response.");
+        let output = response["output"].as_array().context("The model did not return Responses API output")?;
+        let calls: Vec<_> = output.iter().filter(|item| item["type"] == "function_call").map(|item| {
+            let field = |key: &str| item[key].as_str().map(str::to_owned).context("Malformed model tool call");
+            Ok::<_, anyhow::Error>(AiToolCall { id: field("call_id")?, name: field("name")?, arguments: field("arguments")? })
+        }).collect::<Result<_>>()?;
+        if calls.is_empty() {
+            ensure!(!require_tool, "The selected model did not perform autonomous retrieval.");
+            Ok(AiAgentTurn::Answer(read_reply(&body)?))
+        } else {
+            ensure!(output.iter().all(|item| matches!(item["type"].as_str(), Some("message" | "reasoning" | "function_call"))),
+                "The model returned an unsupported action.");
+            Ok(AiAgentTurn::Calls { calls, replay: output.clone() })
+        }
     }
 
     #[cfg(test)]

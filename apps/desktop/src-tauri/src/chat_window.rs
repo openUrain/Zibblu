@@ -80,6 +80,11 @@ pub(crate) async fn open_chat_window(
     {
         let client = state.client().await?;
         let directory = client.directory().await?;
+        if directory.conversations.iter().any(|chat| chat.id == conversation && chat.title.is_none())
+            && state.private.lock().await.as_ref().is_some_and(|lobby| lobby.has_active_conversation(conversation))
+        {
+            return Err(anyhow::anyhow!("Open the active private conversation from the main chat list.").into());
+        }
         let title = conversation_title(&directory, client.user.id, conversation)
             .context("This conversation is unavailable")?;
         let label = window_label(conversation);

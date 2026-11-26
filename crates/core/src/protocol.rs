@@ -249,6 +249,8 @@ pub struct Message {
     pub attachment: Option<Attachment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_provider: Option<AiProvider>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ai_sources: Vec<PublishedAiSource>,
     #[serde(default)]
     pub recalled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -311,6 +313,24 @@ pub struct PublishAiReply {
     pub text: String,
     pub created_at: i64,
     pub readers: Vec<Uuid>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<AiSourceRef>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AiSourceRef {
+    pub number: usize,
+    pub seq: i64,
+    pub attachment_id: Option<Uuid>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PublishedAiSource {
+    #[serde(flatten)]
+    pub source: AiSourceRef,
+    pub conversation_id: Uuid,
+    pub label: String,
+    pub created_at: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

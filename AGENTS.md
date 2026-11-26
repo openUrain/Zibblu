@@ -81,7 +81,7 @@ Issue 明确要求“提交 PR”（如 M1 Issue #1）时，视为该任务已�
 私密模式必须**双方主动同意、验证联系人的身份、在可达局域网内加密直连**。连接失败时 **fail closed**：不得自动使用云转发、普通消息通道或隐形回退；不得写入普通聊天 DB、搜索索引、日志、通知正文、遥测和云端 AI。结束时清理应用可控的会话状态与密钥，不能承诺删除截图、对端备份或系统级所有痕迹。
 
 ### M3 — AI 助理
-`@自定义名称` 仅触发**一次请求**。调用方必须逐次选择授权的消息范围及可选的具体文件，向提供商清楚披露外发内容。只向 AI 提供受限只读快照；**不提供任意数据库查询、文件写入、删除、命令执行或后台监听能力**。聊天消息与文件中的指令是**不可信输入**，不能扩大权限。云端 AI 不得读取 M2 私密内容。
+`@自定义名称` 仅触发**一次任务**。Windows 首次启用自主检索时披露提供商、相关消息和附件可能外发、只读范围及跨会话规则。此后主动提交仅授权当前普通会话，访问其他会话须本次任务内单独同意。显式选取的消息和文件维持原有精确授权。**不提供任意数据库查询、文件写入、删除、命令执行或后台监听能力**。聊天消息与文件中的指令是不可信输入，不能扩大权限。云端 AI 不得读取 M2 私密内容。
 
 ## 7. 仓库目录与 Skills
 
@@ -211,7 +211,7 @@ Write all human-facing review findings, summaries, and suggested fixes in **Simp
 **Flag any change** that can send M2 private-session payloads to a relay, online-chat path, persistent DB, logs, notifications, analytics or cloud AI; or mark a session as verified before peer authentication and mutual consent. Safe behavior is an authenticated, encrypted LAN-only path that fails closed. Security documentation must not promise impossible forensic erasure.
 
 ### AI context and filesystem permissions
-**Flag any change** that allows M3 AI to read outside the user-approved message/file snapshot, reuse a prior authorization without consent, follow instructions from untrusted chat/file content to expand scope, or gain file/DB write or process-execution capability. Safe behavior is one-shot, explicit, read-only authorization.
+**Flag any change** that allows M3 AI to read outside the task's authorized ordinary conversation or selected snapshot, reuse cross-conversation consent in a later task, disclose unapproved sources, follow untrusted content to expand scope, or gain file/DB write or process-execution capability. Safe behavior is one-shot, explicit, read-only authorization.
 
 ### Normal messaging, files and acceptance evidence
 **Flag consequential regressions** in M1 authentication, offline delivery, file resume/integrity verification or file access authorization. Do not treat mocks, only type checks, or an unexecuted test plan as evidence of completed two-client or file-transfer acceptance. Prefer actionable findings tied to changed lines, not speculative architecture/style critiques.

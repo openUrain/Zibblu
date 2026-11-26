@@ -89,12 +89,13 @@ async fn maintain_lobby(app: &AppHandle, client: &Client) {
             .as_secs() as i64;
         {
             let mut current = desktop.private.lock().await;
-            if (current
-                .as_ref()
-                .is_some_and(|lobby| !lobby.network_matches())
-                || credential
-                    .as_ref()
-                    .is_some_and(|cert| cert.expires_at <= now))
+            let expired = credential.as_ref().is_some_and(|cert| cert.expires_at <= now);
+            let moved = current.as_ref().is_some_and(|lobby| !lobby.network_matches());
+            #[cfg(windows)]
+            if moved && !expired && let Some(lobby) = current.as_ref() {
+                lobby.suspend_transport();
+            }
+            if (expired || !cfg!(windows) && moved)
                 && let Some(lobby) = current.take()
             {
                 lobby.shutdown();
@@ -125,6 +126,15 @@ async fn maintain_lobby(app: &AppHandle, client: &Client) {
             None
         };
         let mut current = desktop.private.lock().await;
+        #[cfg(windows)]
+        if let Some(lobby) = current.as_ref() && !lobby.network_matches() {
+            *desktop.discovery.lock().expect("discovery status") =
+                if lobby.restore_transport(client.server().to_owned()).is_ok() {
+                    DiscoveryStatus::Ready
+                } else {
+                    DiscoveryStatus::Starting
+                };
+        }
         if current.is_none() {
             let lobby = match (
                 credential.as_ref().filter(|cert| cert.expires_at > now),
@@ -146,6 +156,11 @@ async fn maintain_lobby(app: &AppHandle, client: &Client) {
             } else {
                 DiscoveryStatus::DiscoveryFailed
             };
+            #[cfg(windows)]
+            if let Some(lobby) = &lobby {
+                let app = app.clone();
+                lobby.on_exclusive(move |conversation| crate::ai::suspend_conversation(&app, conversation));
+            }
             *current = lobby.map(Arc::new);
         }
     }
@@ -159,6 +174,11 @@ async fn run_prompts(app: &AppHandle) {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
+        #[cfg(windows)]
+        {
+            desktop.update_tray(app, None).await;
+            close_exclusive_chat_windows(app, &desktop).await;
+        }
         let invitation = if prompt_window(app, &desktop) == Some(INVITATION) {
             desktop.private.lock().await.as_ref().and_then(|lobby| {
                 lobby
@@ -185,6 +205,23 @@ async fn run_prompts(app: &AppHandle) {
                 shown = Some(invitation.id);
             }
             _ => {}
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn close_exclusive_chat_windows(app: &AppHandle, desktop: &Desktop) {
+    let open: Vec<_> = app.webview_windows().keys()
+        .filter_map(|label| crate::chat_window::conversation_id_for_label(label)).collect();
+    if open.is_empty() { return; }
+    let Some(lobby) = desktop.private.lock().await.clone() else { return; };
+    let active: Vec<_> = open.into_iter().filter(|id| lobby.has_active_conversation(*id)).collect();
+    if active.is_empty() { return; }
+    let Ok(client) = desktop.client().await else { return; };
+    let Ok(directory) = client.directory().await else { return; };
+    for chat in directory.conversations {
+        if chat.title.is_none() && active.contains(&chat.id) {
+            crate::chat_window::close_chat_window(app, chat.id);
         }
     }
 }

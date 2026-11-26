@@ -29,6 +29,22 @@
   flex: none;
 }
 
+.storage-volume {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--line);
+}
+.storage-volume-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.storage-volume-actions { justify-content: flex-end; }
+.storage-volume-bar { display: flex; height: 8px; overflow: hidden; border-radius: 4px; }
+.storage-volume-bar > :nth-child(1), .storage-volume-legend > :nth-child(1)::before { background: var(--accent); }
+.storage-volume-bar > :nth-child(2), .storage-volume-legend > :nth-child(2)::before { background: var(--muted); }
+.storage-volume-bar > :nth-child(3), .storage-volume-legend > :nth-child(3)::before { background: var(--line); }
+.storage-volume-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; list-style: none; padding: 0; margin: 0; }
+.storage-volume-legend li { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+.storage-volume-legend li::before { content: ""; width: 8px; height: 8px; border-radius: 2px; }
+
 .storage-status-line {
   min-height: 24px;
   padding: 4px 12px 8px;

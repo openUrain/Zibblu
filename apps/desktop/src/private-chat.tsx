@@ -2,27 +2,32 @@ import { FloatingField } from "./floating-field";
 import { RichMessage } from "./rich-message";
 import { ArrowDown, ArrowLeft, Copy, Ghost, QrCode, Send, UserPlus } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
-import { Fragment, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, errorMessage } from "./api";
 import { copyText, useRowMenu } from "./context-menu";
 import { ios } from "./ios";
 import { t } from "./locale";
-import type { Directory, Discovery, NearbyDevice, PrivateList, PrivateMessage, PrivateSummary, User } from "./api";
+import { windows } from "./window-chrome";
+import type { Conversation, Directory, Discovery, NearbyDevice, PrivateList, PrivateMessage, PrivateSummary, User } from "./api";
 import { Avatar, Blank, Choice, Dialog, People, PersonAvatar, displayName, messageTimeLabel, startsTimeGroup } from "./common";
 
 export function usePrivateRooms() {
   const [list, setList] = useState<PrivateList>({ rooms: [], prompt: null });
+  const generation = useRef(0);
+  const forget = useCallback((id: string) => {
+    generation.current += 1;
+    setList(current => ({ rooms: current.rooms.filter(room => room.id !== id), prompt: current.prompt === id ? null : current.prompt }));
+  }, []);
   useEffect(() => {
     let disposed = false;
-    let generation = 0;
     let timer: number | undefined;
     const reset = ios ? listen("ios-private-reset", () => {
-      generation += 1;
+      generation.current += 1;
       setList({ rooms: [], prompt: null });
     }) : undefined;
     const accepted = listen<{ id: string }>("private-invitation-accepted", ({ payload }) => {
-      generation += 1;
+      generation.current += 1;
       setList(current => ({
         rooms: current.rooms.map(room => room.id === payload.id && room.phase === "invited"
           ? { ...room, phase: "authenticating" } : room),
@@ -30,10 +35,10 @@ export function usePrivateRooms() {
       }));
     });
     async function refresh() {
-      const current = generation;
+      const current = generation.current;
       try {
         const next = await api.privateRooms();
-        if (!disposed && current === generation) setList(next);
+        if (!disposed && current === generation.current) setList(next);
       } catch {
         // A failed IPC read does not report a room ending.
       } finally {
@@ -48,7 +53,16 @@ export function usePrivateRooms() {
       void accepted.then(unlisten => unlisten());
     };
   }, []);
-  return list;
+  return { ...list, forget };
+}
+
+export function privateSessionActive(room: PrivateSummary) {
+  return room.phase === "connected" || room.phase === "suspended" || room.phase === "reconnecting";
+}
+
+export function exclusivePrivateRoom(rooms: PrivateSummary[], chat: Conversation | undefined) {
+  if (!windows || !chat || chat.title != null) return undefined;
+  return rooms.find(room => room.conversation === chat.id && privateSessionActive(room));
 }
 
 export function PrivateInvitationWindow() {
@@ -76,6 +90,8 @@ export const privatePhaseLabel: Record<PrivateSummary["phase"], string> = {
   invited: "Invitation",
   authenticating: "Verifying account consent",
   connected: "Connected",
+  suspended: t("LAN connection interrupted", "局域网连接已中断"),
+  reconnecting: t("Reconnecting on LAN", "正在重新连接局域网"),
   missed: "Missed invitation",
   failed: "Connection interrupted",
   ended: "Ended",
@@ -217,7 +233,7 @@ export function NearbyDevices({ own, close, invited }: {
 export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isContact, onClosed, switchMode }: {
   id: string; own: User; back: () => void; showCode: (id: string) => Promise<void>;
   draft: string; setDraft: (change: (draft: string) => string) => void; isContact: (id: string) => boolean;
-  onClosed: () => void; switchMode?: () => void;
+  onClosed: (invalidated?: boolean) => void; switchMode?: () => void;
 }) {
   const { remarks, open } = useContext(People);
   const messageMenu = useRowMenu<HTMLDivElement>();
@@ -237,6 +253,17 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
   const closeRoom = useRef(onClosed);
   closeRoom.current = onClosed;
   const connected = room?.phase === "connected";
+  const [previewReady, setPreviewReady] = useState(!windows);
+  useEffect(() => {
+    if (!windows) return;
+    let current = true;
+    void api.privatePreview(true).then(() => { if (current) setPreviewReady(true); })
+      .catch(error => { if (current) setFailure(errorMessage(error)); });
+    return () => {
+      current = false;
+      void api.privatePreview(false).catch(() => {});
+    };
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -246,7 +273,7 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
     function finish() {
       disposed = true;
       setMessages([]);
-      closeRoom.current();
+      closeRoom.current(true);
     }
     async function poll() {
       try {
@@ -261,7 +288,7 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
           setConnectionId(connection);
           after = 0;
           setMessages([]);
-          if (latestAtOpen.current !== undefined) clearDraft.current(() => "");
+          if (!windows && latestAtOpen.current !== undefined) clearDraft.current(() => "");
           latestAtOpen.current = undefined;
         }
         const { messages: incoming, ...summary } = result;
@@ -270,7 +297,7 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
           return;
         }
         setRoom(summary);
-        if (summary.phase !== "connected") {
+        if (summary.phase !== "connected" && !(windows && privateSessionActive(summary))) {
           setMessages([]);
           clearDraft.current(() => "");
         } else if (incoming.length) {
@@ -354,8 +381,8 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
         : <Ghost className="private-ghost" size={22} aria-hidden="true" />}
       <div className="chat-heading">
         <h2>{room ? privateTitle(room, own.id, remarks) : "Private chat"}</h2>
-        <span role="status">{connected ? "Verified private connection" : "LAN only"}
-          {connected ? " · LAN only" : ""}{room?.open ? " · QR access" : ""}</span>
+        <span role="status">{connected ? t("Verified private connection", "已验证私密连接") : room ? privatePhaseLabel[room.phase] : ""}
+          {" · "}{t("LAN only", "仅局域网")}{room?.open ? " · QR access" : ""}</span>
       </div>
       {room?.open && room.hosted && <button className="icon-button" title="Share private QR code"
         aria-label="Share private QR code" onClick={() => void act(() => showCode(id))}><QrCode size={20} /></button>}
@@ -364,7 +391,7 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
         closeRoom.current();
       })}>End session</button>}
     </header>
-    {connected ? <>
+    {previewReady && connected ? <>
       <div className="private-people" aria-label="Current participants">
         {people.map(person => <button className="person-link" key={person.id} onClick={() => open?.(person)}
           title={person.id !== own.id && !isContact(person.id) ? "View profile or add contact" : "View profile"}>

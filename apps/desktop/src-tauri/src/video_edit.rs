@@ -265,6 +265,50 @@ async fn extract_single_thumbnail(
     Ok(bytes)
 }
 
+#[cfg(windows)]
+pub async fn extract_video_cover(path: &Path, bundled_dir: Option<&Path>) -> Result<Vec<u8>> {
+    const SCALE: &str = "scale=w='min(iw,640)':h='min(ih,640)':force_original_aspect_ratio=decrease:force_divisible_by=2";
+    let filtered = format!("blackframe=amount=0:threshold=24,metadata=mode=select:key=lavfi.blackframe.pblack:function=less:value=98,{SCALE}");
+    if let Ok(bytes) = render_video_cover(path, bundled_dir, &filtered).await
+        && !bytes.is_empty()
+    {
+        return Ok(bytes);
+    }
+    render_video_cover(path, bundled_dir, SCALE).await
+}
+
+#[cfg(windows)]
+async fn render_video_cover(path: &Path, bundled_dir: Option<&Path>, filter: &str) -> Result<Vec<u8>> {
+    let mut cmd = new_media_command("ffmpeg", bundled_dir);
+    cmd.args([
+        "-nostdin", "-v", "error", "-max_alloc", "134217728",
+        "-protocol_whitelist", "file", "-format_whitelist", "mov,matroska,webm,avi",
+        "-max_streams", "32", "-probesize", "8388608", "-analyzeduration", "5000000",
+        "-threads", "2", "-max_pixels", "8294400", "-i",
+    ])
+    .arg(path)
+    .args([
+        "-map", "0:V:0", "-an", "-sn", "-dn", "-map_metadata", "-1", "-filter_threads", "1",
+        "-vf", filter,
+        "-frames:v", "1", "-pix_fmt", "yuvj420p", "-q:v", "4", "-threads", "2",
+        "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+    ])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null())
+    .kill_on_drop(true);
+    timeout(Duration::from_secs(THUMBNAIL_TIMEOUT_SECS), async {
+        let mut child = cmd.spawn().map_err(|err| map_spawn_error("ffmpeg", err))?;
+        let stdout = child.stdout.take().context("Missing ffmpeg stdout")?;
+        let mut bytes = Vec::new();
+        stdout.take((MAX_THUMBNAIL_BYTES + 1) as u64).read_to_end(&mut bytes).await?;
+        ensure!(bytes.len() <= MAX_THUMBNAIL_BYTES, "Video cover exceeded the size limit");
+        ensure!(child.wait().await?.success(), "Video cover generation failed");
+        Ok(bytes)
+    })
+    .await
+    .context("Timed out generating video cover")?
+}
+
 pub async fn extract_thumbnails(
     path: &Path,
     count: usize,
@@ -630,13 +674,13 @@ impl VideoExportRegistry {
             let map = self.entries.lock().expect("video export registry");
             map.iter()
                 .filter(|(_, entry)| {
-                    entry.attachment_id == attachment_id && entry.progress.status == "running"
+                    entry.attachment_id == attachment_id
                 })
                 .map(|(id, _)| *id)
                 .collect()
         };
         for id in ids {
-            let _ = self.cancel(id).await;
+            self.cleanup_entry(id).await;
         }
     }
 

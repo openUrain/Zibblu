@@ -13,8 +13,10 @@ import type {
 import { api, errorMessage } from "./api";
 import { decimalSize, splitFileName } from "./file-labels";
 import { actions, t } from "./locale";
+import { windows } from "./window-chrome";
+import { RichMessage } from "./rich-message";
 import type { Attachment, Message, User } from "./api";
-import { bytes, Choice, Dialog, People, displayName } from "./common";
+import { bytes, Choice, Dialog, People, PersonAvatar, displayName } from "./common";
 import "./ai.css";
 
 const MAX_MESSAGES = 60;
@@ -42,10 +44,12 @@ export function AssistantSettings({ assistants, failure, changed }: {
   assistants: Assistant[]; failure: string; changed: (assistants: Assistant[]) => void;
 }) {
   const [editing, setEditing] = useState<AiProvider>();
+  const [agentError, setAgentError] = useState("");
   return <div className="surface settings-card ai-settings">
     <h2><Bot size={20} /> AI assistants</h2>
     <p className="muted">Give a provider an @name to ask it from a normal chat.</p>
     {failure && <p className="inline-error" role="alert">{failure}</p>}
+    {agentError && <p className="inline-error" role="alert">{agentError}</p>}
     {(Object.keys(aiProviders) as AiProvider[]).map(provider => {
       const details = aiProviders[provider];
       const assistant = assistants.find(entry => entry.provider === provider);
@@ -58,6 +62,13 @@ export function AssistantSettings({ assistants, failure, changed }: {
           </span>
           <ChevronRight size={16} />
         </button>
+        {windows && assistant?.agent_enabled && <label className="settings-row">
+          <span>{t("Autonomous retrieval", "自主检索")}</span>
+          <input type="checkbox" role="switch" checked={true} onChange={() => {
+            setAgentError("");
+            void ai.enableAgent(assistant, false).then(changed).catch(error => setAgentError(errorMessage(error)));
+          }} />
+        </label>}
         {editing === provider && <AssistantEditor provider={provider} assistant={assistant} saved={next => {
           changed(next);
           setEditing(undefined);
@@ -351,8 +362,8 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
   </Dialog>;
 }
 
-export function AiPromptBubble({ prompt, assistantName }: {
-  prompt: AiPrompt; assistantName?: string;
+export function AiPromptBubble({ prompt, assistantName, sender }: {
+  prompt: AiPrompt; assistantName?: string; sender: User;
 }) {
   const target = assistantName ? `@${assistantName}` : aiProviders[prompt.provider].label;
   return <div className="message-row mine ai-prompt-row">
@@ -370,12 +381,27 @@ export function AiPromptBubble({ prompt, assistantName }: {
         </small>
       </div>
     </div>
+    <span className="message-avatar"><PersonAvatar user={sender} /></span>
   </div>;
 }
 
 export function AiJobBubble({ job, onCancel, onDismiss }: {
   job: AiJob; onCancel: (jobId: string) => void; onDismiss?: (jobId: string) => void;
 }) {
+  const [busy, setBusy] = useState(false);
+  const [accessError, setAccessError] = useState("");
+  async function answerAccess(accept: boolean) {
+    if (!job.access || busy) return;
+    setBusy(true);
+    setAccessError("");
+    try { await ai.answerAccess(job.id, job.access.id, accept); }
+    catch (error) { setAccessError(errorMessage(error)); }
+    finally { setBusy(false); }
+  }
+  const phaseLabel = job.phase === "searching" ? t("Searching messages…", "正在检索消息…")
+    : job.phase === "downloading" ? t("Downloading attachment…", "正在下载附件…")
+    : job.phase === "preparing" ? t("Analyzing attachment…", "正在分析附件…")
+    : t("Generating reply…", "正在生成回复…");
   const failed = job.phase === "failed";
   const progressLabel = job.phase === "downloading" && job.progress
     ? `${decimalSize(job.progress[0])} / ${decimalSize(job.progress[1])}`
@@ -396,12 +422,22 @@ export function AiJobBubble({ job, onCancel, onDismiss }: {
           {onDismiss && <button type="button" className="icon-button ai-job-cancel"
             aria-label={t("Dismiss failed AI status", "关闭失败提示")} title={t("Dismiss", "关闭")}
             onClick={() => onDismiss(job.id)}><X size={15} /></button>}
+        </div> : job.access ? <div className="bubble ai-access-card">
+          <strong>{t("Read another conversation?", "允许读取另一个会话？")} · {job.access.name}</strong>
+          <p>{t("For this task, relevant ordinary messages and attachments from this conversation may be sent to", "本次任务可能向以下提供商发送该会话中相关的普通消息和附件")}</p>
+          <small>{job.access.endpoint} · {t("Only you", "仅自己可见")}</small>
+          {accessError && <p className="inline-error" role="alert">{accessError}</p>}
+          <div className="dialog-actions">
+            <button type="button" className="button subtle" onClick={() => onCancel(job.id)}>{actions.cancel}</button>
+            <button type="button" className="button subtle" disabled={busy} onClick={() => void answerAccess(false)}>{t("Deny", "拒绝")}</button>
+            <button type="button" className="button primary" disabled={busy} onClick={() => void answerAccess(true)}>{t("Allow this time", "仅允许本次")}</button>
+          </div>
         </div> : <div className="bubble ai-job-bubble">
           <span className="ai-dot-spinner" aria-hidden="true">
             <i /><i /><i /><i /><i /><i /><i /><i />
           </span>
           <div className="ai-job-copy" role="status" aria-live="polite">
-            <span className="ai-job-primary">{t("Generating reply...", "生成回复中...")}</span>
+            <span className="ai-job-primary">{phaseLabel}</span>
             {progressLabel && <small className="ai-job-progress">{progressLabel}</small>}
           </div>
           <button type="button" className="icon-button ai-job-cancel"
@@ -421,7 +457,8 @@ export function ShareAiReply({ reply, members, close, published }: {
   const [posting, setPosting] = useState(false);
   const [failure, setFailure] = useState("");
   const lockedReaders = useRef<string[] | undefined>(undefined);
-  const tooLong = new TextEncoder().encode(reply.text.trim()).length > 24 * 1024;
+  const shareText = reply.text;
+  const tooLong = new TextEncoder().encode(shareText.trim()).length > 24 * 1024;
 
   async function post() {
     setPosting(true);
@@ -429,7 +466,7 @@ export function ShareAiReply({ reply, members, close, published }: {
     try {
       lockedReaders.current ??= readers;
       await api.publishAiReply(reply.conversation_id, {
-        nonce: reply.id, provider: reply.provider, text: reply.text, created_at: reply.created_at, readers: lockedReaders.current,
+        nonce: reply.id, provider: reply.provider, text: shareText, created_at: reply.created_at, readers: lockedReaders.current,
       });
       await published();
     } catch (error) { setFailure(errorMessage(error)); }
@@ -438,6 +475,10 @@ export function ShareAiReply({ reply, members, close, published }: {
 
   return <Dialog title="Visible to" mobilePage closeDisabled={posting} close={close}>
     <p className="muted">Share this reply with the selected chat members. You will also be able to see it.</p>
+    {!!reply.sources?.length && <><p className="muted">{t(
+      "Generated text may contain information from other conversations. Review the reply before sharing. Each recipient sees only sources they can access.",
+      "生成文本可能包含其他会话的信息。请核对正文后再分享。每位接收者只会看到有权限访问的来源。",
+    )}</p><RichMessage text={shareText} /></>}
     <fieldset className="dialog-contacts" disabled={posting || !!lockedReaders.current}>
       <legend>Chat members</legend>
       {members.map(user => <Choice key={user.id} checked={readers.includes(user.id)} onChange={event => {

@@ -113,6 +113,8 @@ impl Client {
              FROM outbox WHERE conversation_id IS NOT NULL GROUP BY conversation_id",
             "SELECT conversation_id, CAST(coalesce(sum(length(CAST(prompt_text AS BLOB))), 0) AS INTEGER)
              FROM ai_local_prompts GROUP BY conversation_id",
+            "SELECT p.conversation_id, CAST(sum(length(CAST(r.text AS BLOB)) + length(CAST(r.sources AS BLOB))) AS INTEGER)
+             FROM ai_local_replies r JOIN ai_local_prompts p ON p.id = r.prompt_id GROUP BY p.conversation_id",
             "SELECT i.conversation_id, CAST(coalesce(sum(length(p.bytes)), 0) AS INTEGER)
              FROM media_previews p JOIN inbox i ON i.seq = p.message_seq
              GROUP BY i.conversation_id",
@@ -263,7 +265,7 @@ fn scan_filesystem(
     download_transfers: &HashMap<Uuid, (Uuid, bool)>,
     local_file_convs: &HashMap<String, Uuid>,
 ) -> FsScanResult {
-    let app_bytes = app_dir.map_or(0, scan_app_bytes);
+    let app_bytes = app_dir.map_or(0, |dir| scan_app_bytes(dir, profile_dir));
 
     let database_bytes = ["chat.sqlite3", "chat.sqlite3-wal", "chat.sqlite3-shm"]
         .iter()
@@ -445,7 +447,7 @@ fn scan_filesystem(
     }
 }
 
-fn scan_app_bytes(dir: &Path) -> u64 {
+fn scan_app_bytes(dir: &Path, profile_dir: &Path) -> u64 {
     let dir_fs = media_store::fs_path(dir);
     let Ok(dir_meta) = fs::symlink_metadata(&dir_fs) else {
         return 0;
@@ -463,7 +465,7 @@ fn scan_app_bytes(dir: &Path) -> u64 {
         .count();
 
     if cargo_markers < 2 {
-        return dir_size_no_links(&dir_fs);
+        return dir_size_excluding(&dir_fs, Some(profile_dir));
     }
 
     // In Cargo target/debug, count only the app binary, *.dll, and ffmpeg/ resources.
@@ -551,7 +553,12 @@ fn file_size_no_link(path: &Path) -> u64 {
 }
 
 fn dir_size_no_links(root: &Path) -> u64 {
+    dir_size_excluding(root, None)
+}
+
+fn dir_size_excluding(root: &Path, excluded: Option<&Path>) -> u64 {
     let root_fs = media_store::fs_path(root);
+    let excluded = excluded.map(media_store::fs_path);
     let Ok(root_meta) = fs::symlink_metadata(&root_fs) else {
         return 0;
     };
@@ -565,7 +572,8 @@ fn dir_size_no_links(root: &Path) -> u64 {
         .follow_links(false)
         .into_iter()
         .filter_entry(|entry| {
-            fs::symlink_metadata(entry.path())
+            !excluded.as_deref().is_some_and(|path| entry.path() == path)
+                && fs::symlink_metadata(entry.path())
                 .is_ok_and(|meta| !staging::is_link(&meta))
         });
 
@@ -650,6 +658,7 @@ mod tests {
                 sha256: sha256_hex(bytes),
             }),
             ai_provider: None,
+            ai_sources: Vec::new(),
             recalled: false,
             reply_to: None,
             nonce: None,

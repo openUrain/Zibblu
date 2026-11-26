@@ -37,6 +37,8 @@ pub(crate) struct Desktop {
     #[cfg(target_os = "ios")]
     pub(crate) private_generation: std::sync::atomic::AtomicU64,
     private_worker: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    #[cfg(windows)]
+    ordinary_unread: std::sync::atomic::AtomicBool,
     attachment_offer: StdMutex<Option<(Uuid, Vec<PathBuf>)>>,
     pub(crate) drafts: crate::attachment_drafts::AttachmentDrafts,
     pub(crate) image_scope: std::sync::RwLock<Option<crate::image_viewer::ImageScope>>,
@@ -62,6 +64,8 @@ impl Desktop {
             #[cfg(target_os = "ios")]
             private_generation: std::sync::atomic::AtomicU64::new(0),
             private_worker: Mutex::new(None),
+            #[cfg(windows)]
+            ordinary_unread: Default::default(),
             attachment_offer: StdMutex::new(None),
             drafts: Default::default(),
             image_scope: Default::default(),
@@ -287,6 +291,11 @@ impl Desktop {
             let _ = task.await;
         }
         self.close_private(app).await;
+        #[cfg(windows)]
+        {
+            self.ordinary_unread.store(false, std::sync::atomic::Ordering::Relaxed);
+            crate::windows_shell::set_tray_unread(app, false);
+        }
         *self.attachment_offer.lock().expect("attachment offer") = None;
         self.drafts.clear();
         let revoked = match session.take() {
@@ -661,8 +670,16 @@ pub(crate) async fn sync(app: AppHandle, state: State<'_, Desktop>) -> Result<Sy
         }
         result => result?,
     };
+    #[cfg(windows)]
+    state.update_tray(&app, Some(&update.directory)).await;
     if let Some(lobby) = state.private.lock().await.as_ref() {
         lobby.set_memberships(crate::private_runtime::memberships(&client.membership_directory().await?));
+        #[cfg(windows)]
+        for chat in &update.directory.conversations {
+            if chat.title.is_none() && lobby.has_active_conversation(chat.id) {
+                crate::chat_window::close_chat_window(&app, chat.id);
+            }
+        }
     }
     crate::image_viewer::close_recalled(&app, &state, &update.recalled, &update.deleted);
     if state
@@ -686,8 +703,37 @@ pub(crate) async fn membership_conversations(state: State<'_, Desktop>) -> Resul
 }
 
 #[tauri::command]
-pub(crate) async fn local_update(state: State<'_, Desktop>) -> Result<SyncUpdate> {
-    Ok(state.client().await?.local_update().await?)
+pub(crate) async fn local_update(app: AppHandle, state: State<'_, Desktop>) -> Result<SyncUpdate> {
+    #[cfg(windows)]
+    {
+        let session = state.session.lock().await;
+        let client = session.as_ref().context("Sign in first")?;
+        let update = client.local_update().await?;
+        state.update_tray(&app, Some(&update.directory)).await;
+        Ok(update)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Ok(state.client().await?.local_update().await?)
+    }
+}
+
+#[cfg(windows)]
+impl Desktop {
+    pub(crate) async fn update_tray(&self, app: &AppHandle, directory: Option<&Directory>) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let lobby = self.private.lock().await;
+        if let Some(directory) = directory {
+            self.ordinary_unread.store(
+                directory.conversations.iter().any(|chat| chat.unread > 0 || chat.manual_unread),
+                Relaxed,
+            );
+        }
+        let unread = self.ordinary_unread.load(Relaxed)
+            || lobby.as_ref().is_some_and(|lobby| lobby.has_unread());
+        crate::windows_shell::set_tray_unread(app, unread);
+    }
 }
 
 #[tauri::command]
@@ -1097,13 +1143,20 @@ pub(crate) async fn publish_ai_reply(
     app: AppHandle,
     state: State<'_, Desktop>,
     conversation: Uuid,
-    reply: PublishAiReply,
+    mut reply: PublishAiReply,
 ) -> Result<()> {
-    state
-        .client()
-        .await?
-        .publish_ai_reply(conversation, reply)
-        .await?;
+    let client = state.client().await?;
+    #[cfg(windows)]
+    {
+        crate::ai::ensure_available(&state, &client, conversation, conversation).await?;
+        reply.sources = client.ai_reply(reply.nonce).await?
+            .filter(|entry| entry.conversation_id == conversation && entry.text == reply.text)
+            .map(|entry| entry.sources.iter().map(zibblu_core::AiLocalSource::reference).collect())
+            .unwrap_or_default();
+    }
+    #[cfg(not(windows))]
+    reply.sources.clear();
+    client.publish_ai_reply(conversation, reply).await?;
     let _ = app.emit("zibblu-chat-changed", ());
     Ok(())
 }
@@ -1188,6 +1241,18 @@ pub(crate) async fn private_view(
 }
 
 #[tauri::command]
+pub(crate) fn private_preview(window: WebviewWindow, enabled: bool) -> Result<()> {
+    if window.label() != "main" {
+        return Err(anyhow!("Open private messages in the main window").into());
+    }
+    #[cfg(windows)]
+    crate::windows_shell::set_private_preview(&window, enabled)?;
+    #[cfg(not(windows))]
+    let _ = enabled;
+    Ok(())
+}
+
+#[tauri::command]
 pub(crate) async fn private_mark_read(
     state: State<'_, Desktop>,
     window: WebviewWindow,
@@ -1216,6 +1281,11 @@ pub(crate) async fn private_respond(
         if !active.as_ref().is_some_and(|active| Arc::ptr_eq(active, &lobby)) {
             return Ok(());
         }
+        #[cfg(windows)]
+        if let Some(conversation) = response.conversation {
+            crate::ai::suspend_conversation(&app, conversation);
+        }
+        #[cfg(not(windows))]
         state.ai.lock().expect("AI state").clear_pending_views();
         let _ = app.emit_to(
             "main",
@@ -1522,7 +1592,7 @@ pub(crate) async fn clear_cache(
 pub(crate) async fn storage_stats(
     window: WebviewWindow,
     state: State<'_, Desktop>,
-) -> Result<StorageStats> {
+) -> Result<DesktopStorageStats> {
     if window.label() != "main" {
         return Err(anyhow!("Check storage usage from the main window").into());
     }
@@ -1530,5 +1600,23 @@ pub(crate) async fn storage_stats(
     let app_dir = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf));
-    Ok(client.storage_stats(app_dir.as_deref()).await?)
+    let usage = client.storage_stats(app_dir.as_deref()).await?;
+    #[cfg(windows)]
+    let volumes = crate::windows_shell::storage_volumes([
+        (app_dir.as_deref(), usage.app_bytes),
+        (Some(client.profile_dir()), usage.total_bytes.saturating_sub(usage.app_bytes)),
+    ]);
+    Ok(DesktopStorageStats {
+        usage,
+        #[cfg(windows)]
+        volumes,
+    })
+}
+
+#[derive(Serialize)]
+pub(crate) struct DesktopStorageStats {
+    #[serde(flatten)]
+    usage: StorageStats,
+    #[cfg(windows)]
+    volumes: Vec<crate::windows_shell::StorageVolume>,
 }

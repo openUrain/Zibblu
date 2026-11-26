@@ -63,6 +63,7 @@ fn restrict_viewer(
                     | "viewer_resolve_direct_target"
                     | "viewer_send_unedited"
                     | "viewer_send_annotated_image"
+                    | "viewer_save_edited_image"
                     | "viewer_send_trimmed_video"
             )
         {
@@ -137,6 +138,11 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             let label = window.label().to_owned();
+            #[cfg(windows)]
+            if label == image_viewer::LABEL && matches!(event, WindowEvent::Destroyed) {
+                image_viewer::release_closed_viewer(window.app_handle());
+                return;
+            }
             let is_main = label == "main";
             let is_chat = chat_window::is_chat_window(&label);
             if !is_main && !is_chat {
@@ -203,6 +209,7 @@ pub fn run() {
             remote_image::preview_message_image,
             remote_image::cancel_message_image,
             media::upload_image_size,
+            media::upload_video_cover,
             commands::set_read_receipts,
             commands::read_update,
             commands::hide_message,
@@ -244,6 +251,16 @@ pub fn run() {
             ai::ai_remove_file,
             ai::ai_prepare,
             ai::ai_send,
+            #[cfg(windows)]
+            ai::agent::ai_set_agent_enabled,
+            #[cfg(windows)]
+            ai::agent::ai_start_agent,
+            #[cfg(windows)]
+            ai::agent::ai_answer_access,
+            #[cfg(windows)]
+            ai::agent::ai_source,
+            #[cfg(windows)]
+            ai::agent::ai_shared_source,
             ai::ai_prompts,
             ai::ai_jobs,
             ai::ai_replies,
@@ -255,6 +272,7 @@ pub fn run() {
             commands::private_invite_nearby,
             commands::private_list,
             commands::private_view,
+            commands::private_preview,
             commands::private_mark_read,
             commands::private_respond,
             commands::private_send,
@@ -289,6 +307,8 @@ pub fn run() {
             image_viewer::viewer_resolve_direct_target,
             image_viewer::viewer_send_unedited,
             image_viewer::viewer_send_annotated_image,
+            #[cfg(windows)]
+            image_viewer::viewer_save_edited_image,
             image_viewer::viewer_send_trimmed_video,
             commands::transfers,
             commands::pause_transfer,
