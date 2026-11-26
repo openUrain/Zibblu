@@ -3086,6 +3086,7 @@ mod tests {
         let message = |seq, file: Attachment, created_at| Message {
             seq, conversation_id: conversation, sender: session().user, created_at, text: None,
             attachment: Some(file), ai_provider: None, recalled: false, reply_to: None, nonce: None,
+            ai_sources: Vec::new(),
             expires_at: None, expired: None, pending: None, local_file: false,
         };
         let pending = attachment("pending.txt");
