@@ -121,6 +121,10 @@ impl Room {
         cfg!(windows) && !self.open && self.invited.len() == 1
     }
 
+    fn direct_peer(&self, own: Uuid) -> Option<Uuid> {
+        self.resumable().then(|| if self.host == own { self.invited[0] } else { self.host })
+    }
+
     fn standalone(&self) -> bool {
         !self.open && self.conversation.is_none()
     }
@@ -138,6 +142,8 @@ enum Wire {
     Offer {
         room: Room,
         decided: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        can_resume: bool,
     },
     Scan {
         room: Uuid,
@@ -145,6 +151,8 @@ enum Wire {
     },
     Decision {
         approval: Option<Consent>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        can_resume: bool,
     },
     Joined {
         approval: Consent,
@@ -233,6 +241,7 @@ struct Hosted {
     feed: Feed,
     ever_connected: bool,
     suspended_at: Option<Instant>,
+    can_resume: bool,
     nearby: bool,
 }
 
@@ -241,7 +250,7 @@ impl Hosted {
         self.links
             .values()
             .any(|link| link.active && link.user.id != own
-                && (!self.room.resumable() || link.transport.close_reason().is_none()))
+                && (!self.can_resume || link.transport.close_reason().is_none()))
     }
 
     fn participants(&self, own: &User) -> Vec<User> {
@@ -264,7 +273,7 @@ impl Hosted {
             participants: self.participants(own),
             phase: if self.has_peer(own.id) {
                 Phase::Connected
-            } else if self.room.resumable() && self.ever_connected {
+            } else if self.can_resume && self.ever_connected {
                 if self.attempts.is_empty() { Phase::Suspended } else { Phase::Reconnecting }
             } else if !self.room.open && !self.nearby && self.links.is_empty() {
                 Phase::Discovering
@@ -289,7 +298,7 @@ impl Hosted {
                     .is_ok()
         });
         if !self.has_peer(own.id) {
-            if self.room.resumable() && self.ever_connected {
+            if self.can_resume && self.ever_connected {
                 self.suspended_at.get_or_insert_with(Instant::now);
             } else {
                 self.feed.messages.clear();
@@ -356,6 +365,7 @@ struct Guest {
     voted: bool,
     feed: Feed,
     suspended_at: Option<Instant>,
+    can_resume: bool,
 }
 
 pub struct PrivateResponse {
@@ -616,7 +626,7 @@ impl PrivateLobby {
             .memberships
             .iter()
             .filter(|(_, members)| {
-                members.iter().any(|user| user.id == own)
+                (!cfg!(windows) || members.len() == 2) && members.iter().any(|user| user.id == own)
                     && members.iter().any(|user| user.id == peer.id)
             })
             .min_by_key(|(id, members)| (members.len(), **id))
@@ -626,7 +636,7 @@ impl PrivateLobby {
         tokio::spawn(async move {
             let _ = host_link(&engine, connection, send, recv, id, None).await;
             let mut state = engine.state();
-            if state.hosted.get(&id).is_some_and(|host| !host.room.resumable() || !host.ever_connected)
+            if state.hosted.get(&id).is_some_and(|host| !host.can_resume || !host.ever_connected)
                 && let Some(host) = state.hosted.remove(&id) {
                 host.close();
             }
@@ -730,7 +740,16 @@ impl PrivateLobby {
         let own = &self.engine.own;
         let identity = self.engine.identity();
         let mut state = self.engine.state();
-        if (cfg!(windows) || nearby.is_none()) && let Some(conversation) = conversation {
+        if cfg!(windows) && !open && invited.len() == 1 {
+            let peer = Some(invited[0]);
+            if let Some(room) = state.hosted.values().map(|host| &host.room)
+                .chain(state.guests.values().map(|guest| &guest.room))
+                .find(|room| room.direct_peer(own.id) == peer)
+            {
+                return Ok(room.id);
+            }
+        }
+        if nearby.is_none() && let Some(conversation) = conversation {
             if let Some(room) = state.guests.values().find(|guest| guest.room.conversation == Some(conversation)) {
                 return Ok(room.room.id);
             }
@@ -765,6 +784,7 @@ impl PrivateLobby {
                 feed: Feed::new(),
                 ever_connected: false,
                 suspended_at: None,
+                can_resume: false,
                 nearby: nearby.is_some(),
             },
         );
@@ -820,14 +840,14 @@ impl PrivateLobby {
                     },
                 )
                 .await?;
-                let Wire::Offer { room, decided } = recv_frame(&mut recv).await? else {
+                let Wire::Offer { room, decided, can_resume } = recv_frame(&mut recv).await? else {
                     bail!("This QR session is unavailable.");
                 };
                 ensure!(
                     room.id == code.room && room.open,
                     "This QR code does not match the private session."
                 );
-                attach_guest_task(&self.engine, connection, send, recv, room, true, decided)?;
+                attach_guest_task(&self.engine, connection, send, recv, room, true, decided, can_resume)?;
                 Ok::<_, anyhow::Error>(())
             })
             .await;
@@ -864,7 +884,7 @@ impl PrivateLobby {
             .sender
             .as_ref()
             .context("The invitation ended.")?
-            .try_send(Wire::Decision { approval })?;
+            .try_send(Wire::Decision { approval, can_resume: guest.can_resume })?;
         guest.voted = true;
         guest.summary.phase = if accept {
             Phase::Authenticating
@@ -893,7 +913,8 @@ impl PrivateLobby {
                 .get(&id)
                 .context("The private session has ended.")?;
             ensure!(
-                guest.summary.phase == Phase::Connected,
+                guest.summary.phase == Phase::Connected
+                    && (!cfg!(windows) || guest.transport.as_ref().is_some_and(|connection| connection.close_reason().is_none())),
                 "Join the private session first."
             );
             Ok(guest
@@ -952,13 +973,13 @@ impl PrivateLobby {
         self.stop_transport(0);
         let mut state = self.engine.state();
         state.hosted.retain(|_, host| {
-            if !host.room.resumable() || !host.ever_connected { return false; }
+            if !host.can_resume || !host.ever_connected { return false; }
             host.links.clear();
             host.attempts.clear();
             host.suspended_at.get_or_insert_with(Instant::now).elapsed() < ROOM_IDLE
         });
         state.guests.retain(|_, guest| {
-            if !guest.room.resumable() || !matches!(guest.summary.phase,
+            if !guest.can_resume || !matches!(guest.summary.phase,
                 Phase::Connected | Phase::Suspended | Phase::Reconnecting) { return false; }
             guest.sender = None;
             guest.transport = None;
@@ -982,7 +1003,7 @@ impl PrivateLobby {
 impl Guest {
     fn summary(&self, own: &User) -> PrivateSummary {
         let mut summary = self.summary.clone();
-        summary.unread = (summary.phase == Phase::Connected || self.room.resumable()) && self.feed.unread(own.id);
+        summary.unread = (summary.phase == Phase::Connected || self.can_resume) && self.feed.unread(own.id);
         summary
     }
 }
@@ -1138,7 +1159,7 @@ async fn discover(engine: Arc<Engine>, lan: Arc<Lan>) {
             } else {
                 INVITATION_TIMEOUT
             };
-            let live = if host.room.resumable() && host.ever_connected {
+            let live = if host.can_resume && host.ever_connected {
                 host.suspended_at.is_none_or(|since| since.elapsed() < ROOM_IDLE)
             } else {
                 host.feed.last_text.elapsed() < limit
@@ -1153,7 +1174,7 @@ async fn discover(engine: Arc<Engine>, lan: Arc<Lan>) {
         state
             .hosted
             .values()
-            .filter(|host| !host.nearby || (host.room.resumable() && host.ever_connected))
+            .filter(|host| !host.nearby || (host.can_resume && host.ever_connected))
             .flat_map(|host| {
                 host.room
                     .invited
@@ -1174,8 +1195,8 @@ async fn discover(engine: Arc<Engine>, lan: Arc<Lan>) {
         let mut state = engine.state();
         if !engine.lan().is_ok_and(|current| Arc::ptr_eq(&current, &lan)) { return; }
         for host in state.hosted.values_mut().filter(|host|
-            (!host.nearby || (host.room.resumable() && host.ever_connected))
-                && (!host.room.resumable() || !host.has_peer(engine.own.id))) {
+            (!host.nearby || (host.can_resume && host.ever_connected))
+                && (!host.can_resume || !host.has_peer(engine.own.id))) {
             for &(account, address) in &peers {
                 if host.attempts.len() >= MAX_DEVICE_COUNT {
                     break;
@@ -1230,8 +1251,8 @@ async fn inbound(
     })
     .await??;
     match frame {
-        Wire::Offer { room, decided } => {
-            let task = attach_guest_task(&engine, connection, send, recv, room, false, decided)?;
+        Wire::Offer { room, decided, can_resume } => {
+            let task = attach_guest_task(&engine, connection, send, recv, room, false, decided, can_resume)?;
             let _ = task.await;
             Ok(())
         }
@@ -1284,24 +1305,25 @@ async fn host_link(
             "This invitation was declined."
         );
         let approval = host.decisions.get(&account).and_then(|value| value.clone());
-        if host.room.resumable() && let Some(approval) = approval.as_ref() {
+        if host.can_resume && let Some(approval) = approval.as_ref() {
             ensure!(approval.device()? == device, "Resume on the device that approved the session.");
         }
         sender.try_send(Wire::Offer {
             room: host.room.clone(),
             decided: approval.is_some(),
+            can_resume: if approval.is_some() { host.can_resume } else { host.room.resumable() },
         })?;
         host.links.insert(
             device,
             Link {
                 sender,
                 user: peer.user,
-                active: approval.is_some() && !host.room.resumable(),
+                active: approval.is_some() && !host.can_resume,
                 connection: connection_id,
                 transport: connection.clone(),
             },
         );
-        if let Some(approval) = approval.filter(|_| !host.room.resumable()) {
+        if let Some(approval) = approval.filter(|_| !host.can_resume) {
             admit(host, &engine.own, account, approval);
         }
     }
@@ -1319,8 +1341,8 @@ async fn host_link(
             .filter(|link| link.connection == connection_id)
             .context("The device left.")?;
         match frame {
-            Wire::Decision { approval } if !host.decisions.contains_key(&account)
-                || (host.room.resumable() && !link.active
+            Wire::Decision { approval, can_resume } if !host.decisions.contains_key(&account)
+                || (host.can_resume && !link.active
                     && host.decisions.get(&account).is_some_and(Option::is_some)) => {
                 if let Some(approval) = approval {
                     if let Some(secret) = qr_secret {
@@ -1330,9 +1352,12 @@ async fn host_link(
                         );
                     }
                     identity.verify(&approval, &host.room.proof_message()?, account, true)?;
-                    if host.room.resumable() {
+                    let resume = host.room.resumable() && can_resume;
+                    ensure!(!host.can_resume || resume, "The accepting device did not confirm session continuity.");
+                    if resume {
                         ensure!(approval.device()? == device, "Approval belongs to another device.");
                     }
+                    host.can_resume = resume;
                     if !host.decisions.contains_key(&account) {
                         let count = host.decisions.values().filter(|entry| entry.is_some()).count();
                         ensure!(count < MAX_DEVICE_COUNT, "This private group is full.");
@@ -1342,7 +1367,7 @@ async fn host_link(
                         .links
                         .values_mut()
                         .filter(|link| link.user.id == account
-                            && (!host.room.resumable() || link.connection == connection_id))
+                            && (!resume || link.connection == connection_id))
                     {
                         link.active = true;
                     }
@@ -1407,7 +1432,7 @@ fn admit(host: &mut Hosted, own: &User, account: Uuid, approval: Consent) {
     if account != own.id {
         host.suspended_at = None;
     }
-    let approving_device = host.room.resumable().then(|| approval.device().ok()).flatten();
+    let approving_device = host.can_resume.then(|| approval.device().ok()).flatten();
     let participants = host.wire_participants(own);
     host.links.retain(|device, link| {
         link.user.id != account
@@ -1442,6 +1467,7 @@ fn attach_guest_task(
     room: Room,
     scanned: bool,
     decided: bool,
+    can_resume: bool,
 ) -> Result<JoinHandle<()>> {
     let peer = identity::peer(&connection)?;
     ensure!(
@@ -1455,16 +1481,31 @@ fn attach_guest_task(
         let mut state = engine.state();
         ensure!(connection.close_reason().is_none(), "The device disconnected.");
         let named = validate_room(&state.memberships, &engine.own, &room, Some(&peer.user))?;
-        let resuming = room.resumable() && decided && state.guests.get(&id).is_some_and(|old|
+        if let Some(account) = room.direct_peer(engine.own.id) {
+            let conflict = |other: &Room| other.id != id && other.direct_peer(engine.own.id) == Some(account);
+            if let Some(host) = state.hosted.values().find(|host| conflict(&host.room)) {
+                ensure!(!host.ever_connected && id < host.room.id, "A private session with this contact already exists.");
+                let old = host.room.id;
+                if let Some(host) = state.hosted.remove(&old) { host.close(); }
+            }
+            if let Some(guest) = state.guests.values().find(|guest| conflict(&guest.room)) {
+                ensure!(guest.summary.phase == Phase::Invited && id < guest.room.id,
+                    "A private session with this contact already exists.");
+                let old = guest.room.id;
+                state.end_guest(old);
+            }
+        }
+        let can_resume = room.resumable() && can_resume;
+        let resuming = can_resume && decided && state.guests.get(&id).is_some_and(|old|
             old.room == room && old.sender.is_none() && old.summary.phase == Phase::Suspended
                 && old.suspended_at.is_some_and(|since| since.elapsed() < ROOM_IDLE));
         ensure!(
-            !decided || resuming || (!room.standalone() && !room.resumable()),
+            !decided || resuming || (!room.standalone() && !can_resume),
             "A nearby invitation requires fresh consent."
         );
         if let Some(old) = state.guests.get(&id) {
             ensure!(
-                old.room == room && old.sender.is_none() && (!room.resumable() || resuming),
+                old.room == room && old.sender.is_none() && (!can_resume || resuming),
                 "A private connection already exists."
             );
         }
@@ -1479,6 +1520,7 @@ fn attach_guest_task(
             let approval = engine.identity().sign(&room.proof_message()?)?;
             sender.try_send(Wire::Decision {
                 approval: Some(approval),
+                can_resume,
             })?;
         }
         state.dismissed.admit(id, scanned)?;
@@ -1513,6 +1555,7 @@ fn attach_guest_task(
                 voted: scanned || resuming,
                 feed: previous.map_or_else(Feed::new, |guest| guest.feed),
                 suspended_at,
+                can_resume,
             },
         );
     }
@@ -1542,7 +1585,7 @@ fn attach_guest_task(
                         engine.own.id,
                         false,
                     )?;
-                    if guest.room.resumable() {
+                    if guest.can_resume {
                         ensure!(approval.device()? == identity.device, "Approval belongs to another device.");
                     }
                     ensure!(
@@ -1584,7 +1627,7 @@ fn attach_guest_task(
         if let Some(guest) = state.guests.get_mut(&id).filter(|guest| guest.link == link && guest.sender.is_some()) {
             let quit = matches!(connection.close_reason(), Some(ConnectionError::ApplicationClosed(close))
                 if close.error_code.into_inner() == u64::from(APP_EXIT));
-            if !quit && guest.room.resumable() && matches!(guest.summary.phase, Phase::Connected | Phase::Reconnecting) {
+            if !quit && guest.can_resume && matches!(guest.summary.phase, Phase::Connected | Phase::Reconnecting) {
                 guest.summary.phase = Phase::Suspended;
                 guest.sender = None;
                 guest.transport = None;
@@ -1696,6 +1739,7 @@ mod tests {
                 voted: true,
                 feed: Feed::new(),
                 suspended_at: None,
+                can_resume: false,
             },
         );
         state.end_guest(id);
@@ -1731,6 +1775,7 @@ mod tests {
             feed: Feed::new(),
             ever_connected: false,
             suspended_at: None,
+            can_resume: false,
             nearby: false,
         };
         assert!(host.valid_qr(secret, deadline - Duration::from_millis(1)));

@@ -169,6 +169,8 @@ async fn run_prompts(app: &AppHandle) {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
+        #[cfg(windows)]
+        close_exclusive_chat_windows(app, &desktop).await;
         let invitation = if prompt_window(app, &desktop) == Some(INVITATION) {
             desktop.private.lock().await.as_ref().and_then(|lobby| {
                 lobby
@@ -195,6 +197,23 @@ async fn run_prompts(app: &AppHandle) {
                 shown = Some(invitation.id);
             }
             _ => {}
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn close_exclusive_chat_windows(app: &AppHandle, desktop: &Desktop) {
+    let open: Vec<_> = app.webview_windows().keys()
+        .filter_map(|label| crate::chat_window::conversation_id_for_label(label)).collect();
+    if open.is_empty() { return; }
+    let Some(lobby) = desktop.private.lock().await.clone() else { return; };
+    let active: Vec<_> = open.into_iter().filter(|id| lobby.has_active_conversation(*id)).collect();
+    if active.is_empty() { return; }
+    let Ok(client) = desktop.client().await else { return; };
+    let Ok(directory) = client.directory().await else { return; };
+    for chat in directory.conversations {
+        if chat.title.is_none() && active.contains(&chat.id) {
+            crate::chat_window::close_chat_window(app, chat.id);
         }
     }
 }
