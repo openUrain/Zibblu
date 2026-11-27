@@ -1,4 +1,6 @@
 mod ai;
+#[cfg(windows)]
+mod ai_terms;
 mod attachment_drafts;
 mod chat_window;
 mod clipboard;
@@ -252,7 +254,9 @@ pub fn run() {
             ai::ai_prepare,
             ai::ai_send,
             #[cfg(windows)]
-            ai::agent::ai_set_agent_enabled,
+            ai_terms::ai_terms,
+            #[cfg(windows)]
+            ai_terms::ai_accept_terms,
             #[cfg(windows)]
             ai::agent::ai_start_agent,
             #[cfg(windows)]

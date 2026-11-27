@@ -40,7 +40,7 @@ Scope:
 
 Scope:
 - User-configured AI providers and custom mention names.
-- On Windows, first approve read-only autonomous retrieval for the configured provider. Each submitted question scopes retrieval to the current ordinary conversation and prompts separately before accessing a named other conversation.
+- On Windows, accept the current AI terms in setup or the app. In ordinary chat, each submitted `@name` question permits retrieval from the current conversation. A named other conversation requires approval for that task.
 - Explicit selections send only the disclosed snapshot. Autonomous replies include verified sources, with source access checked when opening or sharing them.
 - Show response in chat according to an explicit visibility choice.
 - No file/chat mutation, arbitrary file system access, background access or private-mode cloud context.

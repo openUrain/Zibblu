@@ -259,6 +259,7 @@ mod tests {
             joined_after: None,
             activity_at,
             preview: None,
+            preview_attachment_kind: None,
             preview_seq: None,
             latest_seq: 0,
             unread: 0,

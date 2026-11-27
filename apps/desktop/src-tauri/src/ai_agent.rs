@@ -28,54 +28,14 @@ struct Retrieved {
 }
 
 #[tauri::command]
-pub(crate) async fn ai_set_agent_enabled(
-    window: WebviewWindow,
-    state: State<'_, Desktop>,
-    provider: AiProvider,
-    enabled: bool,
-    model: String,
-    base_url: Option<String>,
-) -> CommandResult<Vec<Assistant>> {
-    if window.label() != "main" && !crate::chat_window::is_chat_window(window.label()) {
-        return Err(anyhow::anyhow!("Open a normal chat").into());
-    }
-    let client = state.client().await?;
-    let result = {
-        let mut ai = state.ai.lock().expect("AI state");
-        let mut config = load_assistants(client.profile_dir())?;
-        let entry = config
-            .iter_mut()
-            .find(|entry| {
-                entry.info.provider == provider
-                    && entry.info.model == model
-                    && entry.info.base_url == base_url
-            })
-            .context("Assistant settings changed. Review the new provider settings.")?;
-        entry.info.agent_enabled = enabled;
-        let saved = store_assistants(client.profile_dir(), &config)?;
-        if !enabled {
-            ai.jobs.retain(|_, job| {
-                if job.autonomous && job.provider == provider && job.conversation_id != ZIBBLU_ASSISTANT {
-                    job.cancel();
-                    return false;
-                }
-                true
-            });
-        }
-        saved
-    };
-    let _ = window.app_handle().emit(AI_CHANGED_EVENT, ());
-    let _ = window.app_handle().emit("zibblu-assistant-settings", ());
-    Ok(result)
-}
-
-#[tauri::command]
 pub(crate) async fn ai_start_agent(
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, Desktop>,
     view: Uuid,
     provider: AiProvider,
+    model: String,
+    base_url: Option<String>,
     prompt: String,
 ) -> CommandResult<SentPrompt> {
     let client = state.client().await?;
@@ -88,8 +48,9 @@ pub(crate) async fn ai_start_agent(
     }
     let assistant = load_assistants(client.profile_dir())?
         .into_iter()
-        .find(|entry| entry.info.provider == provider && entry.info.agent_enabled)
-        .context("Enable autonomous retrieval for this provider first.")?;
+        .find(|entry| entry.info.provider == provider && entry.info.model == model
+            && entry.info.base_url == base_url)
+        .context("Assistant settings changed. Review the current provider settings.")?;
     start_ai_job(
         app,
         &state,
@@ -404,7 +365,7 @@ fn cited_media_uses_an_authorized_parent_window() {
     assert_eq!(source_media_parent("main", target), "main");
 }
 
-fn ensure_enabled(client: &Client, approved: &Approval) -> Result<()> {
+fn ensure_assistant_unchanged(client: &Client, approved: &Approval) -> Result<()> {
     let assistant = &approved.assistant.info;
     let builtin = approved.conversation_id == ZIBBLU_ASSISTANT;
     ensure!(
@@ -412,12 +373,9 @@ fn ensure_enabled(client: &Client, approved: &Approval) -> Result<()> {
             .into_iter()
             .any(|stored| stored.info.provider == assistant.provider
                 && stored.info.base_url == assistant.base_url
-                && (if builtin {
-                    stored.protected_key == approved.assistant.protected_key
-                } else {
-                    stored.info.agent_enabled && stored.info.model == assistant.model
-                })),
-        "Autonomous retrieval was disabled or the assistant configuration changed."
+                && stored.protected_key == approved.assistant.protected_key
+                && (builtin || stored.info.model == assistant.model)),
+        "The assistant configuration changed."
     );
     Ok(())
 }
@@ -712,7 +670,7 @@ pub(super) async fn execute(
     let mut attachment_requests = 0;
     let mut call_ids = HashSet::new();
     loop {
-        ensure_enabled(client, approved)?;
+        ensure_assistant_unchanged(client, approved)?;
         ensure_available(&desktop, client, origin, origin).await?;
         verify_retrieved(&desktop, client, origin, &retrieved).await?;
         update_job_status(
@@ -727,6 +685,7 @@ pub(super) async fn execute(
             String::new(),
             None,
         );
+        crate::ai_terms::require_accepted(desktop.data_dir())?;
         let turn = run_with_cancel(
             cancel_rx,
             cancelled,
@@ -735,7 +694,7 @@ pub(super) async fn execute(
         .await?;
         let (calls, replay) = match turn {
             AiAgentTurn::Answer(text) => {
-                ensure_enabled(client, approved)?;
+                ensure_assistant_unchanged(client, approved)?;
                 ensure_available(&desktop, client, origin, origin).await?;
                 verify_retrieved(&desktop, client, origin, &retrieved).await?;
                 let mut sources = Vec::new();
@@ -947,7 +906,7 @@ pub(super) async fn execute(
                             chunks,
                             cancelled,
                             || async {
-                                ensure_enabled(client, approved)?;
+                                ensure_assistant_unchanged(client, approved)?;
                                 client.ensure_ai_authorized(
                                     conversation, &[item.source.seq], &[(item.source.seq, file.clone())],
                                 ).await?;
@@ -956,7 +915,11 @@ pub(super) async fn execute(
                             |_, _, chunk| {
                                 let mut rx = cancel_rx.clone();
                                 let request = provider.answer_parts(&base, model, key, chunk, notify.clone(), approved.effort.as_deref());
-                                async move { run_with_cancel(&mut rx, cancelled, request).await }
+                                let data = desktop.data_dir();
+                                async move {
+                                    crate::ai_terms::require_accepted(data)?;
+                                    run_with_cancel(&mut rx, cancelled, request).await
+                                }
                             },
                         ).await?;
                         json!({"number":args.number,"analysis":analysis})

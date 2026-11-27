@@ -809,6 +809,10 @@ export function constrainBoxPoint(origin: ImagePoint, point: ImagePoint): ImageP
 // Shared Canvas Rendering (Preview Overlay & Offscreen Export)
 // ---------------------------------------------------------------------------
 
+export function pixelEraserDiameter(level: StrokeWidthLevel, naturalWidth: number, naturalHeight: number): number {
+  return resolveStrokeWidth(level, naturalWidth, naturalHeight) * 3;
+}
+
 function drawPen(ctx: CanvasRenderingContext2D, item: PenAnnotation, lineWidth: number): void {
   const pts = item.points;
   if (pts.length === 0) return;
@@ -1009,14 +1013,13 @@ export function renderAnnotationDoc(
   for (const item of doc.items) {
     if (options?.hiddenIds?.has(item.id)) continue;
     if (item.kind === "pen") {
-      const width = resolveStrokeWidth(item.widthLevel, naturalWidth, naturalHeight);
       if (item.erase) {
         ctx.save();
         ctx.globalCompositeOperation = "destination-out";
-        drawPen(ctx, item, width * 3);
+        drawPen(ctx, item, pixelEraserDiameter(item.widthLevel, naturalWidth, naturalHeight));
         ctx.restore();
       } else {
-        drawPen(ctx, item, width);
+        drawPen(ctx, item, resolveStrokeWidth(item.widthLevel, naturalWidth, naturalHeight));
       }
     } else if (item.kind === "text") {
       drawText(ctx, item);

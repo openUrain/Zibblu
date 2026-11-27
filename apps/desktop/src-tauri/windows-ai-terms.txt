@@ -1,0 +1,22 @@
+﻿Zibblu Windows AI Terms and Privacy Notice · Version 1
+Zibblu Windows AI 服务条款与隐私说明 · 第 1 版
+
+AI runs when you actively submit a question to a configured provider. In an ordinary chat, @AI can search the current ordinary conversation by default. The built-in assistant has no current ordinary conversation.
+
+Your question and relevant ordinary messages or attachments may be sent to the third-party model endpoint you configure. Model discovery sends your API key to that endpoint. The provider handles this data under its own terms and may charge for usage. Use an endpoint you trust.
+
+Each other ordinary conversation requires specific approval for the current task. If you deny access, the conversation is neither read nor sent, and the request will not ask again for that conversation. Approval expires with the task and is never reused. Existing permissions, attachment limits and explicit sharing controls still apply.
+
+AI has read-only access. Private LAN chats stay outside AI, indexing, retrieval and citations. AI cannot listen in the background, edit chat history or files, run commands, or send ordinary messages on your behalf.
+
+Accepting this version enables AI requests on this Windows user profile. Zibblu stores the accepted terms locally. You can read the terms again in AI settings or About Zibblu. Declining leaves ordinary and private chat available when running the app.
+
+只有主动向已配置的提供商提问时，才会运行 AI。普通聊天中的 @AI 默认可检索当前普通会话。内置助手没有默认的普通会话范围。
+
+问题及相关普通聊天正文或附件可能发送到你配置的第三方模型端点。获取模型列表时会向该端点发送 API Key。第三方按自身条款处理数据，并可能收取使用费用。请选择你信任的端点。
+
+访问其他普通会话需要对该会话给予本次任务的单独授权。拒绝后，本次任务不会读取或外发该会话内容，也不会再次请求访问该会话。授权随任务结束而失效，不能复用。已有会话权限、附件限制和显式分享边界继续有效。
+
+AI 仅有只读权限。局域网私密聊天不进入 AI、索引、检索或引用。AI 不会后台监听、修改聊天记录或文件、执行命令，或代你发送普通消息。
+
+接受本版条款后，可在当前 Windows 用户资料中使用 AI。Zibblu 在本机保存已接受的条款，可在 AI 设置或「关于 Zibblu」中再次查阅。在应用内拒绝仍可使用普通聊天与私密聊天。

@@ -188,6 +188,8 @@ pub struct Conversation {
     pub joined_after: Option<i64>,
     pub activity_at: i64,
     pub preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_attachment_kind: Option<AttachmentKind>,
     #[serde(default)]
     pub preview_seq: Option<i64>,
     #[serde(default)]

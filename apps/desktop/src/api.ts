@@ -10,6 +10,7 @@ export type CloseAction = "exit" | "tray";
 export type Preferences = { server: string; official_server: string; private_quiet: boolean; close_action?: CloseAction; saved_account?: SavedAccount };
 export type Conversation = {
   id: string; title: string | null; members: User[]; activity_at: number; preview: string | null;
+  preview_attachment_kind?: Attachment["kind"];
   preview_seq: number | null; latest_seq: number; unread: number; read_through: number; joined_after?: number;
   pinned: boolean; manual_unread: boolean; muted: boolean;
 };

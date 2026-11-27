@@ -62,8 +62,6 @@ pub(crate) struct Assistant {
     model: String,
     #[serde(default)]
     base_url: Option<String>,
-    #[serde(default)]
-    agent_enabled: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -150,8 +148,6 @@ pub(crate) async fn ai_save_assistant(
             .find(|entry| entry.info.provider == provider)
             .filter(|_| key.is_some())
             .map(|entry| entry.protected_key.clone());
-        let agent_enabled = assistants.iter().any(|entry| entry.info.provider == provider
-            && entry.info.base_url == base_url && entry.info.model == model && entry.info.agent_enabled);
         assistants.retain(|entry| entry.info.provider != provider);
         assistants.push(StoredAssistant {
             info: Assistant {
@@ -159,7 +155,6 @@ pub(crate) async fn ai_save_assistant(
                 name,
                 model,
                 base_url,
-                agent_enabled,
             },
             protected_key,
         });
@@ -215,6 +210,8 @@ pub(crate) async fn ai_test_connection(
     key: Option<String>,
 ) -> CommandResult<ModelDiscovery> {
     let key = key.map(Zeroizing::new);
+    #[cfg(windows)]
+    crate::ai_terms::require_accepted(state.data_dir())?;
     let client = state.client().await?;
     let base = provider.base_url(base_url.as_deref())?;
     let bytes = match &key {
@@ -306,8 +303,6 @@ struct ActiveAiJob {
     cancelled: Arc<AtomicBool>,
     cancel_notify: Arc<Notify>,
     cancel_tx: watch::Sender<bool>,
-    #[cfg(windows)]
-    autonomous: bool,
     #[cfg(windows)]
     access: Option<agent::PendingAccess>,
     #[cfg(windows)]
@@ -826,6 +821,8 @@ async fn start_ai_job(
     app: AppHandle, state: &Desktop, client: Arc<Client>, approved: Approval,
 ) -> CommandResult<SentPrompt> {
     #[cfg(windows)]
+    crate::ai_terms::require_accepted(state.data_dir())?;
+    #[cfg(windows)]
     let ai_history = state.ai_history.lock().await;
     let conversation_id = approved.conversation_id;
     ensure_available(state, &client, conversation_id, conversation_id).await?;
@@ -872,8 +869,6 @@ async fn start_ai_job(
                 cancelled: Arc::clone(&cancelled),
                 cancel_notify: Arc::clone(&cancel_notify),
                 cancel_tx,
-                #[cfg(windows)]
-                autonomous: approved.autonomous,
                 #[cfg(windows)]
                 access: None,
                 #[cfg(windows)]
@@ -1196,6 +1191,8 @@ async fn execute_ai_job(
             update_job_status(app, job_id, conversation_id, "generating", status_text, None);
             let mut rx = cancel_rx.clone();
             async move {
+                #[cfg(windows)]
+                crate::ai_terms::require_accepted(app.state::<Desktop>().data_dir())?;
                 run_with_cancel(
                     &mut rx,
                     cancelled,
@@ -1367,7 +1364,6 @@ mod tests {
                     name: "review".into(),
                     model: "fixture".into(),
                     base_url: None,
-                    agent_enabled: false,
                 },
                 protected_key: vec![],
             },
@@ -1545,8 +1541,6 @@ mod tests {
                 cancel_notify: Arc::new(Notify::new()),
                 cancel_tx: tx1,
                 #[cfg(windows)]
-                autonomous: true,
-                #[cfg(windows)]
                 access: None,
                 #[cfg(windows)]
                 targets: [target].into_iter().collect(),
@@ -1567,8 +1561,6 @@ mod tests {
                 cancelled: Arc::new(AtomicBool::new(false)),
                 cancel_notify: Arc::new(Notify::new()),
                 cancel_tx: tx2,
-                #[cfg(windows)]
-                autonomous: false,
                 #[cfg(windows)]
                 access: None,
                 #[cfg(windows)]

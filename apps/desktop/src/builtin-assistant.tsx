@@ -3,10 +3,12 @@ import { ArrowLeft, Bot, Send, Settings } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AiJobBubble, AiPromptBubble, AiSources, builtinAssistantName, ProviderLogo, ShareAiReply, useAiMessageMenu } from "./ai";
 import { ai, aiProviders, builtinAssistantId } from "./ai-api";
+import { useAiTerms } from "./ai-terms";
 import type { AiJob, AiPrompt, AiReply, Assistant, BuiltinModel, BuiltinSelection } from "./ai-api";
 import { errorMessage } from "./api";
 import type { Conversation, User } from "./api";
 import { Blank, Dialog, messageTimeLabel, startsTimeGroup } from "./common";
+import { clearMessageSelectionOnBlank } from "./context-menu";
 import { FloatingField } from "./floating-field";
 import { t } from "./locale";
 import { MediaSplitButton } from "./media-split-button";
@@ -33,6 +35,7 @@ export function BuiltinAssistant({ own, assistants, chats, prompts, replies, job
   const [sharing, setSharing] = useState<AiReply>();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
+  const terms = useAiTerms();
   const log = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
   const failed = (error: unknown) => setFailure(errorMessage(error));
@@ -66,6 +69,7 @@ export function BuiltinAssistant({ own, assistants, chats, prompts, replies, job
     setBusy(true);
     setFailure("");
     try {
+      if (!await terms.requireAcceptance()) return;
       const available = (await ai.testConnection(provider.provider, provider.base_url ?? "")).models;
       setModels(available);
       if (!available.length) setFailure(t("The provider returned no model IDs. Enter an ID to continue.", "提供商未返回模型 ID，可以手动输入。"));
@@ -73,14 +77,20 @@ export function BuiltinAssistant({ own, assistants, chats, prompts, replies, job
     finally { setBusy(false); }
   }
 
-  function confirm() {
+  async function confirm() {
     if (!selection || !provider || !question.trim() || busy) return;
     if (new TextEncoder().encode(question.trim()).length > 8192) {
       setFailure(t("Enter a question up to 8 KiB.", "问题不能超过 8 KiB。"));
       return;
     }
     setFailure("");
-    setApproval({ selection, endpoint: provider.base_url ?? null, prompt: question.trim() });
+    setBusy(true);
+    try {
+      if (await terms.requireAcceptance()) {
+        setApproval({ selection, endpoint: provider.base_url ?? null, prompt: question.trim() });
+      }
+    } catch (error) { failed(error); }
+    finally { setBusy(false); }
   }
 
   async function send() {
@@ -145,7 +155,7 @@ export function BuiltinAssistant({ own, assistants, chats, prompts, replies, job
       </div>
     </header>
     {failure && <p className="inline-error builtin-feedback" role="alert">{failure}</p>}
-    <div className="timeline builtin-timeline" ref={log} onScroll={event => {
+    <div className="timeline builtin-timeline" ref={log} onPointerDown={clearMessageSelectionOnBlank} onScroll={event => {
       const element = event.currentTarget;
       atBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
     }}>
@@ -173,12 +183,12 @@ export function BuiltinAssistant({ own, assistants, chats, prompts, replies, job
         })}
       </div>
     </div>
-    <form className="composer builtin-composer" onSubmit={event => { event.preventDefault(); confirm(); }}>
+    <form className="composer builtin-composer" onSubmit={event => { event.preventDefault(); void confirm(); }}>
       <FloatingField multiline label={t("Ask the assistant", "向助手提问")} value={question} onChange={event => setQuestion(event.currentTarget.value)}
         onKeyDown={event => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
             event.preventDefault();
-            confirm();
+            void confirm();
           }
         }} />
       <button type="submit" className="button primary" disabled={!provider || !question.trim() || busy}
@@ -201,6 +211,7 @@ export function BuiltinAssistant({ own, assistants, chats, prompts, replies, job
         <button type="button" className="button primary" disabled={busy} onClick={() => void send()}>{t("Send", "发送")}</button>
       </div>
     </Dialog>}
+    {terms.dialog}
     {sharing && <ShareAiReply reply={sharing} members={[]} own={own.id} destinations={chats} close={() => setSharing(undefined)} published={async () => {
       await refresh(); setSharing(undefined);
     }} />}

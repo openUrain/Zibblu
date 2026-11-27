@@ -1,5 +1,13 @@
 .ai-settings > h2 { margin-bottom: 6px; }
 .ai-settings > p { margin: 0 0 12px; }
+.ai-settings > .text-button { margin-bottom: 12px; }
+.ai-terms-text {
+  max-height: 50vh;
+  overflow: auto;
+  padding-inline-end: 12px;
+  white-space: pre-line;
+}
+.ai-terms-text p:first-child { font-weight: 600; }
 .ai-settings-provider { border-top: 1px solid var(--line); }
 .ai-settings-row {
   display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px;

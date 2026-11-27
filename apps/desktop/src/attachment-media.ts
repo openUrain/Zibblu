@@ -7,7 +7,7 @@ const inlineVideos = /\.(mp4|m4v|webm|mov)$/i;
 const otherImages = /\.(avif|heic|heif|tiff?|svg|ico)$/i;
 const otherVideos = /\.(avi|mkv|wmv|flv|mpg|mpeg|3gp|ogv)$/i;
 
-export function mediaKind(file: Attachment) {
+export function mediaKind(file: Pick<Attachment, "kind" | "name">) {
   if (file.kind !== "file") return undefined;
   if (inlineImages.test(file.name) || otherImages.test(file.name)) return "image";
   if (inlineVideos.test(file.name) || otherVideos.test(file.name)) return "video";

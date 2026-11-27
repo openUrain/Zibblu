@@ -11,6 +11,7 @@ import type { FormEvent, ReactNode } from "react";
 import { ai, builtinAssistantId } from "./ai-api";
 import type { AiJob, AiPrompt, AiReply, Assistant } from "./ai-api";
 import { AssistantSettings, builtinAssistantName } from "./ai";
+import { AiTermsDialog, aiTermsLabel } from "./ai-terms";
 import { BuiltinAssistant } from "./builtin-assistant";
 import { StorageSettings } from "./storage-settings";
 import { api, errorMessage, isExpired } from "./api";
@@ -1003,7 +1004,12 @@ function mergeDirectory(previous: Directory, next: Directory): Directory {
 
 function WindowsActiveRailIcon({ name }: { name: typeof pages[number]["name"] }) {
   if (name === "Chats") return <MessageSquare size={22} strokeWidth={1.9} fill="currentColor" />;
-  if (name === "Contacts") return <UsersRound size={22} strokeWidth={1.9} className="rail-active-contacts" />;
+  if (name === "Contacts") return <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path fill="currentColor" d="M18 21a8 8 0 0 0-16 0Z" />
+    <circle fill="currentColor" cx="10" cy="8" r="5" />
+    <path d="M22 20c0-3.37-2-6.5-4-8a5 5 0 0 0-.45-8.3" />
+  </svg>;
   return <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor"
     strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M20 10a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2Z" />
@@ -1021,10 +1027,13 @@ function ActiveRailIcon({ name }: { name: typeof pages[number]["name"] }) {
 }
 
 function About({ close }: { close: () => void }) {
+  const [terms, setTerms] = useState(false);
   const [version, setVersion] = useState("");
   useEffect(() => { void getVersion().then(setVersion).catch(() => {}); }, []);
+  if (terms) return <AiTermsDialog close={() => setTerms(false)} />;
   return <Dialog title="About Zibblu" close={close}>
     <div className="about-app"><Brand /><div><strong>Zibblu {version}</strong><p className="muted">Chat freely. Share privately.</p></div></div>
+    {windows && <button type="button" className="text-button" onClick={() => setTerms(true)}>{aiTermsLabel()}</button>}
   </Dialog>;
 }
 

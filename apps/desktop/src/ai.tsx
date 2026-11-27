@@ -7,6 +7,7 @@ import {
 import { useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ai, aiProviders, builtinAssistantId } from "./ai-api";
+import { aiTermsLabel, useAiTerms } from "./ai-terms";
 import type {
   AiFile, AiJob, AiPreview, AiPrompt, AiProvider, AiReply, AiScope, AiSource, Assistant,
 } from "./ai-api";
@@ -45,12 +46,12 @@ export function AssistantSettings({ assistants, failure, changed }: {
   assistants: Assistant[]; failure: string; changed: (assistants: Assistant[]) => void;
 }) {
   const [editing, setEditing] = useState<AiProvider>();
-  const [agentError, setAgentError] = useState("");
+  const terms = useAiTerms();
   return <div className="surface settings-card ai-settings">
     <h2><Bot size={20} /> AI assistants</h2>
     <p className="muted">Give a provider an @name to ask it from a normal chat.</p>
     {failure && <p className="inline-error" role="alert">{failure}</p>}
-    {agentError && <p className="inline-error" role="alert">{agentError}</p>}
+    {windows && <button type="button" className="text-button" onClick={terms.review}>{aiTermsLabel()}</button>}
     {(Object.keys(aiProviders) as AiProvider[]).map(provider => {
       const details = aiProviders[provider];
       const assistant = assistants.find(entry => entry.provider === provider);
@@ -63,24 +64,20 @@ export function AssistantSettings({ assistants, failure, changed }: {
           </span>
           <ChevronRight size={16} />
         </button>
-        {windows && assistant?.agent_enabled && <label className="settings-row">
-          <span>{t("Autonomous retrieval", "自主检索")}</span>
-          <input type="checkbox" role="switch" checked={true} onChange={() => {
-            setAgentError("");
-            void ai.enableAgent(assistant, false).then(changed).catch(error => setAgentError(errorMessage(error)));
-          }} />
-        </label>}
-        {editing === provider && <AssistantEditor provider={provider} assistant={assistant} saved={next => {
+        {editing === provider && <AssistantEditor provider={provider} assistant={assistant}
+          requireTerms={terms.requireAcceptance} saved={next => {
           changed(next);
           setEditing(undefined);
         }} />}
       </div>;
     })}
+    {terms.dialog}
   </div>;
 }
 
-function AssistantEditor({ provider, assistant, saved }: {
+function AssistantEditor({ provider, assistant, saved, requireTerms }: {
   provider: AiProvider; assistant?: Assistant; saved: (assistants: Assistant[]) => void;
+  requireTerms: () => Promise<boolean>;
 }) {
   const [name, setName] = useState(assistant?.name ?? aiProviders[provider].name);
   const [model, setModel] = useState(assistant?.model ?? aiProviders[provider].model);
@@ -102,6 +99,7 @@ function AssistantEditor({ provider, assistant, saved }: {
     setBusy("test");
     resetTest();
     try {
+      if (!await requireTerms()) return;
       const result = await ai.testConnection(provider, baseUrl, key.current?.value.trim() || undefined);
       setModels(result.models);
       setConnection(result.authenticated

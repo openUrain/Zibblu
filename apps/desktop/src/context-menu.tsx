@@ -21,6 +21,14 @@ export const useMenu = () => useContext(OpenMenu);
 export const useEditMenu = () => useContext(OpenEditMenu);
 export const useMenuAnchor = () => useContext(MenuAnchor);
 
+export function clearMessageSelectionOnBlank(event: React.PointerEvent<HTMLElement>) {
+  if (!windows || event.button !== 0 || !event.isPrimary || !(event.target instanceof Element)
+    || !event.target.matches(".timeline, .messages, .message-row, .message-body, .message-content, .message-meta")) return;
+  const selection = window.getSelection();
+  if (selection && !selection.isCollapsed && event.currentTarget.contains(selection.anchorNode)
+    && event.currentTarget.contains(selection.focusNode)) selection.removeAllRanges();
+}
+
 export function useRowMenu<T extends HTMLElement = HTMLButtonElement>() {
   const open = useMenu();
   const press = useRef<{ target: HTMLElement; x: number; y: number; timer: number; opened: boolean }>(undefined);

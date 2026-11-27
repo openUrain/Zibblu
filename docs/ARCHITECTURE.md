@@ -86,7 +86,7 @@ On Windows, an established private session for a direct conversation owns that c
 
 ## M3 assistant requests
 
-On Windows, first-use consent is bound to the configured provider and model. Each explicit mention creates a local prompt and a cancellable task with read access to the active ordinary conversation. The provider issues bounded semantic calls. The core filters a local SQLite full-text index through current membership, history boundaries, recall and deletion state. Cross-conversation permission is held only by the task. Attachments use the same verified fetch, extraction and chunking as the selection flow. The selection flow sends only the reviewed immutable snapshot. Cancelling aborts in-flight work and removes the placeholder while retaining the prompt.
+On Windows, NSIS setup and the app use the same versioned AI terms text. Interactive setup records acceptance after installation. The app checks that the local record matches the current text before provider requests. The old `agent_enabled` field is ignored on read and dropped when saving provider settings. Each explicit mention creates a local prompt and a cancellable task with read access to the active ordinary conversation. The provider issues bounded semantic calls. The core filters a local SQLite full-text index through current membership, history boundaries, recall and deletion state. Cross-conversation permission is held only by the task. Attachments use the same verified fetch, extraction and chunking as the selection flow. The selection flow sends only the reviewed immutable snapshot. Cancelling aborts in-flight work and removes the placeholder while retaining the prompt.
 
 The Responses adapter handles OpenAI, DeepSeek and Grok at their default HTTPS endpoints or an explicitly configured HTTPS base URL. Autonomous mode requires real function-call support. Model discovery uses a separate authenticated list request without chat context. Windows DPAPI protects keys in the per-account profile. Submitted prompts and completed local replies live in the signed-in account's SQLite profile. Each reply keeps a local link to its prompt slot. Deleting the prompt clears its body independently. Deleting the reply marks the slot before removing the body so an in-flight task cannot recreate it. Completed replies and prompts contribute their own timestamps to local previews. Sharing publishes the provider-tagged reply, its audience and validated source references. The sync feed filters the reply by its audience and resolves source metadata against the recipient's current visibility. The timeline uses the reply's generation time bounded by the conversation and server clock. The recall window for the shared copy starts at publication.
 
@@ -177,7 +177,7 @@ Record decisions in [DECISIONS.md](DECISIONS.md) when one is actually made.
 - 可选清理任务在有界事务中回收过期文字、问候与上传分块，清理到期设备和已终结任务。读取始终先判定期限。事务失败整批回滚，下次轮询重试。
 - WAL、快照和备份有各自的保留期限；应用侧到期只说明在线访问已结束。加密和限权的恢复归档、7 天备份候选期限、介质与复制滞留核验属于上线前的运维决策。[安全边界](SECURITY.md)
 - `0007` 只允许在没有旧账号的 Zibblu 数据库应用。旧数据和旧客户端保留在旧环境。Windows 使用新资料结构；签入 v2 后历史不会自动导入。当前交付提供新资料目录初始化和通过授权重新登记，手动备份包导入、跨设备历史迁移及生产 PITR 切换演练仍待后续工作。[隔离初始化及回滚](ONLINE_DEPLOYMENT.md)
-- 普通消息及附件走 M1。M2 内容只走已认证的局域网连接。M3 提供商只接收逐次确认的本地快照，显式共享回复另行按 M1 处理。
+- 普通消息及附件走 M1。M2 内容只走已认证的局域网连接。M3 提供商只接收本次任务授权的数据，显式共享回复另行按 M1 处理。
 
 ### 本机验收
 

@@ -2,7 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Message } from "./api";
 
 export type AiProvider = "open_ai" | "deep_seek" | "grok";
-export type Assistant = { provider: AiProvider; name: string; model: string; base_url?: string | null; agent_enabled?: boolean };
+export type Assistant = { provider: AiProvider; name: string; model: string; base_url?: string | null };
+export type AiTerms = { text: string; accepted: boolean };
 export type AiFile = { id: string; name: string; bytes: number };
 export type AiScope =
   | { kind: "prompt" }
@@ -70,6 +71,8 @@ export type BuiltinSelection = { provider: AiProvider; model: string; effort: st
 export type BuiltinModel = { selection: BuiltinSelection; efforts: string[] };
 
 export const ai = {
+  terms: () => invoke<AiTerms>("ai_terms"),
+  acceptTerms: (text: string) => invoke<void>("ai_accept_terms", { text }),
   openBuiltinSettings: () => invoke<void>("ai_open_builtin_settings"),
   builtinModel: (selection?: BuiltinSelection) => invoke<BuiltinModel | null>("ai_builtin_model", { selection }),
   startBuiltin: (selection: BuiltinSelection, endpoint: string | null, prompt: string) =>
@@ -84,10 +87,10 @@ export const ai = {
     invoke<{ authenticated: boolean; models: string[] }>("ai_test_connection", { provider, baseUrl, key }),
   removeAssistant: (provider: AiProvider) =>
     invoke<Assistant[]>("ai_remove_assistant", { provider }),
-  enableAgent: (assistant: Assistant, enabled: boolean) =>
-    invoke<Assistant[]>("ai_set_agent_enabled", { provider: assistant.provider, model: assistant.model, baseUrl: assistant.base_url, enabled }),
-  startAgent: (view: string, provider: AiProvider, prompt: string) =>
-    invoke<{ id: string; created_at: number }>("ai_start_agent", { view, provider, prompt }),
+  startAgent: (view: string, assistant: Assistant, prompt: string) =>
+    invoke<{ id: string; created_at: number }>("ai_start_agent", {
+      view, provider: assistant.provider, model: assistant.model, baseUrl: assistant.base_url, prompt,
+    }),
   answerAccess: (jobId: string, requestId: string, accept: boolean) =>
     invoke<void>("ai_answer_access", { jobId, requestId, accept }),
   source: (replyId: string, number: number) => invoke<Message | null>("ai_source", { replyId, number }),
