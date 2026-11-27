@@ -2,21 +2,22 @@ import { FloatingField } from "./floating-field";
 import { Selector } from "./selector";
 import {
   AtSign, Bot, ChevronRight, CircleAlert, CircleCheck, Clock3, FileText, ListChecks,
-  LockKeyhole, MessageSquare, Paperclip, Send, X,
+  Copy, LockKeyhole, MessageSquare, Paperclip, Send, Trash2, X,
 } from "lucide-react";
 import { useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { ai, aiProviders } from "./ai-api";
+import { ai, aiProviders, builtinAssistantId } from "./ai-api";
 import type {
-  AiFile, AiJob, AiPreview, AiPrompt, AiProvider, AiReply, AiScope, Assistant,
+  AiFile, AiJob, AiPreview, AiPrompt, AiProvider, AiReply, AiScope, AiSource, Assistant,
 } from "./ai-api";
 import { api, errorMessage } from "./api";
 import { decimalSize, splitFileName } from "./file-labels";
 import { actions, t } from "./locale";
 import { windows } from "./window-chrome";
 import { RichMessage } from "./rich-message";
-import type { Attachment, Message, User } from "./api";
-import { bytes, Choice, Dialog, People, PersonAvatar, displayName } from "./common";
+import type { Attachment, Conversation, Message, User } from "./api";
+import { bytes, chatName, Choice, dateTimeLabel, Dialog, People, PersonAvatar, displayName } from "./common";
+import { copyText, useRowMenu } from "./context-menu";
 import "./ai.css";
 
 const MAX_MESSAGES = 60;
@@ -362,15 +363,59 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
   </Dialog>;
 }
 
-export function AiPromptBubble({ prompt, assistantName, sender }: {
-  prompt: AiPrompt; assistantName?: string; sender: User;
+export const builtinAssistantName = () => t("Zibblu Assistant", "Zibblu 助手");
+
+export function selectedText(anchor: HTMLElement) {
+  const selection = window.getSelection();
+  if (selection && !selection.isCollapsed && selection.rangeCount && selection.getRangeAt(0).intersectsNode(anchor)) {
+    return selection.toString();
+  }
+}
+
+export function useAiMessageMenu(failed: (error: unknown) => void) {
+  const menu = useRowMenu<HTMLDivElement>();
+  return (text: string | undefined, remove: () => void, share?: () => void) => menu(anchor => [
+    ...(text ? [{ label: t("Copy", "复制"), icon: <Copy size={15} />,
+      action: () => void copyText(selectedText(anchor) || text).catch(failed) }] : []),
+    ...(share ? [{ label: t("Share reply", "分享回复"), action: share }] : []),
+    { label: t("Delete", "删除"), icon: <Trash2 size={15} />, danger: true, action: remove },
+  ]);
+}
+
+export function AiSources({ sources, open, failed }: {
+  sources: AiSource[]; open: (number: number) => void; failed: (error: unknown) => void;
+}) {
+  const menu = useRowMenu<HTMLSpanElement>();
+  if (!sources.length) return null;
+  return <ul className="ai-sources" aria-label={t("Sources", "来源")}>
+    {sources.map(source => {
+      const time = new Date(source.created_at);
+      const title = new Intl.DateTimeFormat(undefined, {
+        year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit",
+        second: "2-digit", timeZoneName: "longOffset",
+      }).format(time);
+      return <li key={source.number}><span role="link" tabIndex={0} className="text-button ai-source-link"
+        {...menu(anchor => [{
+          label: t("Copy", "复制"), icon: <Copy size={15} />,
+          action: () => void copyText(selectedText(anchor) || anchor.textContent || "").catch(failed),
+        }])}
+        onClick={event => { if (!selectedText(event.currentTarget)) open(source.number); }}
+        onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); open(source.number); } }}>
+        [{source.number}] {source.label} <time dateTime={time.toISOString()} title={title}>{dateTimeLabel(source.created_at)}</time>
+      </span></li>;
+    })}
+  </ul>;
+}
+
+export function AiPromptBubble({ prompt, assistantName, sender, menu, builtin = false }: {
+  prompt: AiPrompt; assistantName?: string; sender: User; builtin?: boolean; menu?: React.HTMLAttributes<HTMLDivElement>;
 }) {
   const target = assistantName ? `@${assistantName}` : aiProviders[prompt.provider].label;
-  return <div className="message-row mine ai-prompt-row">
+  return <div className="message-row mine ai-prompt-row" tabIndex={menu ? 0 : undefined} aria-haspopup={menu ? "menu" : undefined} {...menu}>
     <div className="message-body">
       <div className="message-content">
         <div className="bubble ai-prompt-bubble">
-          <span className="ai-prompt-target">{target}</span>{" "}
+          {!builtin && <><span className="ai-prompt-target">{target}</span>{" "}</>}
           <span>{prompt.prompt_text}</span>
         </div>
       </div>
@@ -385,8 +430,8 @@ export function AiPromptBubble({ prompt, assistantName, sender }: {
   </div>;
 }
 
-export function AiJobBubble({ job, onCancel, onDismiss }: {
-  job: AiJob; onCancel: (jobId: string) => void; onDismiss?: (jobId: string) => void;
+export function AiJobBubble({ job, onCancel, onDismiss, menu }: {
+  job: AiJob; onCancel: (jobId: string) => void; onDismiss?: (jobId: string) => void; menu?: React.HTMLAttributes<HTMLDivElement>;
 }) {
   const [busy, setBusy] = useState(false);
   const [accessError, setAccessError] = useState("");
@@ -409,7 +454,7 @@ export function AiJobBubble({ job, onCancel, onDismiss }: {
       ? t(`Chunk ${job.status_text}`, `分块 ${job.status_text}`)
       : undefined;
 
-  return <div className="message-row ai-job-row">
+  return <div className="message-row ai-job-row" tabIndex={menu ? 0 : undefined} aria-haspopup={menu ? "menu" : undefined} {...menu}>
     <ProviderLogo provider={job.provider} />
     <div className="message-body">
       <div className="message-content">
@@ -449,10 +494,17 @@ export function AiJobBubble({ job, onCancel, onDismiss }: {
   </div>;
 }
 
-export function ShareAiReply({ reply, members, close, published }: {
+export function ShareAiReply({ reply, members, close, published, destinations = [], own }: {
   reply: AiReply; members: User[]; close: () => void; published: () => Promise<void>;
+  destinations?: Conversation[]; own?: string;
 }) {
   const { remarks } = useContext(People);
+  const builtin = reply.conversation_id === builtinAssistantId;
+  const [target, setTarget] = useState("");
+  const nonce = useRef(builtin ? crypto.randomUUID() : reply.id);
+  const targetMembers = builtin
+    ? destinations.find(chat => chat.id === target)?.members.filter(member => member.id !== own) ?? []
+    : members;
   const [readers, setReaders] = useState<string[]>([]);
   const [posting, setPosting] = useState(false);
   const [failure, setFailure] = useState("");
@@ -465,9 +517,9 @@ export function ShareAiReply({ reply, members, close, published }: {
     setFailure("");
     try {
       lockedReaders.current ??= readers;
-      await api.publishAiReply(reply.conversation_id, {
-        nonce: reply.id, provider: reply.provider, text: shareText, created_at: reply.created_at, readers: lockedReaders.current,
-      });
+      await api.publishAiReply(builtin ? target : reply.conversation_id, {
+        nonce: nonce.current, provider: reply.provider, text: shareText, created_at: reply.created_at, readers: lockedReaders.current,
+      }, builtin ? reply.id : undefined);
       await published();
     } catch (error) { setFailure(errorMessage(error)); }
     finally { setPosting(false); }
@@ -479,9 +531,14 @@ export function ShareAiReply({ reply, members, close, published }: {
       "Generated text may contain information from other conversations. Review the reply before sharing. Each recipient sees only sources they can access.",
       "生成文本可能包含其他会话的信息。请核对正文后再分享。每位接收者只会看到有权限访问的来源。",
     )}</p><RichMessage text={shareText} /></>}
+    {builtin && <label>{t("Conversation", "会话")} <select value={target} disabled={posting || !!lockedReaders.current}
+      onChange={event => { setTarget(event.currentTarget.value); setReaders([]); }}>
+      <option value="">{t("Choose a conversation", "选择会话")}</option>
+      {destinations.map(chat => <option key={chat.id} value={chat.id}>{chatName(chat, own!, remarks)}</option>)}
+    </select></label>}
     <fieldset className="dialog-contacts" disabled={posting || !!lockedReaders.current}>
       <legend>Chat members</legend>
-      {members.map(user => <Choice key={user.id} checked={readers.includes(user.id)} onChange={event => {
+      {targetMembers.map(user => <Choice key={user.id} checked={readers.includes(user.id)} onChange={event => {
           setReaders(event.target.checked ? [...readers, user.id] : readers.filter(id => id !== user.id));
         }}>
         <span>{displayName(user, remarks)}</span>

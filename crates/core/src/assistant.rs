@@ -118,6 +118,7 @@ impl AiProvider {
                 text: input.to_owned(),
             }],
             Arc::new(Notify::new()),
+            None,
         )
         .await
     }
@@ -129,9 +130,10 @@ impl AiProvider {
         key: &str,
         parts: Vec<AiInputPart>,
         cancel: Arc<Notify>,
+        effort: Option<&str>,
     ) -> Result<String> {
         let http = provider_client(Duration::from_secs(120))?;
-        let request = self.request_parts(&http, base, model, key, &parts)?;
+        let request = self.request_parts(&http, base, model, key, &parts, effort)?;
         exchange(&http, request, cancel).await
     }
 
@@ -143,6 +145,7 @@ impl AiProvider {
         input: &[Value],
         tools: &[Value],
         require_tool: bool,
+        effort: Option<&str>,
     ) -> Result<AiAgentTurn> {
         ensure!(serde_json::to_vec(input)?.len() <= MAX_INPUT_BYTES,
             "AI retrieval reached its context limit. Ask a narrower question.");
@@ -156,6 +159,9 @@ impl AiProvider {
             request["reasoning"] = json!({ "effort": "none" });
         } else {
             request["store"] = json!(false);
+        }
+        if let Some(effort) = effort {
+            request["reasoning"] = json!({ "effort": effort });
         }
         if self == Self::OpenAi {
             request["include"] = json!(["reasoning.encrypted_content"]);
@@ -199,6 +205,7 @@ impl AiProvider {
             &[AiInputPart::InputText {
                 text: input.to_owned(),
             }],
+            None,
         )
     }
 
@@ -209,6 +216,7 @@ impl AiProvider {
         model: &str,
         key: &str,
         parts: &[AiInputPart],
+        effort: Option<&str>,
     ) -> Result<Request> {
         ensure!(!parts.is_empty(), "AI request requires at least one input part");
         let user_content = match parts {
@@ -227,6 +235,9 @@ impl AiProvider {
             body["reasoning"] = json!({ "effort": "none" });
         } else {
             body["store"] = json!(false);
+        }
+        if let Some(effort) = effort {
+            body["reasoning"] = json!({ "effort": effort });
         }
         http.post(base.join("responses")?)
             .bearer_auth(key)
@@ -485,10 +496,12 @@ mod tests {
                 "gpt-5.4-mini",
                 "fixture-key",
                 &parts,
+                Some("high"),
             )
             .unwrap();
         let bytes = request.body().unwrap().as_bytes().unwrap();
         let body: Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(body["reasoning"]["effort"], "high");
         let content = body["input"][1]["content"].as_array().unwrap();
         assert_eq!(content.len(), 3);
         assert_eq!(content[0]["type"], "input_text");

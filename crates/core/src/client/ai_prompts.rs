@@ -52,10 +52,32 @@ fn parse_ai_provider(value: &str) -> Result<AiProvider> {
 }
 
 impl Client {
+    pub(super) async fn latest_ai_activity(&self, conversation: Uuid) -> Result<Option<(i64, String)>> {
+        let id = conversation.to_string();
+        Ok(sqlx::query_as(
+            "SELECT created_at, substr(body, 1, 100) FROM (
+                 SELECT created_at, prompt_text AS body, 1 AS kind, id
+                 FROM ai_local_prompts WHERE conversation_id = ?1 AND prompt_text <> ''
+                 UNION ALL
+                 SELECT r.created_at, r.text, 2, r.id FROM ai_local_replies r
+                 JOIN ai_local_prompts p ON p.id = r.prompt_id WHERE p.conversation_id = ?1
+             ) ORDER BY created_at DESC, kind DESC, id DESC LIMIT 1",
+        ).bind(id).fetch_optional(&self.db).await?)
+    }
+
+    pub async fn clear_assistant_history(&self) -> Result<()> {
+        self.ensure_open()?;
+        let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
+        delete_ai_prompts_in_tx(&mut tx, ZIBBLU_ASSISTANT).await?;
+        tx.commit().await?;
+        self.history_changed();
+        Ok(())
+    }
+
     pub async fn list_ai_replies(&self, conversation: Uuid) -> Result<Vec<AiLocalReply>> {
         self.ensure_open()?;
         let mut tx = self.db.begin().await?;
-        super::ai_context::ensure_normal_chat(&mut tx, self.user.id, conversation).await?;
+        ensure_ai_history(&mut tx, self.user.id, conversation).await?;
         list_ai_replies_in_tx(&mut tx, Some(conversation), None).await
     }
 
@@ -64,7 +86,7 @@ impl Client {
         let mut tx = self.db.begin().await?;
         let reply = list_ai_replies_in_tx(&mut tx, None, Some(id)).await?.pop();
         if let Some(reply) = &reply {
-            super::ai_context::ensure_normal_chat(&mut tx, self.user.id, reply.conversation_id).await?;
+            ensure_ai_history(&mut tx, self.user.id, reply.conversation_id).await?;
         }
         Ok(reply)
     }
@@ -72,23 +94,50 @@ impl Client {
     pub async fn insert_ai_reply(&self, reply: &AiLocalReply) -> Result<bool> {
         self.ensure_open()?;
         let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
-        super::ai_context::ensure_normal_chat(&mut tx, self.user.id, reply.conversation_id).await?;
+        ensure_ai_history(&mut tx, self.user.id, reply.conversation_id).await?;
         let inserted = insert_ai_reply_in_tx(&mut tx, reply).await?;
         tx.commit().await?;
+        if inserted { self.history_changed(); }
         Ok(inserted)
     }
 
     pub async fn dismiss_ai_reply(&self, id: Uuid) -> Result<Option<Uuid>> {
         let Some(reply) = self.ai_reply(id).await? else { return Ok(None); };
-        sqlx::query("DELETE FROM ai_local_replies WHERE id = ?")
-            .bind(id.to_string()).execute(&self.db).await?;
+        self.delete_ai_reply_slot(reply.conversation_id, reply.prompt_id).await?;
         Ok(Some(reply.conversation_id))
+    }
+
+    pub async fn delete_ai_reply_slot(&self, conversation: Uuid, prompt: Uuid) -> Result<()> {
+        self.ensure_open()?;
+        let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
+        ensure_ai_history(&mut tx, self.user.id, conversation).await?;
+        let affected = sqlx::query(
+            "UPDATE ai_local_prompts SET reply_deleted = 1 WHERE conversation_id = ? AND id = ?",
+        ).bind(conversation.to_string()).bind(prompt.to_string()).execute(&mut *tx).await?;
+        if affected.rows_affected() != 0 {
+            sqlx::query("DELETE FROM ai_local_replies WHERE prompt_id = ?")
+                .bind(prompt.to_string()).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        self.history_changed();
+        Ok(())
+    }
+
+    pub async fn delete_ai_prompt(&self, conversation: Uuid, id: Uuid) -> Result<()> {
+        self.ensure_open()?;
+        let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
+        ensure_ai_history(&mut tx, self.user.id, conversation).await?;
+        sqlx::query("UPDATE ai_local_prompts SET prompt_text = '' WHERE conversation_id = ? AND id = ?")
+            .bind(conversation.to_string()).bind(id.to_string()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        self.history_changed();
+        Ok(())
     }
 
     pub async fn list_ai_prompts(&self, conversation: Uuid) -> Result<Vec<AiLocalPrompt>> {
         self.ensure_open()?;
         let mut tx = self.db.begin().await?;
-        super::ai_context::ensure_normal_chat(&mut tx, self.user.id, conversation).await?;
+        ensure_ai_history(&mut tx, self.user.id, conversation).await?;
         let rows = list_ai_prompts_in_tx(&mut tx, conversation).await?;
         tx.commit().await?;
         Ok(rows)
@@ -97,12 +146,22 @@ impl Client {
     pub async fn insert_ai_prompt(&self, prompt: &AiLocalPrompt) -> Result<()> {
         self.ensure_open()?;
         let mut tx = self.db.begin_with("BEGIN IMMEDIATE").await?;
-        super::ai_context::ensure_normal_chat(&mut tx, self.user.id, prompt.conversation_id)
+        ensure_ai_history(&mut tx, self.user.id, prompt.conversation_id)
             .await?;
         insert_ai_prompt_in_tx(&mut tx, prompt).await?;
         tx.commit().await?;
+        self.history_changed();
         Ok(())
     }
+}
+
+pub const ZIBBLU_ASSISTANT: Uuid = Uuid::nil();
+
+async fn ensure_ai_history(db: &mut SqliteConnection, user: Uuid, conversation: Uuid) -> Result<()> {
+    if !cfg!(windows) || conversation != ZIBBLU_ASSISTANT {
+        super::ai_context::ensure_normal_chat(db, user, conversation).await?;
+    }
+    Ok(())
 }
 
 async fn list_ai_replies_in_tx(
@@ -134,7 +193,7 @@ async fn insert_ai_reply_in_tx(db: &mut SqliteConnection, reply: &AiLocalReply) 
     let result = sqlx::query(
         "INSERT OR IGNORE INTO ai_local_replies (id, prompt_id, text, sources, created_at)
          SELECT ?1, id, ?2, ?3, ?4 FROM ai_local_prompts
-         WHERE id = ?5 AND conversation_id = ?6 AND provider = ?7",
+         WHERE id = ?5 AND conversation_id = ?6 AND provider = ?7 AND reply_deleted = 0",
     )
     .bind(reply.id.to_string())
     .bind(&reply.text)
@@ -154,7 +213,7 @@ async fn list_ai_prompts_in_tx(
     let rows = sqlx::query(
         "SELECT id, conversation_id, provider, prompt_text, created_at
          FROM ai_local_prompts
-         WHERE conversation_id = ?1
+         WHERE conversation_id = ?1 AND prompt_text <> ''
          ORDER BY created_at ASC, id ASC",
     )
     .bind(conversation.to_string())
@@ -233,6 +292,7 @@ mod tests {
                 conversation_id TEXT NOT NULL,
                 provider TEXT NOT NULL,
                 prompt_text TEXT NOT NULL,
+                reply_deleted INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL
              );
              CREATE TABLE ai_local_replies (

@@ -2,15 +2,16 @@ import { FloatingField } from "./floating-field";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import {
-  ArrowRight, CircleUserRound, FolderOpen, HardDrive, Info, LogOut, Menu, MessageCircle, MessageSquare,
+  ArrowRight, Bot, CircleUserRound, FolderOpen, HardDrive, Info, LogOut, Menu, MessageCircle, MessageSquare,
   Radar, Search, Settings, Shield, UserRoundPlus, UsersRound, X,
   ChevronLeft, ChevronRight, UserRound,
 } from "lucide-react";
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { ai } from "./ai-api";
+import { ai, builtinAssistantId } from "./ai-api";
 import type { AiJob, AiPrompt, AiReply, Assistant } from "./ai-api";
-import { AssistantSettings } from "./ai";
+import { AssistantSettings, builtinAssistantName } from "./ai";
+import { BuiltinAssistant } from "./builtin-assistant";
 import { StorageSettings } from "./storage-settings";
 import { api, errorMessage, isExpired } from "./api";
 import type { AddDraftsResult, CloseAction, Conversation, ConversationRequest, Device, Directory, Draft, DropOffer, Profile, Session, SyncUpdate, Transfer, User } from "./api";
@@ -62,6 +63,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const [allConversations, setAllConversations] = useState<Conversation[]>([]);
+  const [assistantChat, setAssistantChat] = useState<Conversation>();
+  const [sourceFocus, setSourceFocus] = useState<{ conversation: string; seq: number }>();
   const [directory, setDirectory] = useState<Directory>({ contacts: [], conversations: [], pending_contacts: [], remarks: {}, names: {}, avatars: {}, read_receipts: false });
   const [historyCache] = useState(() => new ChatHistoryCache());
   const [profiles] = useState(() => new ProfileCache());
@@ -306,6 +309,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     if (signingOut.current || update.revision < appliedRevision.current) return;
     appliedRevision.current = update.revision;
     setDirectory(previous => mergeDirectory(previous, update.directory));
+    setAssistantChat(update.assistant_chat);
     const offset = update.server_now - Date.now();
     setClockOffset(previous => Math.abs(previous - offset) < 250 ? previous : offset);
     setRecalled(previous => previous.size === update.recalled.length && update.recalled.every(seq => previous.has(seq)) ? previous : new Set(update.recalled));
@@ -351,7 +355,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
 
   useEffect(() => {
     const updated = listen("message-outbox-changed", () => void refreshLocal());
-    return () => { void updated.then(unlisten => unlisten()); };
+    const aiUpdated = listen("zibblu-ai-changed", () => void refreshLocal());
+    return () => { void updated.then(unlisten => unlisten()); void aiUpdated.then(unlisten => unlisten()); };
   }, [refreshLocal]);
 
   useEffect(() => {
@@ -405,9 +410,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     }
     const target = selected;
     let current = true;
+    let order = 0;
     const syncAi = () => {
+      const ticket = ++order;
       void loadAiForChat(target).then(state => {
-        if (!current || !state) return;
+        if (!current || !state || ticket !== order) return;
         setAiPrompts(state.prompts);
         setAiJobs(state.jobs);
         setAiReplies(state.replies);
@@ -483,6 +490,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }, []);
 
   const active = directory.conversations.find(chat => chat.id === selected);
+  const builtinActive = !!assistantChat && selected === builtinAssistantId;
   const pairedPrivate = !!active && (privateView?.conversation === active.id || (!privateView && !!exclusiveRoom));
   const availablePrivate = active && privateRooms.find(room => room.conversation === active.id);
   const activeId = nav === "Chats" && !privateOpen && !profile && !quickProfile ? active?.id : undefined;
@@ -519,6 +527,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }
 
   function selectChat(id: string, page?: "details" | "search") {
+    setSourceFocus(undefined);
     const target = directory.conversations.find(chat => chat.id === id);
     const room = exclusivePrivateRoom(privateRooms, target);
     if (room) {
@@ -540,6 +549,22 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     setNav("Chats");
     setMobileChat(true);
   }
+
+  useEffect(() => {
+    if (!windows) return;
+    const source = listen<[string, number]>("zibblu-source-open", ({ payload: [conversation, seq] }) => {
+      const target = directory.conversations.find(chat => chat.id === conversation);
+      if (!target || exclusivePrivateRoom(privateRooms, target)) {
+        setFailure(t("Source unavailable.", "来源不可用。"));
+        return;
+      }
+      selectChat(conversation);
+      setQuickProfile(undefined);
+      setSourceFocus({ conversation, seq });
+    });
+    const settings = listen("zibblu-open-builtin-settings", () => navigate("Settings", true));
+    return () => { void source.then(stop => stop()); void settings.then(stop => stop()); };
+  }, [directory.conversations, privateRooms, privateView]);
 
   const showPrivate = useCallback((id: string, conversation?: string | null) => {
     privateSelection.current += 1;
@@ -794,9 +819,9 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
         + (desktopContacts ? " contacts-layout" : "")
         + (desktopContacts && directoryContact && selectedContact?.narrowDetail ? " contact-detail-open" : "")
         + (profile && !splitProfile && !chatProfile && !desktopContacts ? " profile-replaces-root" : "")}>
-      {nav === "Chats" && <div className={"chat-layout" + (mobileChat && (active || privateOpen) ? " mobile-chat-open" : "")
+      {nav === "Chats" && <div className={"chat-layout" + (mobileChat && (active || builtinActive || privateOpen) ? " mobile-chat-open" : "")
         + (profile && chatProfile ? " chat-profile-open" : "")}>
-        <ChatList chats={directory.conversations} drafts={drafts} own={session.user} selected={privateOpen && !pairedPrivate ? undefined : selected}
+        <ChatList chats={assistantChat ? [...directory.conversations, assistantChat] : directory.conversations} drafts={drafts} own={session.user} selected={privateOpen && !pairedPrivate ? undefined : selected}
           open={selectChat} newChat={() => setNewChat(true)} addContact={() => setNewContact(true)}
           rooms={privateRooms} activePrivate={privateId}
           openPrivate={selectPrivate} createQr={() => void createPrivateCode()}
@@ -818,11 +843,17 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             setDraft={change => setDraft("private/" + privateId, previous => ({ text: change(previous.text) }))}
             back={backFromChat} showCode={showPrivateCode} onClosed={invalidated => privateClosed(privateId, viewSelection, invalidated)}
             switchMode={pairedPrivate && !exclusiveRoom ? returnToNormal : undefined} />
+          : builtinActive ? <BuiltinAssistant own={session.user} assistants={assistants} chats={directory.conversations}
+            prompts={aiPrompts.filter(item => item.conversation_id === builtinAssistantId)}
+            replies={aiReplies.filter(item => item.conversation_id === builtinAssistantId)}
+            jobs={aiJobs.filter(item => item.conversation_id === builtinAssistantId)}
+            settings={() => navigate("Settings", true)} refresh={refresh} back={() => setMobileChat(false)} />
           : active ? <ChatView key={active.id + ":" + (active.joined_after ?? "")} chat={active}
             own={session.user} server={session.server} revision={revision} profileOpen={!!profile} historyCache={historyCache}
             privateRoom={availablePrivate}
             visibleOnNarrow={mobileChat}
             requested={chatPage?.id === active.id ? chatPage : undefined}
+            sourceFocus={sourceFocus?.conversation === active.id ? sourceFocus : undefined}
             latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset}
             hidden={hidden} hide={seq => hide(active.id, seq)} removeHistory={entire => removeHistory(active.id, entire)} readReceipts={directory.read_receipts && connected && !profile && !quickProfile}
             draft={drafts[active.id] ?? { text: "" }} setDraft={change => setDraft(active.id, change)}
@@ -844,7 +875,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       </div>}
       {(windows || nav === "Contacts") && <Contacts active={nav === "Contacts"} details={openDetails} directory={directory} own={session.user.id}
         selected={windows ? directoryContact?.id : profile?.id} refresh={refresh} create={create} reopenGroup={reopenHiddenGroup}
-        openAvatar={openContactCard} addContact={() => setNewContact(true)} />}
+        openAvatar={openContactCard} addContact={() => setNewContact(true)}
+        openAssistant={assistantChat ? () => selectChat(builtinAssistantId) : undefined} />}
       {nav === "Files" && <FilesView revision={revision} recalled={recalled} hidden={hidden} transfers={transfers} onChanged={changed} />}
       {nav === "Me" && <section className="settings-page phone-me">
         <header className="workspace-heading"><h1>{tabLabels.Me}</h1></header>
@@ -928,7 +960,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       openProfile(user);
     }} />}
     {deletingChat && <Dialog title={t("Delete chat", "删除聊天")} close={() => setDeletingChat(undefined)} closeDisabled={deleteBusy}>
-      <p>{t(
+      <p>{deletingChat.id === builtinAssistantId ? t("Clear the assistant history on this device?", "确认清除本设备的助手聊天记录？") : t(
         `Delete local chat history for ${chatName(deletingChat, session.user.id, names)}? Contacts, group membership, and unsent messages are preserved.`,
         `确认删除「${chatName(deletingChat, session.user.id, names)}」在本设备的聊天记录？联系人关系、群成员身份和尚未发送的待发消息不会丢失。`,
       )}</p>
@@ -1030,12 +1062,13 @@ function AddContact({ session, close, open }: { session: Session; close: () => v
   </Dialog>;
 }
 
-function Contacts({ active, directory, own, selected, refresh, create, reopenGroup, addContact, details, openAvatar }: {
+function Contacts({ active, directory, own, selected, refresh, create, reopenGroup, addContact, details, openAvatar, openAssistant }: {
   active: boolean; openAvatar: (user: User) => void; own: string;
   details: (user: User) => void;
   directory: Directory; selected?: string; refresh: () => Promise<void>; create: (request: ConversationRequest) => Promise<void>;
   reopenGroup: (id: string) => Promise<void>;
   addContact: () => void;
+  openAssistant?: () => void;
 }) {
   const { contacts, pending_contacts } = directory;
   const { remarks, open } = useContext(People);
@@ -1084,6 +1117,7 @@ function Contacts({ active, directory, own, selected, refresh, create, reopenGro
     if (group) group.push(entry);
     else groups.set(entry.letter, [entry]);
   }
+  const showAssistant = !!openAssistant && (matches(builtinAssistantName()) || matches("Zibblu Assistant"));
   const emptyText = query ? t("No matching contacts", "没有匹配的联系人") : t("No contacts yet", "暂无联系人");
   const matchingHiddenGroups = hiddenGroups
     .map(chat => ({ chat, name: chatName(chat, own, remarks) }))
@@ -1092,7 +1126,9 @@ function Contacts({ active, directory, own, selected, refresh, create, reopenGro
     {ios && <header className="workspace-heading"><h1>{tabLabels.Contacts}</h1></header>}
     <form className="chat-list-head" role={windows ? "search" : undefined} onSubmit={event => {
       event.preventDefault();
-      if (query && filtered.length === 1 && matchingHiddenGroups.length === 0) details(filtered[0].user);
+      if (!query || matchingHiddenGroups.length) return;
+      if (showAssistant && !filtered.length) openAssistant?.();
+      else if (!showAssistant && filtered.length === 1) details(filtered[0].user);
     }}>
       <WorkspaceSearchField label={t("Search contacts", "搜索联系人")} otherIconSize={17}
         value={search} onChange={event => {
@@ -1109,6 +1145,12 @@ function Contacts({ active, directory, own, selected, refresh, create, reopenGro
     <div className="contacts-list" ref={list}
       onScroll={windows ? event => { scrollTop.current = event.currentTarget.scrollTop; } : undefined}>
     {failure && <p className="inline-error" role="alert">{failure}</p>}
+    {showAssistant && <section className="contact-group">
+      <h2 className="section-title">{t("System contacts", "系统联系人")}</h2>
+      <div className="contact-row"><button type="button" className="person-link contact-name" onClick={openAssistant}>
+        <span className="avatar ai-builtin-avatar"><Bot size={20} /></span><span><strong>{builtinAssistantName()}</strong></span>
+      </button></div>
+    </section>}
     {matchingHiddenGroups.length > 0 && <section>
       <h2 className="section-title">{t("Hidden group chats", "已隐藏的群聊")}</h2>
       <div className="contact-requests">

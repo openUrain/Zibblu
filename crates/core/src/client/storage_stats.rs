@@ -658,6 +658,7 @@ mod tests {
                 sha256: sha256_hex(bytes),
             }),
             ai_provider: None,
+            published_at: None,
             ai_sources: Vec::new(),
             recalled: false,
             reply_to: None,

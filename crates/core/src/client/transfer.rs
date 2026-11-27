@@ -2361,6 +2361,7 @@ impl Client {
             text: None,
             attachment: Some(attachment),
             ai_provider: None,
+            published_at: None,
             ai_sources: Vec::new(),
             recalled: stamp.recalled,
             reply_to: None,
@@ -3085,7 +3086,7 @@ mod tests {
         };
         let message = |seq, file: Attachment, created_at| Message {
             seq, conversation_id: conversation, sender: session().user, created_at, text: None,
-            attachment: Some(file), ai_provider: None, recalled: false, reply_to: None, nonce: None,
+            attachment: Some(file), ai_provider: None, published_at: None, recalled: false, reply_to: None, nonce: None,
             ai_sources: Vec::new(),
             expires_at: None, expired: None, pending: None, local_file: false,
         };
@@ -3540,6 +3541,7 @@ mod tests {
                 text: None,
                 attachment: Some(att_sent.clone()),
                 ai_provider: None,
+                published_at: None,
                 ai_sources: Vec::new(),
                 recalled: false,
                 reply_to: None,

@@ -31,6 +31,8 @@ pub(crate) struct Desktop {
     outbox_wake: Arc<Notify>,
     outbox_worker: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub(crate) ai: StdMutex<crate::ai::AiState>,
+    #[cfg(windows)]
+    pub(crate) ai_history: Mutex<()>,
     pub(crate) private: Mutex<Option<Arc<PrivateLobby>>>,
     pub(crate) discovery: StdMutex<DiscoveryStatus>,
     pub(crate) dismissed_rooms: DismissedRooms,
@@ -58,6 +60,8 @@ impl Desktop {
             outbox_wake: Arc::new(Notify::new()),
             outbox_worker: Mutex::new(None),
             ai: StdMutex::default(),
+            #[cfg(windows)]
+            ai_history: Mutex::default(),
             private: Mutex::new(None),
             discovery: StdMutex::new(DiscoveryStatus::Starting),
             dismissed_rooms: DismissedRooms::default(),
@@ -930,7 +934,14 @@ pub(crate) async fn clear_history(
     state: State<'_, Desktop>,
     conversation: Uuid,
 ) -> Result<()> {
-    state.client().await?.clear_received_history(conversation).await?;
+    #[cfg(windows)]
+    let _ai_history = state.ai_history.lock().await;
+    let client = state.client().await?;
+    if cfg!(windows) && conversation == zibblu_core::ZIBBLU_ASSISTANT {
+        client.clear_assistant_history().await?;
+    } else {
+        client.clear_received_history(conversation).await?;
+    }
     state.ai.lock().expect("AI state").clear_conversation(conversation);
     crate::image_viewer::close_deleted(&app, &state, conversation, None, false);
     let _ = app.emit("zibblu-ai-changed", conversation);
@@ -945,6 +956,11 @@ pub(crate) async fn delete_conversation(
     conversation: Uuid,
 ) -> Result<()> {
     let client = state.client().await?;
+    if cfg!(windows) && conversation == zibblu_core::ZIBBLU_ASSISTANT {
+        return clear_history(app, state, conversation).await;
+    }
+    #[cfg(windows)]
+    let _ai_history = state.ai_history.lock().await;
     client.delete_conversation(conversation).await?;
     state.drafts.remove_conversation(&client, conversation);
     state.ai.lock().expect("AI state").clear_conversation(conversation);
@@ -1144,18 +1160,33 @@ pub(crate) async fn publish_ai_reply(
     state: State<'_, Desktop>,
     conversation: Uuid,
     mut reply: PublishAiReply,
+    source_reply: Option<Uuid>,
 ) -> Result<()> {
     let client = state.client().await?;
     #[cfg(windows)]
     {
         crate::ai::ensure_available(&state, &client, conversation, conversation).await?;
-        reply.sources = client.ai_reply(reply.nonce).await?
-            .filter(|entry| entry.conversation_id == conversation && entry.text == reply.text)
-            .map(|entry| entry.sources.iter().map(zibblu_core::AiLocalSource::reference).collect())
-            .unwrap_or_default();
+        let origin = if source_reply.is_some() { zibblu_core::ZIBBLU_ASSISTANT } else { conversation };
+        if conversation == zibblu_core::ZIBBLU_ASSISTANT {
+            return Err(anyhow::anyhow!("Select an ordinary chat to share this reply.").into());
+        }
+        let entry = client.ai_reply(source_reply.unwrap_or(reply.nonce)).await?
+            .filter(|entry| entry.conversation_id == origin && entry.text == reply.text
+                && entry.provider == reply.provider && entry.created_at == reply.created_at);
+        if source_reply.is_some() && entry.is_none() {
+            return Err(anyhow::anyhow!("This reply is unavailable.").into());
+        }
+        reply.sources = if let Some(entry) = entry {
+            crate::ai::agent::share_sources(&state, &client, &entry).await
+        } else {
+            Vec::new()
+        };
     }
     #[cfg(not(windows))]
-    reply.sources.clear();
+    {
+        let _ = source_reply;
+        reply.sources.clear();
+    }
     client.publish_ai_reply(conversation, reply).await?;
     let _ = app.emit("zibblu-chat-changed", ());
     Ok(())

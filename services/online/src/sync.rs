@@ -162,6 +162,8 @@ async fn events(
                'nonce', CASE WHEN m.sender_id = $2 THEN m.nonce END,
                'expires_at', (extract(epoch FROM m.expires_at) * 1000)::BIGINT,
                'ai_provider', m.ai_provider,
+               'published_at', CASE WHEN m.ai_provider IS NOT NULL
+                   THEN (extract(epoch FROM m.published_at) * 1000)::BIGINT END,
                'ai_sources', CASE WHEN live.payload AND m.ai_provider IS NOT NULL THEN coalesce((
                    SELECT jsonb_agg(jsonb_build_object(
                        'number', r.number, 'seq', s.seq, 'conversation_id', s.conversation_id,

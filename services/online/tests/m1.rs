@@ -676,6 +676,17 @@ async fn normal_chat_and_files() -> Result<()> {
             .count(),
         1
     );
+    assert!(reply.published_at.is_some_and(|published| published >= reply.created_at));
+    sqlx::query("UPDATE messages SET created_at = created_at - 3600000 WHERE seq = $1")
+        .bind(reply.seq).execute(&db).await?;
+    assert!(bob.recall_message(group, reply.seq).await.is_err());
+    alice.recall_message(group, reply.seq).await?;
+    assert!(bob.sync_updates().await?.recalled.contains(&reply.seq));
+    assert!(!scanner.sync_updates().await?.recalled.contains(&reply.seq));
+    let recalled_reply = bob.messages(group, None).await?.items.into_iter()
+        .find(|message| message.seq == reply.seq).expect("shared reply tombstone");
+    assert!(recalled_reply.recalled && recalled_reply.text.is_none());
+
     scanner.leave_group(group).await?;
     let group_chunk = format!("{server}/v1/files/{new_attachment}/chunks/0");
     assert_eq!(

@@ -64,7 +64,19 @@ export const aiProviders = {
   grok: { label: "Grok (xAI)", name: "grok", model: "grok-4.7", base: "https://api.x.ai/v1/", icon: "grok.svg" },
 } satisfies Record<AiProvider, { label: string; name: string; model: string; base: string; icon: string }>;
 
+export const builtinAssistantId = "00000000-0000-0000-0000-000000000000";
+
+export type BuiltinSelection = { provider: AiProvider; model: string; effort: string | null };
+export type BuiltinModel = { selection: BuiltinSelection; efforts: string[] };
+
 export const ai = {
+  openBuiltinSettings: () => invoke<void>("ai_open_builtin_settings"),
+  builtinModel: (selection?: BuiltinSelection) => invoke<BuiltinModel | null>("ai_builtin_model", { selection }),
+  startBuiltin: (selection: BuiltinSelection, endpoint: string | null, prompt: string) =>
+    invoke<void>("ai_start_builtin", { selection, endpoint, prompt }),
+  locateSource: (conversation: string, seq: number) => invoke<Message>("ai_locate_source", { conversation, seq }),
+  deleteLocal: (conversation: string, id: string, kind: "prompt" | "reply" | "job") =>
+    invoke<void>("ai_delete_local", { conversation, id, kind }),
   assistants: () => invoke<Assistant[]>("ai_assistants"),
   saveAssistant: (provider: AiProvider, name: string, model: string, baseUrl: string, key?: string) =>
     invoke<Assistant[]>("ai_save_assistant", { provider, name, model, baseUrl, key }),

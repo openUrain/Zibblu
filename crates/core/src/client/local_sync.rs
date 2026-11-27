@@ -75,6 +75,7 @@ impl Client {
                 conversation_id TEXT NOT NULL,
                 provider TEXT NOT NULL,
                 prompt_text TEXT NOT NULL,
+                reply_deleted INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL
              );
              CREATE INDEX IF NOT EXISTS ai_local_prompts_chat
@@ -217,6 +218,13 @@ impl Client {
                 WHERE json_extract(payload, '$.status') IN ('running', 'queued');";
         for statement in statements.split_terminator(';') {
             sqlx::query(statement).execute(&mut *tx).await?;
+        }
+        let has_reply_deleted: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('ai_local_prompts') WHERE name = 'reply_deleted')",
+        ).fetch_one(&mut *tx).await?;
+        if !has_reply_deleted {
+            sqlx::query("ALTER TABLE ai_local_prompts ADD COLUMN reply_deleted INTEGER NOT NULL DEFAULT 0")
+                .execute(&mut *tx).await?;
         }
         #[cfg(windows)]
         initialize_ai_search(&mut tx).await?;
@@ -492,6 +500,8 @@ impl Client {
         let revision = self.history_revision.load(Ordering::Relaxed);
         Ok(SyncUpdate {
             directory: self.directory().await?,
+            #[cfg(windows)]
+            assistant_chat: self.zibblu_assistant_chat().await?,
             recalled,
             deleted: sqlx::query_scalar("SELECT seq FROM local_deleted_messages
                 UNION SELECT -o.id FROM outbox o JOIN local_suppressed_sends s
@@ -508,6 +518,21 @@ impl Client {
             .fetch_optional(&self.db)
             .await?;
         Ok(json.map(|value| serde_json::from_str(&value)).transpose()?.unwrap_or_default())
+    }
+
+    #[cfg(windows)]
+    async fn zibblu_assistant_chat(&self) -> Result<crate::Conversation> {
+        let id = super::ZIBBLU_ASSISTANT;
+        let (activity_at, preview) = self.latest_ai_activity(id).await?
+            .map_or((0, None), |(time, body)| (time, Some(body)));
+        let pinned: Option<i64> = sqlx::query_scalar(
+            "SELECT pinned_at FROM conversation_prefs WHERE conversation_id = ?",
+        ).bind(id.to_string()).fetch_optional(&self.db).await?.flatten();
+        Ok(crate::Conversation {
+            id, title: None, members: Vec::new(), joined_after: None, activity_at, preview,
+            preview_seq: None, latest_seq: 0, unread: 0, read_through: 0,
+            pinned: pinned.is_some(), manual_unread: false, muted: false,
+        })
     }
 
     pub async fn directory(&self) -> Result<Directory> {
@@ -543,6 +568,8 @@ impl Client {
                  FROM timeline WHERE conversation_id = ? AND seq NOT IN (SELECT seq FROM hidden_messages)
                  ORDER BY json_extract(payload, '$.created_at') DESC, seq DESC LIMIT 1",
             ).bind(&id).fetch_optional(&self.db).await?;
+            #[cfg(windows)]
+            let ordinary_time = latest.as_ref().map(|(_, _, time)| *time);
             if let Some((seq, preview, time)) = latest {
                 chat.preview_seq = Some(seq);
                 chat.preview = Some(preview);
@@ -550,6 +577,13 @@ impl Client {
             } else {
                 chat.preview_seq = None;
                 chat.preview = None;
+            }
+            #[cfg(windows)]
+            if let Some((time, preview)) = self.latest_ai_activity(chat.id).await?
+                && ordinary_time.is_none_or(|ordinary| time >= ordinary)
+            {
+                chat.preview = Some(preview);
+                chat.activity_at = time;
             }
             chat.read_through = sqlx::query_scalar::<_, i64>(
                 "SELECT read_through FROM local_read_positions WHERE conversation_id = ?",
