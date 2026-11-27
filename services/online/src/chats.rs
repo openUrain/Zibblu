@@ -109,6 +109,7 @@ pub(crate) async fn directory(db: &mut PgConnection, account: Uuid) -> Result<Di
                 joined_after: Some(row.joined_after),
                 activity_at: row.created_at,
                 preview: None,
+                preview_attachment_kind: None,
                 preview_seq: None,
                 latest_seq: 0,
                 unread: 0,

@@ -50,7 +50,9 @@ Small, durable decisions only. Add a dated entry when an actual choice changes; 
 
 ## D-021 · Windows 私密聊天与 AI 自主检索
 
-[Issue #154](https://github.com/openUrain/Zibblu/issues/154) 确认同一联系人在 Windows 私密会话期间使用单一入口，不同联系人可独立并行。已同意的设备可在 LAN 暂时恢复时重新认证会话。AI 首次启用须披露外发范围，随后每次主动提交只授权当前普通会话，跨会话资料须单独同意。分享引用以接收者的当前访问权限为准。
+[Issue #154](https://github.com/openUrain/Zibblu/issues/154) 确认同一联系人在 Windows 私密会话期间使用单一入口，不同联系人可独立并行。已同意的设备可在 LAN 暂时恢复时重新认证会话。分享引用以接收者的当前访问权限为准。
+
+[Issue #157](https://github.com/openUrain/Zibblu/issues/157) 确认方案 A。Windows AI 默认提供只读自主检索，由安装流程或应用内入口披露外发范围并取得当前条款版本的同意。普通聊天中主动提交 `@名称` 默认仅授权当前普通会话。跨普通会话仍须对具体会话授予本次权限，内置助手适用同一限制。M2 私密会话始终隔离。
 
 ## Open decisions
 

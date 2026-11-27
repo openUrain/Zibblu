@@ -51,6 +51,11 @@ pub(crate) struct Desktop {
 }
 
 impl Desktop {
+    #[cfg(windows)]
+    pub(crate) fn data_dir(&self) -> &Path {
+        &self.data
+    }
+
     pub fn new(data: PathBuf) -> Self {
         let preferences = Preferences::load(&data);
         Self {

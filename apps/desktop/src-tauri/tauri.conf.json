@@ -27,6 +27,7 @@
   },
   "bundle": {
     "active": true,
+    "licenseFile": "windows-ai-terms.txt",
     "targets": ["nsis"],
     "icon": ["icons/icon.png", "icons/icon.ico"],
     "resources": {

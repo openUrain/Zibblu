@@ -5,7 +5,8 @@ import {
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
-import { ai, aiProviders, builtinAssistantId } from "./ai-api";
+import { ai, builtinAssistantId } from "./ai-api";
+import { useAiTerms } from "./ai-terms";
 import type { AiJob, AiPrompt, AiReply, Assistant } from "./ai-api";
 import { AiJobBubble, AiPromptBubble, AiRequest, AiSources, AssistantMenu, builtinAssistantName, ProviderLogo, selectedText, ShareAiReply, useAiMessageMenu } from "./ai";
 import { buildChatContextMenu, sortConversationsForDisplay } from "./chat-list-menu";
@@ -13,7 +14,7 @@ import { api, errorMessage, fileExpired, isSourceChanged } from "./api";
 import type { Conversation, Draft, DraftAttachment, Message, MessageReceipt, Page, PrivateSummary, Transfer, User } from "./api";
 import { canPreview, mediaKind, MAX_IMAGE_BYTES } from "./attachment-media";
 import { Avatar, Blank, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName, messageTimeLabel, startsTimeGroup, usePage } from "./common";
-import { copyText, useEditMenu, useMenu, useMenuAnchor, useRowMenu } from "./context-menu";
+import { clearMessageSelectionOnBlank, copyText, useEditMenu, useMenu, useMenuAnchor, useRowMenu } from "./context-menu";
 import { deriveDraftPreview } from "./draft-preview";
 import { decimalSize, splitFileName } from "./file-labels";
 import { FileIcon, FilesView, TransferList, useAttachmentSave } from "./files";
@@ -30,6 +31,17 @@ import { WorkspaceSearchField } from "./workspace-search";
 import type { ChatHistoryCache } from "./chat-history-cache";
 
 type ChatPage = "details" | "search";
+
+function chatPreview(chat: Conversation) {
+  if (!chat.preview) return t("New conversation", "新会话");
+  if (windows && chat.preview_attachment_kind) {
+    const kind = mediaKind({ kind: chat.preview_attachment_kind, name: chat.preview });
+    if (kind === "image") return t("[Image]", "[图片]");
+    if (kind === "video") return t("[Video]", "[视频]");
+    return chat.preview;
+  }
+  return conversationSummary(chat.preview);
+}
 
 export function ChatList({ chats, drafts, own, selected, open, newChat, addContact, rooms, activePrivate, openPrivate, createQr, scan, openNearby,
   onPin, onToggleRead, onMute, onPopout, onHide, onDelete }: {
@@ -101,7 +113,7 @@ export function ChatList({ chats, drafts, own, selected, open, newChat, addConta
             : paired === chat.id
             ? t("Private chat", "私密聊天")
             : draftPreview ? <><span className="draft-prefix">{draftPreview.prefix}</span>{" "}{draftPreview.body}</>
-              : chat.preview ? conversationSummary(chat.preview) : t("New conversation", "新会话")}</small></span>
+              : chatPreview(chat)}</small></span>
           <span className="chat-row-status">{chat.activity_at > 0 && <time dateTime={new Date(chat.activity_at).toISOString()} title={dateTimeLabel(chat.activity_at)}>{messageTimeLabel(chat.activity_at)}</time>}
             <span className="chat-row-badges">
               {chat.muted && <BellOff size={13} className="chat-muted-icon" aria-label={t("Muted", "消息免打扰")} />}
@@ -684,7 +696,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
   }
 
   return <><div className="timeline-wrap">
-    <div className="timeline" ref={viewport} onScroll={checkScroll}>
+    <div className="timeline" ref={viewport} onScroll={checkScroll} onPointerDown={clearMessageSelectionOnBlank}>
       {failure && <p className="inline-error" role="alert">{failure}</p>}
       {recallError && <p className="inline-error" role="alert">{recallError}</p>}
       {saveFailure && <p className="inline-error" role="alert">{saveFailure}</p>}
@@ -956,9 +968,7 @@ function Composer({ conversation, refresh, pickAttachments, pasteFiles, changed,
   const [menu, setMenu] = useState(false);
   const [menuIndex, setMenuIndex] = useState(0);
   const [request, setRequest] = useState<{ id: string; assistant: Assistant; prompt: string; text: string }>();
-  const [agentConsent, setAgentConsent] = useState<Assistant>();
-  const [agentError, setAgentError] = useState("");
-  const [agentEnabled, setAgentEnabled] = useState<Assistant>();
+  const terms = useAiTerms();
   const textarea = useRef<HTMLTextAreaElement>(null);
   const clipboardFileCheck = useRef<Promise<boolean> | undefined>(undefined);
   const menuId = useId();
@@ -1021,23 +1031,17 @@ function Composer({ conversation, refresh, pickAttachments, pasteFiles, changed,
     void api.removeDraftAttachment(id).catch(() => {});
   }
 
-  async function sendAgent(config: Assistant, enable: boolean) {
+  async function sendAgent(config: Assistant) {
     if (!view || !prompt || !beginSending()) return;
     const text = draft.trim();
     setMenu(false);
     setFailure("");
-    setAgentError("");
     try {
-      if (enable) {
-        await ai.enableAgent(config, true);
-        setAgentEnabled(config);
-      }
-      await ai.startAgent(view, config.provider, prompt);
+      if (!await terms.requireAcceptance()) return;
+      await ai.startAgent(view, config, prompt);
       setDraft(previous => previous.text.trim() === text ? { ...previous, text: "", nonce: undefined } : previous);
-      setAgentConsent(undefined);
     } catch (error) {
-      if (enable) setAgentError(errorMessage(error));
-      else setFailure(errorMessage(error));
+      setFailure(errorMessage(error));
     } finally {
       endSending();
     }
@@ -1055,14 +1059,7 @@ function Composer({ conversation, refresh, pickAttachments, pasteFiles, changed,
       }
       if (!prompt || !view) return;
       if (windows) {
-        const enabledHere = agentEnabled?.provider === assistant.provider && agentEnabled.model === assistant.model
-          && agentEnabled.base_url === assistant.base_url;
-        if (!assistant.agent_enabled && !enabledHere) {
-          setAgentError("");
-          setAgentConsent(assistant);
-        } else {
-          await sendAgent(assistant, false);
-        }
+        await sendAgent(assistant);
         return;
       }
       if (!beginSending()) return;
@@ -1272,22 +1269,7 @@ function Composer({ conversation, refresh, pickAttachments, pasteFiles, changed,
     </form>
     {previewItem && <DraftPreviewDialog item={previewItem} items={attachments}
       onSelect={setPreviewId} close={() => setPreviewId(undefined)} />}
-    {agentConsent && <Dialog title={t("Enable autonomous retrieval?", "启用 AI 自主检索？")}
-      close={() => setAgentConsent(undefined)} closeDisabled={sending}>
-      <p><strong>{aiProviders[agentConsent.provider].label} · {agentConsent.model}</strong></p>
-      <p className="muted">{agentConsent.base_url || aiProviders[agentConsent.provider].base}</p>
-      <p>{t(
-        "When you send an @AI question, the assistant may search this ordinary conversation and send relevant messages and attachments to this provider. Access is read-only. Another conversation requires approval for that task. You can turn this off in AI settings.",
-        "每次主动提交 @AI 问题时，助理可检索当前普通会话，并向该提供商发送相关消息和附件。权限仅限读取，访问其他会话须逐次批准。可在 AI 设置中关闭。",
-      )}</p>
-      {agentError && <p className="inline-error" role="alert">{agentError}</p>}
-      <div className="dialog-actions">
-        <button className="button subtle" type="button" disabled={sending} onClick={() => setAgentConsent(undefined)}>{actionLabels.cancel}</button>
-        <button className="button primary" type="button" disabled={sending} onClick={() => void sendAgent(agentConsent, true)}>
-          {t("Enable and send", "启用并发送")}
-        </button>
-      </div>
-    </Dialog>}
+    {terms.dialog}
     {view && request && <AiRequest view={view} draft={request.id} assistant={request.assistant} prompt={request.prompt}
       messages={page?.items ?? []} hasMore={page?.has_more ?? false} loading={loading} older={older} conversation={conversation}
       close={closeRequest} sent={() => {

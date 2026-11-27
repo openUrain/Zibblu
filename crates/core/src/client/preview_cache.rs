@@ -811,6 +811,7 @@ mod tests {
                 members: vec![user.clone()],
                 activity_at: 1000,
                 preview: None,
+                preview_attachment_kind: None,
                 preview_seq: None,
                 latest_seq: 1,
                 unread: 0,

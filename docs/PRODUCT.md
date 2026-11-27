@@ -91,11 +91,11 @@ Rules:
 
 ## 03 — AI Assistants (explicit read-only)
 
-**Windows flow:** configure a provider and custom assistant name, then submit an `@name` question in an ordinary chat. The first autonomous request shows its provider and explains its read-only access and possible disclosure. Later questions can retrieve relevant messages and attachments from the current ordinary conversation. A request for a named conversation needs explicit approval in a local card. Disable retrieval in AI settings. The timeline shows a local prompt, cancellable progress and the response with links to eligible sources.
+**Windows flow:** review and accept the current AI terms in setup, AI settings or About Zibblu. Configure a provider and custom assistant name, then submit an `@name` question in an ordinary chat. Relevant messages and attachments from the current ordinary conversation are available for read-only retrieval by default. A named other conversation requires explicit approval in a local card for that task. The timeline shows a local prompt, cancellable progress and the response with links to eligible sources.
 
 **Zibblu Assistant on Windows:** open the local system contact from Chats or Contacts and write a question directly. The assistant keeps one conversation per server and account. Its model and supported thinking effort are independent of in-chat mentions. Each send confirms the provider and question. To use ordinary chat history, name the conversation and approve it for that task. The local timeline retains previous replies for review.
 
-The reviewed selection flow authorizes prompt-only, chosen messages, a bounded recent range, or selected files as disclosed before sending.
+The reviewed selection flow authorizes prompt-only, chosen messages, a bounded recent range, or selected files as disclosed before sending. The installed Windows app retains acceptance of the current AI terms locally. A new version requires acceptance before contacting a provider.
 
 Rules:
 - No background access. Each request has a **fresh, one-time** authorization; it never inherits prior scopes.

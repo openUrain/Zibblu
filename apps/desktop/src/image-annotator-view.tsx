@@ -40,6 +40,7 @@ import {
   inferTextSizeLevel,
   layoutAnnotationText,
   moveAnnotationItem,
+  pixelEraserDiameter,
   pushHistory,
   redoHistory,
   renderAnnotationDoc,
@@ -240,6 +241,7 @@ export function ImageAnnotator({
   const [tool, setTool] = useState<AnnotationTool>("pen");
   const [shape, setShape] = useState<ShapeAnnotation["kind"]>("line");
   const [pixelEraser, setPixelEraser] = useState(false);
+  const [eraserPointer, setEraserPointer] = useState<ImagePoint>();
   const [hoverObject, setHoverObject] = useState(false);
   const [color, setColor] = useState<AnnotationColor>("#E53935");
   const [widthLevel, setWidthLevel] = useState<StrokeWidthLevel>("medium");
@@ -679,6 +681,12 @@ export function ImageAnnotator({
   }
 
   function handlePointerMove(event: PointerEvent<HTMLCanvasElement>) {
+    if (windows && tool === "eraser" && pixelEraser && event.pointerType !== "touch") {
+      const canvas = event.currentTarget;
+      const rect = canvas.getBoundingClientRect();
+      setEraserPointer(document.elementFromPoint(event.clientX, event.clientY) === canvas
+        ? { x: event.clientX - rect.left, y: event.clientY - rect.top } : undefined);
+    }
     const pt = pointFromPointer(event);
     if (!pt) return;
 
@@ -1000,6 +1008,14 @@ export function ImageAnnotator({
       : hoverHandle
         ? hoverHandle
         : tool === "select" && hoverObject ? "move" : tool;
+  const eraserHit = eraserPointer && cursorMode === "eraser" && pixelEraser && !textEditor
+    ? clientToImagePoint(eraserPointer.x, eraserPointer.y, { ...stageRect, left: 0, top: 0 },
+      viewTransform, naturalWidth, naturalHeight) : undefined;
+  const showEraser = eraserHit && eraserHit.x >= 0 && eraserHit.x <= naturalWidth
+    && eraserHit.y >= 0 && eraserHit.y <= naturalHeight;
+  const eraserStroke = dragRef.current?.kind === "pen" ? dragRef.current.item : undefined;
+  const eraserRadius = pixelEraserDiameter(eraserStroke?.widthLevel ?? widthLevel, naturalWidth, naturalHeight)
+    * viewTransform.scale / 2;
 
   const shapeOptions = tools.filter(item => shapeTools.includes(item.id));
   const activeShape = shapeOptions.find(item => item.id === shape)!;
@@ -1017,20 +1033,29 @@ export function ImageAnnotator({
         ref={canvasRef}
         className="image-annotator-canvas"
         data-tool={cursorMode}
+        data-pixel-cursor={showEraser || undefined}
         data-panning={spacePressed || undefined}
         aria-label={t("Image annotation canvas", "图片标注画布")}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
+        onPointerLeave={() => setEraserPointer(undefined)}
         onPointerUp={event => {
           if (dragRef.current?.pointerId === event.pointerId) {
             event.stopPropagation();
             finishDrag(event.pointerId, false);
           }
         }}
-        onPointerCancel={event => finishDrag(event.pointerId, true)}
+        onPointerCancel={event => {
+          setEraserPointer(undefined);
+          finishDrag(event.pointerId, true);
+        }}
         onLostPointerCapture={event => finishDrag(event.pointerId, false)}
         onDoubleClick={handleDoubleClick}
       />
+      {showEraser && eraserPointer && <svg className="image-eraser-cursor" aria-hidden="true">
+        <circle cx={eraserPointer.x} cy={eraserPointer.y} r={eraserRadius} />
+        <circle cx={eraserPointer.x} cy={eraserPointer.y} r={eraserRadius} />
+      </svg>}
 
       {textEditor && textOverlayStyle && (
         <textarea

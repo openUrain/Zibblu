@@ -530,7 +530,7 @@ impl Client {
         ).bind(id.to_string()).fetch_optional(&self.db).await?.flatten();
         Ok(crate::Conversation {
             id, title: None, members: Vec::new(), joined_after: None, activity_at, preview,
-            preview_seq: None, latest_seq: 0, unread: 0, read_through: 0,
+            preview_attachment_kind: None, preview_seq: None, latest_seq: 0, unread: 0, read_through: 0,
             pinned: pinned.is_some(), manual_unread: false, muted: false,
         })
     }
@@ -557,22 +557,32 @@ impl Client {
             chat.pinned = pref.pinned_at.is_some();
             chat.manual_unread = pref.manual_unread;
             chat.muted = pref.muted;
-            let latest: Option<(i64, String, i64)> = sqlx::query_as(
+            let latest: Option<(i64, String, i64, Option<String>)> = sqlx::query_as(
                 "SELECT seq,
                     CASE WHEN json_extract(payload, '$.recalled') = 1 THEN 'Message recalled'
                          WHEN json_extract(payload, '$.expired') = 'file' THEN 'File expired'
                          WHEN json_extract(payload, '$.expired') = 'text' THEN 'Message expired'
                          ELSE coalesce(substr(json_extract(payload, '$.text'), 1, 100),
                                        json_extract(payload, '$.attachment.name'), '') END,
-                    json_extract(payload, '$.created_at')
+                    json_extract(payload, '$.created_at'),
+                    CASE WHEN json_extract(payload, '$.recalled') IS NOT 1
+                              AND json_extract(payload, '$.expired') IS NULL
+                              AND json_extract(payload, '$.text') IS NULL
+                         THEN json_extract(payload, '$.attachment.kind') END
                  FROM timeline WHERE conversation_id = ? AND seq NOT IN (SELECT seq FROM hidden_messages)
                  ORDER BY json_extract(payload, '$.created_at') DESC, seq DESC LIMIT 1",
             ).bind(&id).fetch_optional(&self.db).await?;
             #[cfg(windows)]
-            let ordinary_time = latest.as_ref().map(|(_, _, time)| *time);
-            if let Some((seq, preview, time)) = latest {
+            let ordinary_time = latest.as_ref().map(|(_, _, time, _)| *time);
+            chat.preview_attachment_kind = None;
+            if let Some((seq, preview, time, kind)) = latest {
                 chat.preview_seq = Some(seq);
                 chat.preview = Some(preview);
+                chat.preview_attachment_kind = match kind.as_deref() {
+                    Some("file") => Some(crate::AttachmentKind::File),
+                    Some("folder") => Some(crate::AttachmentKind::Folder),
+                    _ => None,
+                };
                 chat.activity_at = time;
             } else {
                 chat.preview_seq = None;
@@ -583,6 +593,7 @@ impl Client {
                 && ordinary_time.is_none_or(|ordinary| time >= ordinary)
             {
                 chat.preview = Some(preview);
+                chat.preview_attachment_kind = None;
                 chat.activity_at = time;
             }
             chat.read_through = sqlx::query_scalar::<_, i64>(
