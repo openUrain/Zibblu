@@ -103,6 +103,7 @@ pub(crate) async fn ai_assistants(state: State<'_, Desktop>) -> CommandResult<Ve
 
 #[tauri::command]
 pub(crate) async fn ai_save_assistant(
+    app: AppHandle,
     state: State<'_, Desktop>,
     provider: AiProvider,
     name: String,
@@ -176,7 +177,9 @@ pub(crate) async fn ai_save_assistant(
         }
         stored
     })();
-    Ok(result?)
+    let stored = result?;
+    let _ = app.emit("zibblu-assistant-settings", ());
+    Ok(stored)
 }
 
 fn validated_key(key: &str) -> Result<&str> {
@@ -229,6 +232,7 @@ pub(crate) async fn ai_test_connection(
 
 #[tauri::command]
 pub(crate) async fn ai_remove_assistant(
+    app: AppHandle,
     state: State<'_, Desktop>,
     provider: AiProvider,
 ) -> CommandResult<Vec<Assistant>> {
@@ -246,6 +250,7 @@ pub(crate) async fn ai_remove_assistant(
     if let Some(reference) = removed {
         delete_key(provider, &reference);
     }
+    let _ = app.emit("zibblu-assistant-settings", ());
     Ok(stored)
 }
 
@@ -284,6 +289,8 @@ struct Approval {
     files: Vec<AiFile>,
     attachments: Vec<ApprovedAttachment>,
     autonomous: bool,
+    #[cfg(windows)]
+    effort: Option<String>,
 }
 
 struct ActiveAiJob {
@@ -458,7 +465,12 @@ pub(crate) async fn ensure_available(state: &Desktop, client: &Arc<Client>, orig
             lobby.as_ref().is_some_and(|lobby| lobby.has_active_conversation(id))
         })?;
     }
-    if origin != target {
+    #[cfg(windows)]
+    if target == zibblu_core::ZIBBLU_ASSISTANT {
+        ensure!(origin == target, "This conversation is unavailable.");
+        return Ok(());
+    }
+    if origin != target && !(cfg!(windows) && origin == zibblu_core::ZIBBLU_ASSISTANT) {
         client.ensure_ai_authorized(origin, &[], &[]).await?;
     }
     client.ensure_ai_authorized(target, &[], &[]).await
@@ -486,6 +498,9 @@ pub(crate) fn ai_open_view(
     view: Uuid,
     conversation: Uuid,
 ) -> CommandResult<()> {
+    if conversation == zibblu_core::ZIBBLU_ASSISTANT {
+        return Err(anyhow::anyhow!("Open the Zibblu Assistant conversation.").into());
+    }
     ensure_normal_chat_window(&window, conversation)?;
     state.ai.lock().expect("AI state").views.insert(
         view,
@@ -776,6 +791,8 @@ pub(crate) async fn ai_prepare(
             files,
             attachments: approved_attachments,
             autonomous: false,
+            #[cfg(windows)]
+            effort: None,
         });
         Ok(prepared)
     })()?;
@@ -808,6 +825,8 @@ pub(crate) async fn ai_send(
 async fn start_ai_job(
     app: AppHandle, state: &Desktop, client: Arc<Client>, approved: Approval,
 ) -> CommandResult<SentPrompt> {
+    #[cfg(windows)]
+    let ai_history = state.ai_history.lock().await;
     let conversation_id = approved.conversation_id;
     ensure_available(state, &client, conversation_id, conversation_id).await?;
     let provider = approved.assistant.info.provider;
@@ -872,6 +891,8 @@ async fn start_ai_job(
         state.ai.lock().expect("AI state").jobs.remove(&prompt_id);
         return Err(error.into());
     }
+    #[cfg(windows)]
+    drop(ai_history);
     let _ = app.emit(AI_CHANGED_EVENT, conversation_id);
 
     tauri::async_runtime::spawn(run_ai_job(
@@ -970,6 +991,47 @@ pub(crate) async fn ai_dismiss_reply(
     if let Some(conversation) = conversation {
         let _ = app.emit(AI_CHANGED_EVENT, conversation);
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LocalAiMessage {
+    Prompt,
+    Reply,
+    Job,
+}
+
+#[cfg(windows)]
+#[tauri::command]
+pub(crate) async fn ai_delete_local(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    conversation: Uuid,
+    id: Uuid,
+    kind: LocalAiMessage,
+) -> CommandResult<()> {
+    ensure_normal_chat_window(&window, conversation)?;
+    let client = state.client().await?;
+    ensure_available(&state, &client, conversation, conversation).await?;
+    match kind {
+        LocalAiMessage::Prompt => client.delete_ai_prompt(conversation, id).await?,
+        LocalAiMessage::Reply => {
+            let reply = client.ai_reply(id).await?.filter(|reply| reply.conversation_id == conversation)
+                .context("This reply is unavailable.")?;
+            client.delete_ai_reply_slot(conversation, reply.prompt_id).await?;
+        }
+        LocalAiMessage::Job => {
+            client.delete_ai_reply_slot(conversation, id).await?;
+            let mut ai = state.ai.lock().expect("AI state");
+            if ai.jobs.get(&id).is_some_and(|job| job.conversation_id == conversation) {
+                if let Some(job) = ai.jobs.remove(&id) { job.cancel(); }
+            }
+        }
+    }
+    let _ = app.emit(AI_CHANGED_EVENT, conversation);
     Ok(())
 }
 
@@ -1137,7 +1199,7 @@ async fn execute_ai_job(
                 run_with_cancel(
                     &mut rx,
                     cancelled,
-                    provider.answer_parts(base_ref, model, key, parts, Arc::clone(cancel_notify)),
+                    provider.answer_parts(base_ref, model, key, parts, Arc::clone(cancel_notify), None),
                 )
                 .await
             }
@@ -1315,6 +1377,8 @@ mod tests {
             files: vec![],
             attachments: vec![],
             autonomous: false,
+            #[cfg(windows)]
+            effort: None,
         }
     }
 

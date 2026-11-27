@@ -3,11 +3,13 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { MessageCircle, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ai } from "./ai-api";
+import { ai, builtinAssistantId } from "./ai-api";
 import type { AiJob, AiPrompt, AiReply, Assistant } from "./ai-api";
 import { api, errorMessage } from "./api";
 import type { AddDraftsResult, Directory, Draft, DropOffer, Profile, SyncUpdate, Transfer, User } from "./api";
 import { ChatView } from "./chat";
+import { builtinAssistantName } from "./ai";
+import { BuiltinAssistant } from "./builtin-assistant";
 import { ChatHistoryCache } from "./chat-history-cache";
 import { Blank, People, chatName } from "./common";
 import { t } from "./locale";
@@ -122,13 +124,16 @@ export function ChatWindow() {
     void api.transfers().then(setTransfers).catch(error => setFailure(errorMessage(error)));
   }, []);
 
+  const aiOrder = useRef(0);
   const refreshAi = useCallback(async (convId: string) => {
+    const ticket = ++aiOrder.current;
     try {
       const [prompts, jobs, replies] = await Promise.all([
         ai.prompts(convId),
         ai.jobs(convId),
         ai.replies(convId),
       ]);
+      if (ticket !== aiOrder.current) return;
       setAiPrompts(prompts);
       setAiJobs(jobs);
       setAiReplies(replies);
@@ -147,6 +152,7 @@ export function ChatWindow() {
     const onOutbox = listen("message-outbox-changed", () => void refreshLocal());
     const onAi = listen<string | undefined>("zibblu-ai-changed", event => {
       if (!event.payload || event.payload === convId) {
+        void refreshLocal();
         void refreshAi(convId);
       }
     });
@@ -259,7 +265,7 @@ export function ChatWindow() {
   const names = useMemo(() => ({ ...directory.names, ...directory.remarks }), [directory.names, directory.remarks]);
   const windowTitle = session && active
     ? chatName(active, session.user.id, names)
-    : "Zibblu";
+    : conversationId === builtinAssistantId ? builtinAssistantName() : "Zibblu";
 
   useEffect(() => {
     document.title = windowTitle;
@@ -387,6 +393,10 @@ export function ChatWindow() {
               <section className="chat-blank">
                 <Blank icon={<MessageCircle size={28} />} title={t("Loading chat…", "正在加载会话…")} />
               </section>
+            ) : conversationId === builtinAssistantId ? (
+              <BuiltinAssistant own={session.user} assistants={assistants} chats={directory.conversations}
+                prompts={aiPrompts} replies={aiReplies} jobs={aiJobs} refresh={refresh}
+                back={() => void appWindow.close()} settings={() => void ai.openBuiltinSettings().catch(error => setFailure(errorMessage(error)))} />
             ) : active ? (
               <ChatView
                 key={active.id + ":" + (active.joined_after ?? "")}

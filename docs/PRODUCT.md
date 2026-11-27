@@ -21,7 +21,7 @@ The [current cross-platform design system](DESIGN_SYSTEM.md) preserves Zibblu-sp
 - Chat shows the live group roster count in the group heading. Actions open by right-click on desktop and long press on touch. Only the active input area and related scroll region adjust to the keyboard.
 - Files lists ordinary attachments that require a download. Chat previews and conversation media history contain pictures and videos. Transfer progress, save and retry stay with the chat attachment. System pickers and export sheets handle file access.
 - On Windows, the signed-in user's avatar opens a compact profile card beside the navigation rail. The card keeps the current conversation or contact visible behind it. Editors and the personal QR code return to the layer that opened them. iPhone and iPad use their profile navigation. Select and crop a photo before confirming. Display names are editable while the sign-in handle stays stable. Profile, image and contact data render from the signed-in account's cache first and update in the background.
-- Normal app/chat uses a lightly lavender-tinted **light theme**. M2 private chat **keeps its existing separate dark theme**, same core controls and explicit LAN-only indicators. AI stays inside normal chat as an opt-in `@name` flow with conspicuous per-request authorization.
+- Normal app/chat uses a lightly lavender-tinted **light theme**. M2 private chat **keeps its existing separate dark theme**, same core controls and explicit LAN-only indicators. Windows AI is available from an ordinary chat by `@name` or through the built-in assistant. Both flows disclose their request scope.
 - Preserve the existing semantic tokens, platform-native fonts, Zibblu original icons, Lavender identity, small-radius and approved floating-label inputs. Use Always UI `creative/design/improve` and independent `check` as specified by [DESIGN_SYSTEM](DESIGN_SYSTEM.md); follow the required references, existing-token-first numeric presets and evidence-based visual discipline rather than copying an obsolete universal visual recipe.
 - The first visible message has a local time label. A new label appears when consecutive messages cross a local date boundary or are more than 10 minutes apart. Shared date labels across chat timelines, the chat list and Files show `HH:mm` for today, `昨天` for yesterday, `前天` for the day before yesterday, `星期一`–`星期日` for earlier days within the current Monday-start local natural week, `M月D日` within the current year, and `YYYY年M月D日` for other years.
 
@@ -93,6 +93,8 @@ Rules:
 
 **Windows flow:** configure a provider and custom assistant name, then submit an `@name` question in an ordinary chat. The first autonomous request shows its provider and explains its read-only access and possible disclosure. Later questions can retrieve relevant messages and attachments from the current ordinary conversation. A request for a named conversation needs explicit approval in a local card. Disable retrieval in AI settings. The timeline shows a local prompt, cancellable progress and the response with links to eligible sources.
 
+**Zibblu Assistant on Windows:** open the local system contact from Chats or Contacts and write a question directly. The assistant keeps one conversation per server and account. Its model and supported thinking effort are independent of in-chat mentions. Each send confirms the provider and question. To use ordinary chat history, name the conversation and approve it for that task. The local timeline retains previous replies for review.
+
 The reviewed selection flow authorizes prompt-only, chosen messages, a bounded recent range, or selected files as disclosed before sending.
 
 Rules:
@@ -103,7 +105,7 @@ Rules:
 - Private mode excludes cloud AI. A future on-device AI option needs a separate privacy review.
 - Context is capped at 60 messages and bounded sequential chunking within the single authorized request when large documents require splitting. The scope selector displays the exact outbound snapshot, attachments, and destination before sending.
 - Assistant mention names match case-insensitively and must be unique across configured providers.
-- Submitted `@name` prompts appear beside the sender's avatar, marked **Only visible to you**. Prompts and completed replies reappear in the account's local timeline after restart. The in-chat generation placeholder can be cancelled. **Visible to** shares the selected reply with chosen members.
+- Submitted `@name` prompts appear beside the sender's avatar, marked **Only visible to you**. Prompts and completed replies reappear in the account's local timeline after restart. The in-chat generation placeholder can be cancelled. **Visible to** shares the selected reply with chosen members. Local prompts and replies can be deleted separately. A shared reply is an ordinary message that its sender can recall within the existing time window.
 - Settings supports testing the API key and listing model IDs through the provider's HTTPS API. Enter a model ID manually when model discovery is unavailable. An advanced base URL can point to a compatible HTTPS Responses API.
 
 ## Brand

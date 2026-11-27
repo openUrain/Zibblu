@@ -12,7 +12,7 @@ mod storage_stats;
 mod transfer;
 
 pub use ai_context::{AiContextMessage, AiScope, AiSearch, AuthorizedAiAttachment};
-pub use ai_prompts::{AiLocalPrompt, AiLocalReply, AiLocalSource};
+pub use ai_prompts::{AiLocalPrompt, AiLocalReply, AiLocalSource, ZIBBLU_ASSISTANT};
 pub use chat_prefs::{ConversationPrefState, sort_conversations};
 pub use media_store::{
     CacheCleanupReport, ConsistencyReport, MediaDescriptor, MediaVariant, PublicResourceKind,
@@ -119,6 +119,8 @@ pub struct Page {
 #[derive(Serialize)]
 pub struct SyncUpdate {
     pub directory: Directory,
+    #[cfg(windows)]
+    pub assistant_chat: crate::Conversation,
     pub recalled: Vec<i64>,
     pub deleted: Vec<i64>,
     pub server_now: i64,

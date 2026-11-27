@@ -36,7 +36,11 @@ impl Client {
     }
 
     pub async fn set_conversation_pinned(&self, conversation: Uuid, pinned: bool) -> Result<()> {
-        self.ensure_normal_member(conversation).await?;
+        if cfg!(windows) && conversation == super::ZIBBLU_ASSISTANT {
+            self.ensure_open()?;
+        } else {
+            self.ensure_normal_member(conversation).await?;
+        }
         let pinned_at = pinned.then(unix_millis);
         sqlx::query(
             "INSERT INTO conversation_prefs (conversation_id, pinned_at) VALUES (?, ?)
@@ -294,6 +298,7 @@ mod tests {
             text: Some(text.into()),
             attachment: None,
             ai_provider: None,
+            published_at: None,
             ai_sources: Vec::new(),
             recalled: false,
             reply_to: None,
@@ -462,6 +467,65 @@ mod tests {
         client.unhide_conversation(conv).await?;
         let prefs = load_prefs_map(&client.db).await?;
         assert_eq!(prefs[&conv.to_string()].hidden_at_seq, None);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn private_ai_preview_falls_back_and_assistant_history_stays_local() -> Result<()> {
+        use crate::{AiLocalPrompt, AiLocalReply, AiProvider, ZIBBLU_ASSISTANT};
+        let data = tempfile::tempdir()?;
+        let own = Uuid::new_v4();
+        let peer = Uuid::new_v4();
+        let conv = Uuid::new_v4();
+        let device = Uuid::new_v4();
+        let client = open_test_client(data.path(), own, device, false).await?;
+        seed_directory(&client, vec![make_conversation(conv, 1000, false, own, peer)]).await?;
+        let prompt = AiLocalPrompt {
+            id: Uuid::new_v4(), conversation_id: conv, provider: AiProvider::OpenAi,
+            prompt_text: "Private question".into(), created_at: 2000,
+        };
+        let reply = AiLocalReply {
+            id: Uuid::new_v4(), prompt_id: prompt.id, conversation_id: conv, provider: prompt.provider,
+            text: "Private answer".into(), created_at: 3000, sources: Vec::new(),
+        };
+        client.insert_ai_prompt(&prompt).await?;
+        assert_eq!(client.directory().await?.conversations[0].preview.as_deref(), Some("Private question"));
+        assert!(client.insert_ai_reply(&reply).await?);
+        assert_eq!(client.directory().await?.conversations[0].preview.as_deref(), Some("Private answer"));
+        let second_prompt = AiLocalPrompt { id: Uuid::new_v4(), ..prompt.clone() };
+        client.insert_ai_prompt(&second_prompt).await?;
+        client.delete_ai_reply_slot(conv, second_prompt.id).await?;
+        assert!(client.list_ai_prompts(conv).await?.contains(&second_prompt));
+        client.delete_ai_prompt(conv, second_prompt.id).await?;
+        client.delete_ai_prompt(conv, prompt.id).await?;
+        assert!(client.list_ai_prompts(conv).await?.is_empty());
+        assert_eq!(client.list_ai_replies(conv).await?, [reply.clone()]);
+        client.delete_ai_reply_slot(conv, prompt.id).await?;
+        assert!(!client.insert_ai_reply(&reply).await?);
+        assert!(client.directory().await?.conversations[0].preview.is_none());
+
+        let local = AiLocalPrompt { id: Uuid::new_v4(), conversation_id: ZIBBLU_ASSISTANT, ..prompt };
+        client.insert_ai_prompt(&local).await?;
+        client.set_conversation_pinned(ZIBBLU_ASSISTANT, true).await?;
+        let update = client.local_update().await?;
+        assert_eq!(update.directory.conversations.len(), 1);
+        assert!(update.assistant_chat.pinned);
+        assert!(client.ensure_ai_authorized(ZIBBLU_ASSISTANT, &[], &[]).await.is_err());
+        assert_eq!(update.last_seq, 0);
+        client.close().await;
+        drop(client);
+
+        let reopened = open_test_client(data.path(), own, device, true).await?;
+        assert!(reopened.list_ai_prompts(conv).await?.is_empty());
+        assert!(reopened.list_ai_replies(conv).await?.is_empty());
+        assert_eq!(reopened.list_ai_prompts(ZIBBLU_ASSISTANT).await?, [local]);
+        let other = open_test_client(data.path(), peer, Uuid::new_v4(), false).await?;
+        assert!(other.list_ai_prompts(ZIBBLU_ASSISTANT).await?.is_empty());
+        assert!(!other.local_update().await?.assistant_chat.pinned);
+        reopened.clear_assistant_history().await?;
+        assert!(reopened.local_update().await?.assistant_chat.preview.is_none());
+        assert!(reopened.local_update().await?.assistant_chat.pinned);
         Ok(())
     }
 

@@ -51,7 +51,7 @@ export type Attachment = { id: string; name: string; kind: "file" | "folder"; si
 export type ImageSize = [number, number];
 export type Message = {
   seq: number; conversation_id: string; sender: User; created_at: number;
-  text: string | null; attachment: Attachment | null; ai_provider?: AiProvider; ai_sources?: AiSource[]; recalled: boolean;
+  text: string | null; attachment: Attachment | null; ai_provider?: AiProvider; published_at?: number; ai_sources?: AiSource[]; recalled: boolean;
   reply_to?: number;
   nonce?: string;
   expires_at?: number;
@@ -145,7 +145,7 @@ export type PrivateMessage = { seq: number; sender: User; text: string; created_
 export type PrivateCode = { room: string; host: string; addresses: string[]; secret: string; expires_at: number };
 type PrivateView = PrivateSummary & { connection: string; messages: PrivateMessage[] };
 export type SyncUpdate = {
-  directory: Directory; recalled: number[]; deleted: number[]; server_now: number; revision: number; latest_ai_seq: number;
+  directory: Directory; assistant_chat?: Conversation; recalled: number[]; deleted: number[]; server_now: number; revision: number; latest_ai_seq: number;
 };
 
 export const api = {
@@ -213,8 +213,8 @@ export const api = {
     invoke<void>("send_message", { conversation, message: { text, nonce, reply_to: replyTo } }),
   retryMessage: (nonce: string) => invoke<void>("retry_message", { nonce }),
   recall: (conversation: string, seq: number) => invoke<void>("recall_message", { conversation, seq }),
-  publishAiReply: (conversation: string, reply: { nonce: string; provider: AiProvider; text: string; created_at: number; readers: string[] }) =>
-    invoke<void>("publish_ai_reply", { conversation, reply }),
+  publishAiReply: (conversation: string, reply: { nonce: string; provider: AiProvider; text: string; created_at: number; readers: string[] }, sourceReply?: string) =>
+    invoke<void>("publish_ai_reply", { conversation, reply, sourceReply }),
   groupInvite: (conversation: string) => invoke<GroupInvite>("group_invite", { conversation }),
   groupPreview: (code: string) => invoke<GroupPreview>("group_preview", { code }),
   groupJoin: (code: string) => invoke<string>("group_join", { code }),

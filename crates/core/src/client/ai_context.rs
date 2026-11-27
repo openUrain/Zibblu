@@ -400,6 +400,7 @@ async fn scoped_context_messages(
         query.push(" AND seq > ").push_bind(cutoff);
     }
 
+    let newest_first = matches!(scope, AiScope::Search(_));
     let expected = match scope {
         AiScope::Prompt => unreachable!(),
         AiScope::Selected { sequences } => {
@@ -472,7 +473,7 @@ async fn scoped_context_messages(
             rows.len() == count,
             "Some selected messages are unavailable in this chat"
         );
-    } else {
+    } else if !newest_first {
         rows.reverse();
     }
 
@@ -539,6 +540,7 @@ mod tests {
             text: text.map(str::to_owned),
             attachment,
             ai_provider: None,
+            published_at: None,
             ai_sources: Vec::new(),
             recalled,
             reply_to: None,
@@ -666,6 +668,22 @@ mod tests {
             );
         }
 
+        sqlx::query("UPDATE inbox SET payload = json_set(payload, '$.created_at', 5000) WHERE seq = 6")
+            .execute(&mut db).await?;
+        let latest = scoped_context_messages(
+            &mut db, chat, cutoff, AiScope::Search(AiSearch {
+                query: String::new(), sender: None, since: Some(4000), until: Some(6000),
+                near: None, files_only: false,
+            }), 100_000,
+        ).await?;
+        assert_eq!(latest.iter().map(|message| message.seq).collect::<Vec<_>>(), vec![6, 5, 4]);
+        sqlx::query("UPDATE inbox SET payload = json_set(payload, '$.created_at', 4500) WHERE seq = 6")
+            .execute(&mut db).await?;
+        let by_time = scoped_context_messages(&mut db, chat, cutoff, AiScope::Search(AiSearch {
+            query: String::new(), sender: None, since: Some(4500), until: Some(5000), near: None, files_only: false,
+        }), 100_000).await?;
+        assert_eq!(by_time.iter().map(|message| message.seq).collect::<Vec<_>>(), vec![5, 6]);
+
         // Recent respects cutoff and excludes recalled/expired/hidden/deleted while preserving attachments.
         let recent = scoped_context_messages(
             &mut db,
@@ -677,7 +695,7 @@ mod tests {
         .await?;
         assert_eq!(
             recent.iter().map(|m| m.seq).collect::<Vec<_>>(),
-            vec![4, 5, 6]
+            vec![4, 6, 5]
         );
         assert!(
             scoped_context_messages(&mut db, chat, cutoff, AiScope::Prompt, 100_000)

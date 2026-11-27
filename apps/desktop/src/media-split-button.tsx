@@ -48,7 +48,7 @@ export function MediaSplitButton({ label, menuLabel, children, choices, run, dis
     <button type="button" aria-label={label} title={label} aria-pressed={pressed}
       disabled={disabled} onClick={() => { setOpen(false); run(); }}>{children}</button>
     <button ref={toggle} type="button" className="media-split-toggle" aria-label={menuLabel} title={menuLabel}
-      aria-controls={id} aria-expanded={open && !disabled} disabled={disabled}
+      aria-controls={id} aria-expanded={open && !disabled} disabled={disabled || choices.length === 0}
       onClick={() => setOpen(value => !value)}><ChevronDown size={14} aria-hidden /></button>
     <div id={id} ref={options} className="media-split-options" hidden={!open || disabled}>
       {choices.map(choice => <button key={choice.label} type="button" onClick={() => {

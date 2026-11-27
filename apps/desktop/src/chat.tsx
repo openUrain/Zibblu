@@ -1,13 +1,13 @@
 import { FloatingField } from "./floating-field";
 import {
-  ArrowDown, ArrowLeft, ArrowRight, BellOff, Clock, Check, CheckCheck, ChevronLeft, ChevronRight, CircleAlert, Copy, Download, FolderOpen, Ghost, LockKeyhole,
+  ArrowDown, ArrowLeft, ArrowRight, BellOff, Bot, Clock, Check, CheckCheck, ChevronLeft, ChevronRight, CircleAlert, Copy, Download, FolderOpen, Ghost, LockKeyhole,
   LoaderCircle, LogOut, MessageCircle, MoreHorizontal, Paperclip, Pin, Play, Plus, QrCode, Radar, Reply, RotateCcw, ScanLine, Search, Trash2, Undo2, Upload, UserRoundPlus, UsersRound, X,
 } from "lucide-react";
 import { Fragment, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
-import { ai, aiProviders } from "./ai-api";
+import { ai, aiProviders, builtinAssistantId } from "./ai-api";
 import type { AiJob, AiPrompt, AiReply, Assistant } from "./ai-api";
-import { AiJobBubble, AiPromptBubble, AiRequest, AssistantMenu, ProviderLogo, ShareAiReply } from "./ai";
+import { AiJobBubble, AiPromptBubble, AiRequest, AiSources, AssistantMenu, builtinAssistantName, ProviderLogo, selectedText, ShareAiReply, useAiMessageMenu } from "./ai";
 import { buildChatContextMenu, sortConversationsForDisplay } from "./chat-list-menu";
 import { api, errorMessage, fileExpired, isSourceChanged } from "./api";
 import type { Conversation, Draft, DraftAttachment, Message, MessageReceipt, Page, PrivateSummary, Transfer, User } from "./api";
@@ -52,7 +52,7 @@ export function ChatList({ chats, drafts, own, selected, open, newChat, addConta
   const [search, setSearch] = useState("");
   const query = search.trim().toLocaleLowerCase();
   const ordered = sortConversationsForDisplay(chats);
-  const filtered = ordered.filter(chat => chatName(chat, own.id, remarks).toLocaleLowerCase().includes(query));
+  const filtered = ordered.filter(chat => (chat.id === builtinAssistantId ? builtinAssistantName() : chatName(chat, own.id, remarks)).toLocaleLowerCase().includes(query));
   const paired = rooms.find(room => room.id === activePrivate)?.conversation;
   const standalone = rooms.filter(room => !chats.some(chat => chat.id === room.conversation));
   const add = <button className="icon-button new-conversation" type="button" ref={plus}
@@ -77,7 +77,8 @@ export function ChatList({ chats, drafts, own, selected, open, newChat, addConta
     <div className="chat-rows">
       {filtered.map(chat => {
         const privateRoom = exclusivePrivateRoom(rooms, chat);
-        const name = chatName(chat, own.id, remarks);
+        const builtin = chat.id === builtinAssistantId;
+        const name = builtin ? builtinAssistantName() : chatName(chat, own.id, remarks);
         const peer = chat.members.find(user => user.id !== own.id);
         const draftPreview = paired === chat.id ? undefined : deriveDraftPreview(drafts[chat.id]);
         return <div className="conversation-entry" key={chat.id}><button type="button"
@@ -93,14 +94,15 @@ export function ChatList({ chats, drafts, own, selected, open, newChat, addConta
             onDelete: () => onDelete(chat),
           })))}
           aria-current={chat.id === selected ? "true" : undefined} onClick={() => open(chat.id)}>
-          {chat.title || !peer ? <Avatar name={name} group={!!chat.title} /> : <PersonAvatar user={peer} />}
+          {builtin ? <span className="avatar ai-builtin-avatar"><Bot size={20} /></span>
+            : chat.title || !peer ? <Avatar name={name} group={!!chat.title} /> : <PersonAvatar user={peer} />}
           <span className="chat-row-text"><strong title={name}>{name}</strong><small>{privateRoom
             ? privateRoom.phase === "connected" ? t("Private chat", "私密聊天") : privatePhaseLabel[privateRoom.phase]
             : paired === chat.id
             ? t("Private chat", "私密聊天")
             : draftPreview ? <><span className="draft-prefix">{draftPreview.prefix}</span>{" "}{draftPreview.body}</>
               : chat.preview ? conversationSummary(chat.preview) : t("New conversation", "新会话")}</small></span>
-          <span className="chat-row-status"><time dateTime={new Date(chat.activity_at).toISOString()} title={dateTimeLabel(chat.activity_at)}>{messageTimeLabel(chat.activity_at)}</time>
+          <span className="chat-row-status">{chat.activity_at > 0 && <time dateTime={new Date(chat.activity_at).toISOString()} title={dateTimeLabel(chat.activity_at)}>{messageTimeLabel(chat.activity_at)}</time>}
             <span className="chat-row-badges">
               {chat.muted && <BellOff size={13} className="chat-muted-icon" aria-label={t("Muted", "消息免打扰")} />}
               {chat.pinned && <Pin size={12} className="chat-pinned-icon" aria-label={t("Pinned", "已置顶")} />}
@@ -158,7 +160,7 @@ function DrawerAction({ icon, children, onClick, className = "", next = true, bu
 }
 
 export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, clockOffset, transfers, changed, refresh, back, pickAttachments, pasteFiles, openPrivate, aiChat,
-  hidden, hide, removeHistory, readReceipts, draft, setDraft, sending, beginSending, endSending, profileOpen, visibleOnNarrow, requested, historyCache, privateRoom, standalone }: {
+  hidden, hide, removeHistory, readReceipts, draft, setDraft, sending, beginSending, endSending, profileOpen, visibleOnNarrow, requested, historyCache, privateRoom, standalone, sourceFocus }: {
   chat: Conversation; own: User; server: string; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
   refresh: () => Promise<void>; back: () => void; pickAttachments: (kind: "file" | "folder") => Promise<void>; pasteFiles: () => Promise<boolean>; openPrivate: () => void;
   aiChat: ChatAssistants; hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; removeHistory: (entire: boolean) => Promise<void>; readReceipts: boolean;
@@ -167,6 +169,7 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
   historyCache: ChatHistoryCache;
   privateRoom?: PrivateSummary;
   standalone?: boolean;
+  sourceFocus?: { seq: number };
 } & ChatDraft) {
   const [showFiles, setShowFiles] = useState(false);
   const [drawer, setDrawer] = useState(false);
@@ -213,10 +216,17 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
   useIosBack(showFiles && !profileOpen ? () => setShowFiles(false) : undefined, 5);
 
   useEffect(() => {
-    if (ios || requested || profileOpen || !visibleOnNarrow || chatView.current?.querySelector(".conversation-drawer[open]")) return;
+    if (ios || requested || sourceFocus || profileOpen || !visibleOnNarrow || chatView.current?.querySelector(".conversation-drawer[open]")) return;
     const field = chatView.current?.querySelector<HTMLTextAreaElement>(".composer textarea");
     if (field?.getClientRects().length) field.focus({ preventScroll: true });
-  }, [requested, profileOpen, visibleOnNarrow]);
+  }, [requested, sourceFocus, profileOpen, visibleOnNarrow]);
+
+  useLayoutEffect(() => {
+    if (!sourceFocus) return;
+    setShowFiles(false);
+    setSearchOpen(false);
+    setDrawer(false);
+  }, [sourceFocus]);
 
   useEffect(() => {
     if (requested?.page === "details") setDrawer(true);
@@ -314,7 +324,7 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
     <div className="chat-content">
       <div className="chat-messages" hidden={showFiles}>
         <ChatMessages chat={chat} own={own} revision={revision} latestAiSeq={latestAiSeq} recalled={recalled} clockOffset={clockOffset} transfers={transfers}
-          visible={!showFiles && !profileOpen} changed={changed} refresh={refresh} pickAttachments={pickAttachments} pasteFiles={pasteFiles} aiChat={aiChat} openMedia={openMedia}
+          visible={!showFiles && !profileOpen} changed={changed} refresh={refresh} pickAttachments={pickAttachments} pasteFiles={pasteFiles} aiChat={aiChat} openMedia={openMedia} sourceFocus={sourceFocus}
           {...{ hidden, hide, readReceipts, draft, setDraft, sending, beginSending, endSending, historyCache }} />
       </div>
       {showFiles && <FilesView conversation={chat.id} transfers={transfers} revision={revision} recalled={recalled} hidden={hidden} onChanged={changed} />}
@@ -446,12 +456,13 @@ function SearchResults({ conversation, search, revision, latestAiSeq, recalled, 
 }
 
 function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset, transfers, visible, changed, refresh, pickAttachments, pasteFiles, aiChat,
-  hidden, hide, readReceipts, draft, setDraft, sending, beginSending, endSending, openMedia, historyCache }: {
+  hidden, hide, readReceipts, draft, setDraft, sending, beginSending, endSending, openMedia, historyCache, sourceFocus }: {
   chat: Conversation; own: User; revision: number; latestAiSeq: number; recalled: ReadonlySet<number>; clockOffset: number; transfers: Transfer[]; changed: () => void;
   refresh: () => Promise<void>; pickAttachments: (kind: "file" | "folder") => Promise<void>; pasteFiles: () => Promise<boolean>; aiChat: ChatAssistants;
   hidden: ReadonlySet<number>; hide: (seq: number) => Promise<void>; readReceipts: boolean; visible: boolean;
   historyCache: ChatHistoryCache;
   openMedia: (message: Message) => void;
+  sourceFocus?: { seq: number };
 } & ChatDraft) {
   const read = useCallback((before?: number) => api.messages(chat.id, before), [chat.id]);
   const savePage = useCallback((page: Page) => historyCache.save(chat.id, page), [chat.id, historyCache]);
@@ -464,7 +475,44 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
   const [recallError, setRecallError] = useState("");
   const [recalling, setRecalling] = useState<number>();
   const [sharingReply, setSharingReply] = useState<AiReply>();
-  const [sourceMessage, setSourceMessage] = useState<Message>();
+  const [localSource, setLocalSource] = useState<{ seq: number }>();
+  const focus = localSource ?? sourceFocus;
+  const [located, setLocated] = useState<{ focus: { seq: number }; message: Message }>();
+  const sourceRow = useRef<HTMLDivElement>(null);
+  const appliedFocus = useRef<{ seq: number }>(undefined);
+  const sourceMessage = located?.focus === focus && located && !hidden.has(located.message.seq)
+    && !recalled.has(located.message.seq) ? located.message : undefined;
+  const reportSource = () => setRecallError(t("Source unavailable.", "来源不可用。"));
+  const privateMenu = useAiMessageMenu(error => setRecallError(errorMessage(error)));
+
+  useEffect(() => {
+    setLocalSource(undefined);
+  }, [sourceFocus]);
+
+  useEffect(() => {
+    if (!focus) return;
+    let current = true;
+    void ai.locateSource(chat.id, focus.seq).then(message => {
+      if (current) setLocated({ focus, message });
+    }).catch(() => {
+      if (current) {
+        setLocated(undefined);
+        reportSource();
+      }
+    });
+    return () => { current = false; };
+  }, [chat.id, focus, revision]);
+
+  useLayoutEffect(() => {
+    if (!visible || !sourceMessage || appliedFocus.current === focus || !sourceRow.current) return;
+    appliedFocus.current = focus;
+    nearBottom.current = false;
+    sourceRow.current.scrollIntoView({ block: "center" });
+    sourceRow.current.focus({ preventScroll: true });
+  }, [focus, sourceMessage, visible]);
+
+  const deleteAi = (id: string, kind: "prompt" | "reply" | "job") =>
+    void ai.deleteLocal(chat.id, id, kind).catch(error => setRecallError(errorMessage(error)));
   const [receipt, setReceipt] = useState<MessageReceipt | null>(null);
   const viewedBody = useRef<HTMLDivElement>(null);
   const openMenu = useMenu();
@@ -498,14 +546,17 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
   }) : [];
   const downloads = new Map(transfers.filter(job => job.direction === "download").map(job => [job.attachment.id, job]));
   const promptTimeById = new Map(aiChat.prompts.map(item => [item.id, item.created_at]));
+  const ordinaryMessages = page?.items ?? [];
+  const messages = sourceMessage && !ordinaryMessages.some(message => message.seq === sourceMessage.seq)
+    ? [...ordinaryMessages, sourceMessage] : ordinaryMessages;
   const assistantByProvider = new Map(aiChat.assistants.map(item => [item.provider, item.name]));
   const history = [
-    ...(page?.items.map(message => ({
+    ...messages.map(message => ({
       message, reply: undefined, transfer: undefined, aiPrompt: undefined, aiJob: undefined,
       time: message.created_at, rank: 0, promptId: "",
       key: windows && message.attachment ? "file/" + message.attachment.id
         : windows && message.nonce ? "send/" + message.sender.id + "/" + message.nonce : String(message.seq),
-    })) ?? []),
+    })),
     ...uploads,
     ...aiChat.prompts.map(aiPrompt => ({
       message: undefined, reply: undefined, transfer: undefined, aiPrompt, aiJob: undefined,
@@ -516,9 +567,9 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
       time: promptTimeById.get(aiJob.prompt_id) ?? aiJob.created_at, rank: 2, promptId: aiJob.prompt_id,
       key: "ai-job/" + aiJob.id,
     })),
-    ...aiChat.replies.filter(reply => !sharedAiReplies.has(reply.id)).map(reply => ({
+    ...aiChat.replies.filter(reply => windows || !sharedAiReplies.has(reply.id)).map(reply => ({
       message: undefined, reply, transfer: undefined, aiPrompt: undefined, aiJob: undefined,
-      time: promptTimeById.get(reply.prompt_id) ?? reply.created_at, rank: 2, promptId: reply.prompt_id,
+      time: windows ? reply.created_at : promptTimeById.get(reply.prompt_id) ?? reply.created_at, rank: 2, promptId: reply.id,
       key: reply.id,
     })),
   ].sort((a, b) =>
@@ -527,7 +578,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
     || a.rank - b.rank
     || (a.message?.seq ?? Infinity) - (b.message?.seq ?? Infinity),
   );
-  const bySequence = new Map(page?.items.map(message => [message.seq, message]));
+  const bySequence = new Map(messages.map(message => [message.seq, message]));
   let lastMessage: Message | undefined;
   for (let i = history.length - 1; i >= 0; i--) {
     if (history[i].message) {
@@ -651,13 +702,15 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
           if (aiPrompt) {
             return <Fragment key={key}>
               {newGroup && <div className="day-divider"><time dateTime={new Date(time).toISOString()}>{messageTimeLabel(time)}</time></div>}
-              <AiPromptBubble prompt={aiPrompt} assistantName={assistantByProvider.get(aiPrompt.provider)} sender={own} />
+              <AiPromptBubble prompt={aiPrompt} assistantName={assistantByProvider.get(aiPrompt.provider)} sender={own}
+                menu={windows ? privateMenu(aiPrompt.prompt_text, () => deleteAi(aiPrompt.id, "prompt")) : undefined} />
             </Fragment>;
           }
           if (aiJob) {
             return <Fragment key={key}>
               {newGroup && <div className="day-divider"><time dateTime={new Date(time).toISOString()}>{messageTimeLabel(time)}</time></div>}
-              <AiJobBubble job={aiJob} onCancel={aiChat.cancelJob} onDismiss={aiChat.dismissJob} />
+              <AiJobBubble job={aiJob} onCancel={aiChat.cancelJob} onDismiss={aiChat.dismissJob}
+                menu={windows ? privateMenu(undefined, () => deleteAi(aiJob.id, "job")) : undefined} />
             </Fragment>;
           }
           const provider = message?.ai_provider ?? reply?.provider;
@@ -665,7 +718,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
           const animated = !!reply || (!!message && newestAtOpen !== undefined && message.seq > newestAtOpen
             && !(windows && mine));
           const now = Date.now() + clockOffset;
-          const canRecall = !!message && message.seq > 0 && mine && !provider && !message.recalled && now - time <= 5 * 60_000;
+          const canRecall = !!message && message.seq > 0 && mine && (windows || !provider) && !message.recalled && !message.expired && now - (message.published_at ?? time) <= 5 * 60_000;
           const avatar = provider ? <ProviderLogo provider={provider} /> : <button className="person-link message-avatar"
             aria-label={`View ${displayName(message!.sender, remarks)}'s profile`} onClick={() => open?.(message!.sender)}>
             <PersonAvatar user={message!.sender} />
@@ -723,9 +776,10 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
             {newGroup && <div className="day-divider"><time dateTime={new Date(time).toISOString()}>{messageTimeLabel(time)}</time></div>}
             <div className={"message-row" + (mine ? " mine" : "") + (animated ? " message-arrival" : "")}
               tabIndex={0} aria-haspopup="menu"
+              ref={sourceMessage && sourceMessage.seq === message?.seq ? sourceRow : undefined}
               onContextMenu={event => {
                 window.clearTimeout(press.current?.timer);
-                const selection = window.getSelection()?.toString();
+                const selection = selectedText(event.currentTarget);
                 event.preventDefault();
                 if (!openedByPress(event.currentTarget)) openMenu(event.currentTarget, actions(selection),
                   event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : undefined);
@@ -767,7 +821,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                   event.stopPropagation();
                   press.current = undefined;
                 }
-              }}>
+              }} {...(windows && reply ? privateMenu(text ?? undefined, () => deleteAi(reply.id, "reply"), () => setSharingReply(reply)) : {})}>
               {!mine && avatar}
               <div className={"message-body" + (file ? " attachment-body" : "")}
                 ref={viewed !== undefined && message?.seq === viewed ? viewedBody : undefined}>
@@ -788,15 +842,10 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                     </div>
                     : <RichMessage text={text} cacheKey={message ?? reply} />}
                 </div>
-                {!!sources?.length && <ul className="ai-sources" aria-label={t("Sources", "来源")}>
-                  {sources.map(source => <li key={source.number}><button type="button" className="text-button"
-                    onClick={() => void (reply ? ai.source(reply.id, source.number)
-                      : ai.sharedSource(chat.id, message!.seq, source.number)).then(original => {
-                      if (original) setSourceMessage(original);
-                    }).catch(() => setRecallError(t("Source unavailable.", "来源不可用。")))}>
-                    [{source.number}] {source.label} <time>{dateTimeLabel(source.created_at)}</time>
-                  </button></li>)}
-                </ul>}
+                {sources && <AiSources sources={sources} failed={error => setRecallError(errorMessage(error))} open={number => {
+                  void (reply ? ai.source(reply.id, number) : ai.sharedSource(chat.id, message!.seq, number))
+                    .then(original => { if (original) setLocalSource({ seq: original.seq }); }).catch(reportSource);
+                }} />}
                 <div className="message-meta">
                   {!windows && message?.pending && <>
                     <small role="status">{message.pending.error ?? <span className="status-icon" title={t("Queued", "排队中")} aria-label={t("Queued", "排队中")} role="img" tabIndex={0}><Clock size={14} aria-hidden /></span>}</small>
@@ -811,7 +860,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                   {reply && <>
                     <small><LockKeyhole size={12} /> {t("Only you", "仅自己可见")}</small>
                     <button type="button" className="text-button" onClick={() => setSharingReply(reply)}><UsersRound size={13} /> {t("Visible to", "分享给")}</button>
-                    <button className="icon-button" aria-label="Dismiss AI reply" onClick={() => aiChat.dismiss(reply.id)}><X size={14} /></button>
+                    {!windows && <button className="icon-button" aria-label="Dismiss AI reply" onClick={() => aiChat.dismiss(reply.id)}><X size={14} /></button>}
                   </>}
 
                 </div>
@@ -833,13 +882,6 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
       page={page} loading={loading} older={older} draft={draft} setDraft={setDraft}
       sending={sending} beginSending={beginSending} endSending={endSending}
       quoteUnavailable={!!draft.quote && (recalled.has(draft.quote.seq) || hidden.has(draft.quote.seq))} />
-    {sourceMessage && <Dialog title={t("Source message", "来源消息")} close={() => setSourceMessage(undefined)}>
-      <p className="muted">{displayName(sourceMessage.sender, remarks)} · {dateTimeLabel(sourceMessage.created_at)}</p>
-      {sourceMessage.attachment
-        ? <ChatAttachment message={sourceMessage} expired={fileExpired(sourceMessage, Date.now() + clockOffset)}
-            open={() => openMedia(sourceMessage)} onChanged={changed} />
-        : <RichMessage text={sourceMessage.text} />}
-    </Dialog>}
     {sharingReply && <ShareAiReply key={sharingReply.id} reply={sharingReply}
       members={chat.members.filter(user => user.id !== own.id)} close={() => setSharingReply(undefined)} published={async () => {
         await refresh();

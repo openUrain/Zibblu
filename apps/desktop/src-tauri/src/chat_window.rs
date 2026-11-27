@@ -41,6 +41,9 @@ pub(crate) struct ChatWindowSession {
 }
 
 fn conversation_title(directory: &Directory, own_id: Uuid, conversation: Uuid) -> Option<String> {
+    if cfg!(windows) && conversation == zibblu_core::ZIBBLU_ASSISTANT {
+        return Some("Zibblu Assistant".into());
+    }
     let chat = directory
         .conversations
         .iter()

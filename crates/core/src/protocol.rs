@@ -249,6 +249,8 @@ pub struct Message {
     pub attachment: Option<Attachment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_provider: Option<AiProvider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ai_sources: Vec<PublishedAiSource>,
     #[serde(default)]

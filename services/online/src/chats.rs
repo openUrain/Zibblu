@@ -445,9 +445,11 @@ pub(crate) async fn recall(
     auth.require(&mut tx).await?;
     let (already, in_time): (bool, bool) = sqlx::query_as(
         "SELECT recall_seq IS NOT NULL,
-                created_at + $4 >= (extract(epoch FROM clock_timestamp()) * 1000)::BIGINT
+                (CASE WHEN ai_provider IS NULL THEN created_at
+                      ELSE (extract(epoch FROM published_at) * 1000)::BIGINT END) + $4
+                    >= (extract(epoch FROM clock_timestamp()) * 1000)::BIGINT
          FROM m1_visible_messages WHERE seq = $1 AND conversation_id = $2
-           AND account_id = $3 AND sender_id = $3 AND ai_provider IS NULL",
+           AND account_id = $3 AND sender_id = $3",
     )
     .bind(seq)
     .bind(id)

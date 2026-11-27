@@ -1,3 +1,4 @@
+import { builtinAssistantId } from "./ai-api";
 import type { Conversation } from "./api";
 import type { MenuItem } from "./context-menu";
 
@@ -28,24 +29,21 @@ export function buildChatContextMenu(
       label: pinned ? "取消置顶" : "置顶聊天",
       action: () => options.onPin(!pinned),
     },
-    {
+    ...(chat.id === builtinAssistantId ? [] : [{
       label: unread ? "标为已读" : "标为未读",
       action: () => options.onRead(!unread),
     },
     {
       label: muted ? "取消免打扰" : "消息免打扰",
       action: () => options.onMute(!muted),
-    },
+    }]),
     {
       label: "独立窗口显示",
       divider: true,
       disabled: !options.windows,
       action: options.onPopout,
     },
-    {
-      label: "隐藏聊天",
-      action: options.onHide,
-    },
+    ...(chat.id === builtinAssistantId ? [] : [{ label: "隐藏聊天", action: options.onHide }]),
     {
       label: "删除聊天",
       divider: true,

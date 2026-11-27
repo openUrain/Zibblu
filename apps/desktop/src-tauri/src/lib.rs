@@ -256,9 +256,17 @@ pub fn run() {
             #[cfg(windows)]
             ai::agent::ai_start_agent,
             #[cfg(windows)]
+            ai::agent::ai_start_builtin,
+            #[cfg(windows)]
+            ai::agent::ai_builtin_model,
+            #[cfg(windows)]
+            ai::agent::ai_open_builtin_settings,
+            #[cfg(windows)]
             ai::agent::ai_answer_access,
             #[cfg(windows)]
             ai::agent::ai_source,
+            #[cfg(windows)]
+            ai::agent::ai_locate_source,
             #[cfg(windows)]
             ai::agent::ai_shared_source,
             ai::ai_prompts,
@@ -267,6 +275,8 @@ pub fn run() {
             ai::ai_cancel_job,
             ai::ai_dismiss_job,
             ai::ai_dismiss_reply,
+            #[cfg(windows)]
+            ai::ai_delete_local,
             commands::private_start,
             commands::private_nearby,
             commands::private_invite_nearby,
