@@ -776,6 +776,7 @@ svg { vertical-align: middle; }
 .windows .contact-group .contact-row > :is(.contact-avatar, .contact-name):hover { background: transparent; color: inherit; }
 .contact-group .contact-name { gap: 12px; min-height: 48px; }
 .windows .contact-group .contact-name { padding-inline-start: calc(8px + 40px + 12px); }
+.windows .contact-group .system-contact .contact-name { padding-inline-start: 12px; gap: 16px; }
 .contact-group .contact-name .avatar { width: 32px; height: 32px; border-radius: 8px; corner-shape: squircle; }
 .contact-group .contact-name strong { font-weight: 600; }
 .contact-group .contact-identity { min-width: 0; }

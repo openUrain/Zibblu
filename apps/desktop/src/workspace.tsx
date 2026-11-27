@@ -1147,7 +1147,7 @@ function Contacts({ active, directory, own, selected, refresh, create, reopenGro
     {failure && <p className="inline-error" role="alert">{failure}</p>}
     {showAssistant && <section className="contact-group">
       <h2 className="section-title">{t("System contacts", "系统联系人")}</h2>
-      <div className="contact-row"><button type="button" className="person-link contact-name" onClick={openAssistant}>
+      <div className="contact-row system-contact"><button type="button" className="person-link contact-name" onClick={openAssistant}>
         <span className="avatar ai-builtin-avatar"><Bot size={20} /></span><span><strong>{builtinAssistantName()}</strong></span>
       </button></div>
     </section>}
@@ -1205,7 +1205,7 @@ function Contacts({ active, directory, own, selected, refresh, create, reopenGro
           </button>
         </div>)}
       </div>)}
-    </div> : matchingHiddenGroups.length === 0 ? <p className="list-empty muted" role={windows ? "status" : undefined}>{windows ? emptyText
+    </div> : matchingHiddenGroups.length === 0 && !showAssistant ? <p className="list-empty muted" role={windows ? "status" : undefined}>{windows ? emptyText
       : query ? t("No matching contacts.", "没有匹配的联系人。") : t("No contacts yet.", "暂无联系人。")}</p> : null}
     </div>
   </section>;
