@@ -1,12 +1,18 @@
 .ai-settings > h2 { margin-bottom: 6px; }
 .ai-settings > p { margin: 0 0 12px; }
 .ai-settings > .text-button { margin-bottom: 12px; }
+.ai-terms-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.ai-terms-dialog > :is(.dialog-head, .dialog-actions) { flex: none; }
 .ai-terms-text {
-  max-height: 50vh;
+  min-height: 0;
   overflow: auto;
   padding-inline-end: 12px;
   white-space: pre-line;
 }
+.ai-terms-text p + p { margin-block-start: 8px; }
 .ai-terms-text p:first-child { font-weight: 600; }
 .ai-settings-provider { border-top: 1px solid var(--line); }
 .ai-settings-row {
