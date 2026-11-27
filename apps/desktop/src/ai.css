@@ -32,7 +32,7 @@
 .ai-source-link:focus-visible { outline: 2px solid var(--accent); }
 .ai-builtin-avatar { color: var(--accent); background: var(--tint); }
 .builtin-model-controls { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; min-width: 0; }
-.builtin-model-controls > select { min-width: 0; max-width: 160px; }
+.builtin-model-controls > select { width: auto; min-width: 0; max-width: min(160px, 100%); }
 .builtin-model-config .media-split-options { top: calc(100% + 4px); bottom: auto; inset-inline-end: 0; }
 .builtin-timeline { flex: 1; }
 .builtin-thread, .windows .builtin-assistant .builtin-composer { width: min(100%, 75ch); margin-inline: auto; }
@@ -42,8 +42,9 @@
 }
 .builtin-composer .floating-field { flex: 1; min-width: 0; }
 .builtin-composer textarea { min-height: 48px; max-height: 144px; resize: vertical; }
-.builtin-assistant .chat-heading { min-width: 0; }
-.builtin-assistant .chat-header { flex-wrap: wrap; height: auto; }
+.builtin-assistant .chat-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.builtin-assistant .chat-heading h2 { margin: 0; }
+.builtin-assistant .chat-header { flex-wrap: wrap; height: auto; padding-block: 4px; }
 .builtin-assistant .chat-header .chat-back { display: inline-flex; }
 .ai-sources time, .ai-access-card small { color: var(--muted); }
 .ai-access-card p { margin-block: 8px 4px; }
