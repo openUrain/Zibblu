@@ -374,12 +374,15 @@ export function selectedText(anchor: HTMLElement) {
 
 export function useAiMessageMenu(failed: (error: unknown) => void) {
   const menu = useRowMenu<HTMLDivElement>();
-  return (text: string | undefined, remove: () => void, share?: () => void) => menu(anchor => [
-    ...(text ? [{ label: t("Copy", "复制"), icon: <Copy size={15} />,
-      action: () => void copyText(selectedText(anchor) || text).catch(failed) }] : []),
-    ...(share ? [{ label: t("Share reply", "分享回复"), action: share }] : []),
-    { label: t("Delete", "删除"), icon: <Trash2 size={15} />, danger: true, action: remove },
-  ]);
+  return (text: string | undefined, remove: () => void, share?: () => void) => menu(anchor => {
+    const copy = selectedText(anchor) || text;
+    return [
+      ...(copy ? [{ label: t("Copy", "复制"), icon: <Copy size={15} />,
+        action: () => void copyText(copy).catch(failed) }] : []),
+      ...(share ? [{ label: t("Share reply", "分享回复"), action: share }] : []),
+      { label: t("Delete", "删除"), icon: <Trash2 size={15} />, danger: true, action: remove },
+    ];
+  });
 }
 
 export function AiSources({ sources, open, failed }: {
@@ -395,10 +398,13 @@ export function AiSources({ sources, open, failed }: {
         second: "2-digit", timeZoneName: "longOffset",
       }).format(time);
       return <li key={source.number}><span role="link" tabIndex={0} className="text-button ai-source-link"
-        {...menu(anchor => [{
-          label: t("Copy", "复制"), icon: <Copy size={15} />,
-          action: () => void copyText(selectedText(anchor) || anchor.textContent || "").catch(failed),
-        }])}
+        {...menu(anchor => {
+          const copy = selectedText(anchor) || anchor.textContent || "";
+          return [{
+            label: t("Copy", "复制"), icon: <Copy size={15} />,
+            action: () => void copyText(copy).catch(failed),
+          }];
+        })}
         onClick={event => { if (!selectedText(event.currentTarget)) open(source.number); }}
         onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); open(source.number); } }}>
         [{source.number}] {source.label} <time dateTime={time.toISOString()} title={title}>{dateTimeLabel(source.created_at)}</time>

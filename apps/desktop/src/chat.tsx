@@ -842,7 +842,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                     </div>
                     : <RichMessage text={text} cacheKey={message ?? reply} />}
                 </div>
-                {sources && <AiSources sources={sources} failed={reportSource} open={number => {
+                {sources && <AiSources sources={sources} failed={error => setRecallError(errorMessage(error))} open={number => {
                   void (reply ? ai.source(reply.id, number) : ai.sharedSource(chat.id, message!.seq, number))
                     .then(original => { if (original) setLocalSource({ seq: original.seq }); }).catch(reportSource);
                 }} />}

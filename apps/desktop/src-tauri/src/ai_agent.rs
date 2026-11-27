@@ -812,8 +812,14 @@ pub(super) async fn execute(
                     ensure_available(&desktop, client, origin, conversation).await?;
                     let args_map = args.as_object_mut().context("Invalid search arguments.")?;
                     let period = args_map.remove("period").filter(|value| !value.is_null()).map(serde_json::from_value).transpose()?;
-                    let from = args_map.remove("from_date").filter(|value| !value.is_null()).map(serde_json::from_value).transpose()?;
-                    let to = args_map.remove("to_date").filter(|value| !value.is_null()).map(serde_json::from_value).transpose()?;
+                    let mut local_date = |key| {
+                        args_map.remove(key).filter(|value| !value.is_null()).map(|value| {
+                            let date = value.as_str().context("Use a local date in YYYY-MM-DD format.")?;
+                            NaiveDate::parse_from_str(date, "%Y-%m-%d").context("Invalid local date.")
+                        }).transpose()
+                    };
+                    let from = local_date("from_date")?;
+                    let to = local_date("to_date")?;
                     let mut search: AiSearch = serde_json::from_value(args)?;
                     (search.since, search.until) = search_bounds(&now, period, from, to)?;
                     search.files_only = call.name == "search_files";
