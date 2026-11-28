@@ -6,7 +6,6 @@ use tauri::State;
 
 const ENGLISH_TERMS: &str = include_str!("../windows-ai-terms.en.txt");
 const CHINESE_TERMS: &str = include_str!("../windows-ai-terms.zh-CN.txt");
-const LEGACY_TERMS: &str = include_str!("../windows-ai-terms.txt");
 const ACCEPTED_FILE: &str = "accepted-ai-terms.txt";
 
 #[derive(Serialize)]
@@ -15,10 +14,19 @@ pub(crate) struct AiTerms {
     accepted: bool,
 }
 
+fn matches_terms(accepted: &str, english: &str, chinese: &str) -> bool {
+    if accepted.lines().eq(english.lines()) || accepted.lines().eq(chinese.lines()) {
+        return true;
+    }
+    // The previous installer put both headings before the two language bodies.
+    let mut english = english.lines();
+    let mut chinese = chinese.trim_start_matches('\u{feff}').lines();
+    accepted.lines().eq(english.next().into_iter().chain(chinese.next()).chain(english).chain(chinese))
+}
+
 fn is_accepted(data: &Path) -> Result<bool> {
     match fs::read_to_string(data.join(ACCEPTED_FILE)) {
-        Ok(accepted) => Ok([ENGLISH_TERMS, CHINESE_TERMS, LEGACY_TERMS]
-            .iter().any(|terms| accepted.lines().eq(terms.lines()))),
+        Ok(accepted) => Ok(matches_terms(&accepted, ENGLISH_TERMS, CHINESE_TERMS)),
         Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData) => Ok(false),
         Err(error) => Err(error).context("Could not read AI terms acceptance"),
     }
@@ -55,6 +63,8 @@ pub(crate) fn ai_accept_terms(state: State<'_, Desktop>, text: String) -> Comman
 mod tests {
     use super::*;
 
+    const LEGACY_TERMS: &str = include_str!("../windows-ai-terms.txt");
+
     #[test]
     fn missing_and_old_terms_fail_closed() -> Result<()> {
         let profile = tempfile::tempdir()?;
@@ -70,6 +80,8 @@ mod tests {
             fs::write(&accepted, terms)?;
             require_accepted(profile.path())?;
         }
+        let changed_terms = ENGLISH_TERMS.replace("Version 2", "Version 3");
+        assert!(!matches_terms(LEGACY_TERMS, &changed_terms, CHINESE_TERMS));
         Ok(())
     }
 }

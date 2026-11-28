@@ -37,11 +37,21 @@ const chineseErrors = new Map([
   ["Use your device's available camera", "请使用设备上的摄像头。"],
   ["This attachment is unavailable or expired", "此附件不可用或已过期。"],
   ["The file was not found.", "未找到文件。"],
+  ["Choose a save location", "请选择保存位置。"],
+  ["Choose a new save location on this device", "请在此设备上重新选择保存位置。"],
+  ["Choose a regular file to replace", "请选择要覆盖的普通文件。"],
+  ["The destination changed. Choose the save location and confirm replacement again.", "目标文件已发生变化。请重新选择保存位置并确认覆盖。"],
+  ["The save destination already exists. Choose the location again to confirm replacement.", "保存位置已存在同名文件。请重新选择保存位置并确认覆盖。"],
+  ["The save destination is read-only. Choose another location or change its permissions.", "保存位置为只读。请选择其他位置或修改权限。"],
+  ["The save destination is in use. Close the file and retry.", "保存位置的文件正在使用中。请关闭文件后重试。"],
+  ["Permission denied at the save destination. Check its permissions or choose another location.", "没有写入保存位置的权限。请检查权限或选择其他位置。"],
+  ["There is not enough disk space to save the file. Free up space and retry.", "磁盘空间不足，无法保存文件。请释放空间后重试。"],
+  ["Could not save the attachment", "无法保存附件。"],
   ["Something went wrong. Try again.", "操作未完成，请重试。"],
 ]);
 
 export function chineseErrorMessage(message: string) {
   const dropLimit = /^Drop up to (\d+) files or folders at a time\.$/.exec(message);
   if (dropLimit) return `每次最多拖入 ${dropLimit[1]} 个文件或文件夹。`;
-  return chineseErrors.get(message) ?? (/\p{Script=Han}/u.test(message) ? message : "操作未完成，请重试。");
+  return chineseErrors.get(message) ?? message;
 }
