@@ -288,6 +288,8 @@ struct Approval {
     autonomous: bool,
     #[cfg(windows)]
     effort: Option<String>,
+    #[cfg(windows)]
+    authorized_chats: Vec<agent::AuthorizedChat>,
 }
 
 struct ActiveAiJob {
@@ -788,6 +790,8 @@ pub(crate) async fn ai_prepare(
             autonomous: false,
             #[cfg(windows)]
             effort: None,
+            #[cfg(windows)]
+            authorized_chats: Vec::new(),
         });
         Ok(prepared)
     })()?;
@@ -826,6 +830,10 @@ async fn start_ai_job(
     let ai_history = state.ai_history.lock().await;
     let conversation_id = approved.conversation_id;
     ensure_available(state, &client, conversation_id, conversation_id).await?;
+    #[cfg(windows)]
+    for chat in &approved.authorized_chats {
+        ensure_available(state, &client, conversation_id, chat.id).await?;
+    }
     let provider = approved.assistant.info.provider;
     let _base = provider.base_url(approved.assistant.info.base_url.as_deref())?;
     let bytes = protect_key(provider, &approved.assistant.protected_key, false)?;
@@ -839,7 +847,12 @@ async fn start_ai_job(
     let prompt_id = Uuid::new_v4();
     let created_at = client.server_now();
     let has_uncached = approved.attachments.iter().any(|item| !item.cached);
-    let initial_phase = if approved.autonomous {
+    #[cfg(windows)]
+    let autonomous_search = approved.autonomous
+        && (conversation_id != zibblu_core::ZIBBLU_ASSISTANT || !approved.authorized_chats.is_empty());
+    #[cfg(not(windows))]
+    let autonomous_search = approved.autonomous;
+    let initial_phase = if autonomous_search {
         "searching"
     } else if has_uncached {
         "downloading"
@@ -854,6 +867,12 @@ async fn start_ai_job(
 
     {
         let mut ai = state.ai.lock().expect("AI state");
+        #[cfg(windows)]
+        let targets = approved
+            .authorized_chats
+            .iter()
+            .map(|chat| chat.id)
+            .collect();
         ai.jobs.insert(
             prompt_id,
             ActiveAiJob {
@@ -872,7 +891,7 @@ async fn start_ai_job(
                 #[cfg(windows)]
                 access: None,
                 #[cfg(windows)]
-                targets: Default::default(),
+                targets,
             },
         );
     }
@@ -1375,6 +1394,8 @@ mod tests {
             autonomous: false,
             #[cfg(windows)]
             effort: None,
+            #[cfg(windows)]
+            authorized_chats: vec![],
         }
     }
 

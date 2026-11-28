@@ -6,6 +6,8 @@ import { errorMessage } from "./api";
 import type { CloseAction } from "./api";
 import { Dialog } from "./common";
 
+import { actions, t } from "./locale";
+
 export const windows = navigator.userAgent.includes("Windows");
 const appWindow = getCurrentWindow();
 
@@ -52,9 +54,9 @@ export function CloseActionChoices({ action, choose, disabled }: {
 }) {
   const group = useId();
   return <fieldset className="close-action-options" disabled={disabled}>
-    <legend>When closing the window</legend>
-    <label><input type="radio" name={group} checked={action === "exit"} onChange={() => choose("exit")} /> Exit Zibblu</label>
-    <label><input type="radio" name={group} checked={action === "tray"} onChange={() => choose("tray")} /> Minimize to the system tray</label>
+    <legend>{t("When closing the window", "关闭主窗口时")}</legend>
+    <label><input type="radio" name={group} checked={action === "exit"} onChange={() => choose("exit")} /> {t("Exit Zibblu", "退出 Zibblu")}</label>
+    <label><input type="radio" name={group} checked={action === "tray"} onChange={() => choose("tray")} /> {t("Minimize to the system tray", "最小化到系统托盘")}</label>
   </fieldset>;
 }
 
@@ -87,12 +89,12 @@ export function WindowClosePrompt({ save }: { save: (action: CloseAction) => Pro
     finally { setBusy(false); }
   }
 
-  return open && <Dialog title="Close Zibblu" className="close-action-dialog" close={cancel} closeDisabled={busy}>
+  return open && <Dialog title={t("Close Zibblu", "关闭 Zibblu")} className="close-action-dialog" close={cancel} closeDisabled={busy}>
     <CloseActionChoices action={action} choose={setAction} disabled={busy} />
     {failure && <p className="inline-error" role="alert">{failure}</p>}
     <div className="dialog-actions">
-      <button className="button subtle" onClick={cancel} disabled={busy}>Cancel</button>
-      <button className="button primary" onClick={() => void confirm()} disabled={busy || !action}>Confirm</button>
+      <button className="button subtle" onClick={cancel} disabled={busy}>{actions.cancel}</button>
+      <button className="button primary" onClick={() => void confirm()} disabled={busy || !action}>{t("Confirm", "确定")}</button>
     </div>
   </Dialog>;
 }

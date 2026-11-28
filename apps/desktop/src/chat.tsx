@@ -188,7 +188,7 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
   const [searchOpen, setSearchOpen] = useState(false);
   const [media, setMedia] = useState<Message>();
   const [mediaError, setMediaError] = useState("");
-  const [historyAction, setHistoryAction] = useState<"clear" | "delete">();
+  const [clearHistoryOpen, setClearHistoryOpen] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const [leave, setLeave] = useState(false);
@@ -204,15 +204,15 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
   const memberCount = t(` (${count})`, `（${count}）`);
   const heading = chat.title ? name + memberCount : name;
   const details = chat.title ? t("Group details", "群聊信息") : t("Conversation details", "聊天信息");
-  const privateAction = privateRoom?.phase === "invited" ? "Review private invitation"
-    : privateRoom?.unread ? "Open private chat, unread messages" : "Open private chat";
+  const privateAction = privateRoom?.phase === "invited" ? t("Review private invitation", "查看私密聊天邀请")
+    : privateRoom?.unread ? t("Open private chat, unread messages", "打开私密聊天（有未读消息）") : t("Open private chat", "发起私密聊天");
   const peer = chat.title ? undefined : chat.members.find(user => user.id !== own.id);
   const groupMember = !!chat.title && chat.members.some(member => member.id === own.id);
   const chatView = useRef<HTMLElement>(null);
   const detailsButton = useRef<HTMLButtonElement>(null);
   const filesBack = useRef<HTMLButtonElement>(null);
   const drawerReturn = useRef<HTMLButtonElement>(null);
-  const secondaryOpen = profileOpen || searchOpen || showFiles || leave || !!historyAction;
+  const secondaryOpen = profileOpen || searchOpen || showFiles || leave || clearHistoryOpen;
   const detailsVisible = drawer && (windows || !secondaryOpen);
   function openMedia(message: Message) {
     setMediaError("");
@@ -369,12 +369,8 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
         </div>
         <div className="drawer-actions">
           <DrawerAction className="danger" icon={<Trash2 size={20} />} next={false} busy={sending}
-            onClick={button => fromDrawer(button, () => { setHistoryError(""); setHistoryAction("clear"); })}>
+            onClick={button => fromDrawer(button, () => { setHistoryError(""); setClearHistoryOpen(true); })}>
             {t("Clear chat history", "清空聊天记录")}
-          </DrawerAction>
-          <DrawerAction className="danger" icon={<Trash2 size={20} />} next={false} busy={sending}
-            onClick={button => fromDrawer(button, () => { setHistoryError(""); setHistoryAction("delete"); })}>
-            {t("Delete conversation", "删除会话")}
           </DrawerAction>
         </div>
         {groupMember && <div className="drawer-actions">
@@ -385,36 +381,34 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
       </Dialog>}
     </div>
     {invite && <ShareQr code={invite} server={server} close={() => setInvite(undefined)} />}
-    {historyAction && <Dialog title={historyAction === "delete" ? t("Delete conversation", "删除会话") : t("Clear chat history", "清空聊天记录")}
-      close={() => setHistoryAction(undefined)} closeDisabled={historyBusy}>
-      <p>{historyAction === "delete"
-        ? t("Delete this conversation and its history on this device? Pending sends will continue.", "删除本设备的会话及聊天记录？已入队的发送任务仍会继续。")
-        : t("Clear chat history on this device? Pending sends will continue.", "清空本设备的聊天记录？已入队的发送任务仍会继续。")}</p>
+    {clearHistoryOpen && <Dialog title={t("Clear chat history", "清空聊天记录")}
+      close={() => setClearHistoryOpen(false)} closeDisabled={historyBusy}>
+      <p>{t("Clear chat history on this device? Pending sends will continue.", "清空本设备的聊天记录？已入队的发送任务仍会继续。")}</p>
       {historyError && <p className="inline-error" role="alert">{historyError}</p>}
       <div className="dialog-actions">
-        <button className="button subtle" disabled={historyBusy} onClick={() => setHistoryAction(undefined)}>{t("Cancel", "取消")}</button>
+        <button className="button subtle" disabled={historyBusy} onClick={() => setClearHistoryOpen(false)}>{t("Cancel", "取消")}</button>
         <button className="button danger" disabled={historyBusy || sending} onClick={async () => {
           setHistoryBusy(true);
           try {
-            await removeHistory(historyAction === "delete");
+            await removeHistory(false);
             setMedia(undefined); setSearchOpen(false); setShowFiles(false);
-            setHistoryAction(undefined); setDrawer(false);
+            setClearHistoryOpen(false); setDrawer(false);
           } catch (error) { setHistoryError(errorMessage(error)); }
           finally { setHistoryBusy(false); }
-        }}>{historyAction === "delete" ? t("Delete", "删除") : t("Clear", "清空")}</button>
+        }}>{t("Clear", "清空")}</button>
       </div>
     </Dialog>}
-    {leave && <Dialog title="Leave group" close={() => setLeave(false)} closeDisabled={leaving}>
-      <p>You will stop receiving messages from {name}.</p>
+    {leave && <Dialog title={t("Leave group", "退出群聊")} close={() => setLeave(false)} closeDisabled={leaving}>
+      <p>{t(`You will stop receiving messages from ${name}.`, `退出后将不再接收「${name}」的消息。`)}</p>
       {leaveError && <p className="inline-error" role="alert">{leaveError}</p>}
       <div className="dialog-actions">
-        <button className="button subtle" disabled={leaving} onClick={() => setLeave(false)}>Cancel</button>
+        <button className="button subtle" disabled={leaving} onClick={() => setLeave(false)}>{t("Cancel", "取消")}</button>
         <button className="button danger" disabled={leaving} onClick={async () => {
           setLeaving(true);
           try { await api.leaveGroup(chat.id); await refresh(); setLeave(false); back(); }
           catch (error) { setLeaveError(errorMessage(error)); }
           finally { setLeaving(false); }
-        }}>Leave group</button>
+        }}>{t("Leave group", "退出群聊")}</button>
       </div>
     </Dialog>}
     {searchOpen && <ChatSearch conversation={chat.id} {...{ revision, latestAiSeq, recalled, hidden, transfers, changed }}
@@ -433,15 +427,15 @@ function ChatSearch({ conversation, revision, latestAiSeq, recalled, hidden, ope
   const [tab, setTab] = useState<"text" | "media">("text");
   return <Dialog title={t("Search chat", "查找聊天内容")} mobilePage close={close}>
     <fieldset className="tabs">
-      <legend className="sr-only">Search chat by</legend>
-      <Choice type="radio" name="chat-search" checked={tab === "text"} onChange={() => setTab("text")}>Messages</Choice>
-      <Choice type="radio" name="chat-search" checked={tab === "media"} onChange={() => setTab("media")}>Photos and videos</Choice>
+      <legend className="sr-only">{t("Search chat by", "按类型查找")}</legend>
+      <Choice type="radio" name="chat-search" checked={tab === "text"} onChange={() => setTab("text")}>{t("Messages", "消息")}</Choice>
+      <Choice type="radio" name="chat-search" checked={tab === "media"} onChange={() => setTab("media")}>{t("Photos and videos", "图片与视频")}</Choice>
     </fieldset>
     {tab === "media" ? <MediaHistory {...{ conversation, revision, recalled, hidden, transfers }} open={openMedia} onChanged={changed} /> : <>
       <form className="chat-search" onSubmit={event => { event.preventDefault(); setSearch(query.trim()); }}>
-        <FloatingField fieldClass="search" label="Search message text" prefixIcon={<Search size={16} />} value={query}
+        <FloatingField fieldClass="search" label={t("Search message text", "搜索消息正文")} prefixIcon={<Search size={16} />} value={query}
           onChange={event => setQuery(event.target.value)} autoFocus />
-        <button className="button primary" type="submit" disabled={!query.trim()}>Search</button>
+        <button className="button primary" type="submit" disabled={!query.trim()}>{t("Search", "搜索")}</button>
       </form>
       {search && <SearchResults key={search} {...{ conversation, search, revision, latestAiSeq, recalled, hidden }} />}
     </>}

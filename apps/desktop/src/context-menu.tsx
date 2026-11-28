@@ -13,7 +13,7 @@ export function copyText(text: string) {
 }
 
 export type MenuItem = { label: string; action: () => void; disabled?: boolean; icon?: ReactNode; divider?: boolean; danger?: boolean };
-type Menu = { x: number; y: number; anchor: HTMLElement; items: MenuItem[]; restoreFocus: HTMLElement | null };
+type Menu = { x: number; y: number; anchorTop?: number; anchor: HTMLElement; items: MenuItem[]; restoreFocus: HTMLElement | null };
 const OpenMenu = createContext<(anchor: HTMLElement, items: MenuItem[], point?: { x: number; y: number }) => void>(() => {});
 const OpenEditMenu = createContext<(event: MouseEvent<HTMLElement>, pasteAttachment: () => Promise<void>) => void>(() => {});
 const MenuAnchor = createContext<HTMLElement | undefined>(undefined);
@@ -87,7 +87,8 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     setNavigation(undefined);
     const rect = anchor.getBoundingClientRect();
     setMenu({
-      x: point?.x ?? rect.left, y: point?.y ?? rect.bottom + 4, anchor, items,
+      x: point?.x ?? rect.left, y: point?.y ?? rect.bottom + 4,
+      anchorTop: point ? undefined : rect.top, anchor, items,
       restoreFocus: anchor.matches("button") ? anchor
         : document.activeElement instanceof HTMLElement ? document.activeElement : null,
     });
@@ -103,7 +104,10 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     const element = panel.current;
     if (!menu || !element) return;
     element.style.left = Math.max(8, Math.min(menu.x, window.innerWidth - element.offsetWidth - 8)) + "px";
-    element.style.top = Math.max(8, Math.min(menu.y, window.innerHeight - element.offsetHeight - 8)) + "px";
+    const top = menu.anchorTop !== undefined && menu.y + element.offsetHeight + 8 > window.innerHeight
+      ? Math.max(8, menu.anchorTop - element.offsetHeight - 4)
+      : Math.max(8, Math.min(menu.y, window.innerHeight - element.offsetHeight - 8));
+    element.style.top = top + "px";
     (element.querySelector<HTMLElement>("button:not(:disabled)") ?? element).focus({ preventScroll: true });
   }, [menu]);
 

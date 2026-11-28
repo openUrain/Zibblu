@@ -53,9 +53,10 @@ mod tests {
     #[test]
     fn missing_and_old_terms_fail_closed() -> Result<()> {
         let profile = tempfile::tempdir()?;
+        assert!(TERMS.contains("Version 2"));
         assert!(require_accepted(profile.path()).is_err());
         let accepted = profile.path().join(ACCEPTED_FILE);
-        fs::write(&accepted, "An older version")?;
+        fs::write(&accepted, "Zibblu Windows AI Terms and Privacy Notice · Version 1\n")?;
         assert!(require_accepted(profile.path()).is_err());
         fs::write(accepted, TERMS)?;
         require_accepted(profile.path())

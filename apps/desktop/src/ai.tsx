@@ -47,11 +47,13 @@ export function AssistantSettings({ assistants, failure, changed }: {
 }) {
   const [editing, setEditing] = useState<AiProvider>();
   const terms = useAiTerms();
-  return <div className="surface settings-card ai-settings">
-    <h2><Bot size={20} /> AI assistants</h2>
-    <p className="muted">Give a provider an @name to ask it from a normal chat.</p>
+  return <section className="settings-group ai-settings">
+    <div className="ai-settings-head">
+      <h2>{t("AI assistants", "AI 助理")}</h2>
+      {windows && <button type="button" className="text-button ai-terms-link" onClick={terms.review}>{aiTermsLabel()}</button>}
+    </div>
+    <p className="muted ai-settings-summary">{t("Configure providers for @mentions in chats and Zibblu Assistant.", "配置提供商后，可在普通聊天中 @ 提问或使用 Zibblu 助手。")}</p>
     {failure && <p className="inline-error" role="alert">{failure}</p>}
-    {windows && <button type="button" className="text-button" onClick={terms.review}>{aiTermsLabel()}</button>}
     {(Object.keys(aiProviders) as AiProvider[]).map(provider => {
       const details = aiProviders[provider];
       const assistant = assistants.find(entry => entry.provider === provider);
@@ -60,7 +62,7 @@ export function AssistantSettings({ assistants, failure, changed }: {
           onClick={() => setEditing(editing === provider ? undefined : provider)}>
           <ProviderLogo provider={provider} />
           <span className="ai-settings-name"><strong>{details.label}</strong>
-            <small>{assistant ? "@" + assistant.name + " · " + assistant.model : "Set up an assistant"}</small>
+            <small>{assistant ? "@" + assistant.name + " · " + assistant.model : t("Not configured", "未配置")}</small>
           </span>
           <ChevronRight size={16} />
         </button>
@@ -72,7 +74,7 @@ export function AssistantSettings({ assistants, failure, changed }: {
       </div>;
     })}
     {terms.dialog}
-  </div>;
+  </section>;
 }
 
 function AssistantEditor({ provider, assistant, saved, requireTerms }: {
@@ -133,28 +135,28 @@ function AssistantEditor({ provider, assistant, saved, requireTerms }: {
   return <form className="ai-settings-form" onSubmit={save} autoComplete="off">
     <fieldset className="ai-editor-fields" disabled={!!busy}>
     <div className="ai-settings-fields">
-      <FloatingField label="Mention name" prefixIcon={<AtSign size={16} />} value={name} onChange={event => setName(event.target.value)} maxLength={32} required />
-      <FloatingField label="Model ID" value={model} onChange={event => setModel(event.target.value)} maxLength={128} required
+      <FloatingField label={t("Mention name", "@ 名称")} prefixIcon={<AtSign size={16} />} value={name} onChange={event => setName(event.target.value)} maxLength={32} required />
+      <FloatingField label={t("Model ID", "模型 ID")} value={model} onChange={event => setModel(event.target.value)} maxLength={128} required
         list={models.length ? modelList : undefined} />
       {models.length > 0 && <datalist id={modelList}>{models.map(id => <option key={id} value={id} />)}</datalist>}
     </div>
-    <FloatingField label="API key" ref={key} type="password" autoComplete="off" spellCheck={false} maxLength={512} required={!assistant}
-        onChange={resetTest} placeholder={assistant ? "Saved · enter a new key to replace it" : "Paste your provider API key"} />
+    <FloatingField label={t("API key", "API 密钥")} ref={key} type="password" autoComplete="off" spellCheck={false} maxLength={512} required={!assistant}
+        onChange={resetTest} placeholder={assistant ? t("Saved · enter a new key to replace it", "已保存 · 输入新密钥以替换") : t("Paste your provider API key", "粘贴提供商 API 密钥")} />
     <details className="ai-advanced" open={assistant?.base_url ? true : undefined}>
-      <summary>Advanced connection settings</summary>
-      <FloatingField label="Base URL" type="url" value={baseUrl} placeholder={aiProviders[provider].base} maxLength={2048}
+      <summary>{t("Advanced connection settings", "高级连接设置")}</summary>
+      <FloatingField label={t("Base URL", "接口地址")} type="url" value={baseUrl} placeholder={aiProviders[provider].base} maxLength={2048}
         onChange={event => { setBaseUrl(event.target.value); resetTest(); }} />
-      <p className="muted">Use the HTTPS API base path. The key is sent to this address when you test or ask the assistant.</p>
+      <p className="muted">{t("Use the HTTPS API base path. The key is sent to this address when you test or ask the assistant.", "填写 HTTPS API 基础路径。测试连接或向助手提问时，密钥会发送至此地址。")}</p>
     </details>
     </fieldset>
     {connection && <p className="muted" role="status">{connection}</p>}
     {failure && <p className="inline-error" role="alert">{failure}</p>}
     <div className="ai-settings-actions">
-      <span className="muted"><LockKeyhole size={14} /> Protected by Windows</span>
+      <span className="muted"><LockKeyhole size={14} /> {t("Protected by Windows", "由 Windows 加密保护")}</span>
       <button className="button subtle" type="button" disabled={!!busy} onClick={() => void test()}>
-        {busy === "test" ? "Testing…" : "Test connection"}
+        {busy === "test" ? t("Testing…", "测试中…") : t("Test connection", "测试连接")}
       </button>
-      {assistant && <button className="button subtle" type="button" disabled={!!busy} onClick={() => void remove()}>Remove</button>}
+      {assistant && <button className="button subtle" type="button" disabled={!!busy} onClick={() => void remove()}>{t("Remove", "移除")}</button>}
       <button className="button primary" type="submit" disabled={!!busy}>{busy === "save" ? actions.saving : actions.save}</button>
     </div>
   </form>;
@@ -423,12 +425,12 @@ export function AiPromptBubble({ prompt, assistantName, sender, menu, builtin = 
           <span>{prompt.prompt_text}</span>
         </div>
       </div>
-      <div className="message-meta">
+      {!builtin && <div className="message-meta">
         <small className="ai-only-you-badge">
           <LockKeyhole size={12} aria-hidden="true" />
           <span>{t("Only visible to you", "仅自己可见")}</span>
         </small>
-      </div>
+      </div>}
     </div>
     <span className="message-avatar"><PersonAvatar user={sender} /></span>
   </div>;
@@ -529,31 +531,31 @@ export function ShareAiReply({ reply, members, close, published, destinations = 
     finally { setPosting(false); }
   }
 
-  return <Dialog title="Visible to" mobilePage closeDisabled={posting} close={close}>
-    <p className="muted">Share this reply with the selected chat members. You will also be able to see it.</p>
+  return <Dialog title={t("Visible to", "分享给")} mobilePage closeDisabled={posting} close={close}>
+    <p className="muted">{t("Share this reply with the selected chat members. You will also be able to see it.", "将此回复分享给所选成员，你也会同时看到。")}</p>
     {!!reply.sources?.length && <><p className="muted">{t(
       "Generated text may contain information from other conversations. Review the reply before sharing. Each recipient sees only sources they can access.",
       "生成文本可能包含其他会话的信息。请核对正文后再分享。每位接收者只会看到有权限访问的来源。",
     )}</p><RichMessage text={shareText} /></>}
-    {builtin && <label>{t("Conversation", "会话")} <select value={target} disabled={posting || !!lockedReaders.current}
+    {builtin && <label className="ai-share-target">{t("Conversation", "会话")} <Selector value={target} disabled={posting || !!lockedReaders.current}
       onChange={event => { setTarget(event.currentTarget.value); setReaders([]); }}>
       <option value="">{t("Choose a conversation", "选择会话")}</option>
       {destinations.map(chat => <option key={chat.id} value={chat.id}>{chatName(chat, own!, remarks)}</option>)}
-    </select></label>}
+    </Selector></label>}
     <fieldset className="dialog-contacts" disabled={posting || !!lockedReaders.current}>
-      <legend>Chat members</legend>
+      <legend>{t("Chat members", "会话成员")}</legend>
       {targetMembers.map(user => <Choice key={user.id} checked={readers.includes(user.id)} onChange={event => {
           setReaders(event.target.checked ? [...readers, user.id] : readers.filter(id => id !== user.id));
         }}>
         <span>{displayName(user, remarks)}</span>
       </Choice>)}
     </fieldset>
-    {tooLong && <p className="inline-error">Replies up to 24 KiB can be shared.</p>}
+    {tooLong && <p className="inline-error">{t("Replies up to 24 KiB can be shared.", "最多可分享 24 KiB 的回复。")}</p>}
     {failure && <p className="inline-error" role="alert">{failure}</p>}
     <div className="dialog-actions">
-      <button type="button" className="button subtle" disabled={posting} onClick={close}>Close</button>
+      <button type="button" className="button subtle" disabled={posting} onClick={close}>{t("Close", "关闭")}</button>
       <button type="button" className="button primary" disabled={posting || tooLong || !readers.length}
-        onClick={() => void post()}>{posting ? "Sharing…" : "Share reply"}</button>
+        onClick={() => void post()}>{posting ? t("Sharing…", "分享中…") : t("Share reply", "分享回复")}</button>
     </div>
   </Dialog>;
 }
