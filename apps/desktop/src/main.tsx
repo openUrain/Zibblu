@@ -238,6 +238,17 @@ function SignIn({ initialServer, officialServer, initialAccount, notice, signedI
   </main>;
 }
 
+const tabFocus = "data-tab-focus";
+document.addEventListener("keydown", event => {
+  if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey) return;
+  const target = event.target;
+  const editingText = (target instanceof HTMLElement && target.isContentEditable)
+    || target instanceof HTMLTextAreaElement
+    || (target instanceof HTMLInputElement && /^(text|search|url|tel|email|password|number)$/.test(target.type));
+  document.documentElement.toggleAttribute(tabFocus, !editingText);
+}, true);
+document.addEventListener("pointerdown", () => document.documentElement.removeAttribute(tabFocus), true);
+
 document.body.classList.toggle("windows", windows);
 setupIosLayout();
 const label = getCurrentWindow().label;

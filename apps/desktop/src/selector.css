@@ -14,12 +14,13 @@
     align-items: center; min-height: 36px; padding: 4px 8px; border-radius: 4px;
     background: var(--panel); color: var(--ink);
   }
-  .zibblu-selector option:checked, .zibblu-selector option:enabled:is(:hover, :focus-visible) {
+  .zibblu-selector option:checked, .zibblu-selector option:enabled:hover,
+  :where(html[data-tab-focus]) .zibblu-selector option:enabled:focus-visible {
     background: var(--tint); color: var(--accent);
   }
-  .zibblu-selector option:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+  :where(html[data-tab-focus]) .zibblu-selector option:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
   .zibblu-selector option:disabled { color: var(--muted); }
   @media (forced-colors: active) {
-    .zibblu-selector option:focus-visible { outline-color: Highlight; }
+    :where(html[data-tab-focus]) .zibblu-selector option:focus-visible { outline-color: Highlight; }
   }
 }

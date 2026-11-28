@@ -51,7 +51,7 @@
 .ai-composer { border-color: var(--accent); }
 .ai-sources { list-style: none; margin: 4px 0; padding: 0; }
 .ai-source-link { display: inline-block; text-align: start; overflow-wrap: anywhere; cursor: pointer; user-select: text; }
-.ai-source-link:focus-visible { outline: 2px solid var(--ink); }
+:where(html[data-tab-focus]) .ai-source-link:focus-visible { outline: 2px solid var(--ink); }
 .ai-builtin-avatar { color: var(--accent); background: var(--tint); }
 
 .builtin-assistant .chat-header { position: relative; z-index: 20; }
@@ -155,17 +155,49 @@
 .builtin-effort-button:active:enabled { background: var(--soft); color: var(--ink); }
 .builtin-effort-popover {
   position-area: block-start span-inline-start;
-  justify-self: end; inset: auto; margin: 0 0 8px; width: 192px; padding: 12px;
-  border: 1px solid var(--line); border-radius: 12px;
+  justify-self: end; inset: auto; margin: 0 0 8px;
+  width: min(192px, calc(100vw - 32px)); padding: 12px 16px;
+  border: 1px solid var(--line); border-radius: 8px;
   background: var(--panel); color: var(--ink); box-shadow: var(--shadow);
 }
-.builtin-effort-popover label { font-weight: 600; }
-.builtin-effort-popover input[type="range"] { width: 100%; margin: 8px 0 4px; accent-color: var(--ink); }
-.builtin-effort-labels {
-  display: grid; grid-template-columns: repeat(3, 1fr); color: var(--muted); font-size: 12px;
+.builtin-effort-value { display: block; text-align: center; font-size: 16px; font-weight: 600; line-height: 1.25; }
+.builtin-effort-control { --effort-thumb-width: 12px; position: relative; margin-block-start: 4px; }
+.builtin-effort-control input[type="range"] {
+  position: relative; display: block; width: 100%; height: 32px; margin: 0; cursor: pointer;
 }
-.builtin-effort-labels span:nth-child(2) { text-align: center; }
-.builtin-effort-labels span:last-child { text-align: end; }
+.builtin-effort-track { display: none; }
+@supports selector(input::-webkit-slider-thumb) {
+  @media (forced-colors: none) {
+    .builtin-effort-control input[type="range"] { appearance: none; background: transparent; }
+    .builtin-effort-control input::-webkit-slider-thumb {
+      appearance: none; width: var(--effort-thumb-width); height: 20px; background: transparent;
+    }
+    .builtin-effort-track {
+      display: block; position: absolute; pointer-events: none;
+      inset-inline: calc(var(--effort-thumb-width) / 2); inset-block-start: 50%;
+      translate: 0 -50%; height: 4px; border-radius: 9999px;
+      background: color-mix(in srgb, var(--muted) 80%, var(--panel));
+    }
+    .builtin-effort-track::before {
+      content: ""; position: absolute; inset: 0 auto 0 0; width: var(--effort-position);
+      border-radius: inherit; background: var(--accent);
+    }
+    .builtin-effort-track::after {
+      content: ""; position: absolute; inset-inline-start: var(--effort-position); inset-block-start: 50%;
+      translate: -50% -50%; width: var(--effort-thumb-width); height: 20px;
+      border: 2px solid var(--accent); border-radius: 4px; background: var(--panel);
+    }
+    .builtin-effort-ticks {
+      position: absolute; inset-inline: -1px; inset-block-start: calc(100% + 8px);
+      display: flex; justify-content: space-between;
+    }
+    .builtin-effort-ticks > span { width: 2px; height: 4px; background: var(--muted); }
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .builtin-effort-track::before { transition: width 150ms ease-out; }
+  .builtin-effort-track::after { transition: inset-inline-start 150ms ease-out; }
+}
 .builtin-menu-spacer { display: inline-block; width: 15px; flex: none; }
 .windows .chat-view .composer-input.builtin-composer-input {
   padding-inline-start: 6px;

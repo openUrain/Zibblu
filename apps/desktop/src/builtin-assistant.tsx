@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { ArrowLeft, Bot, Check, ChevronDown, MessageSquare, Pencil, Plus, RefreshCw, Settings, SlidersHorizontal, X } from "lucide-react";
 import { Fragment, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import type { CSSProperties, FormEvent } from "react";
 import { AiJobBubble, AiPromptBubble, AiSources, builtinAssistantName, ProviderLogo, ShareAiReply, useAiMessageMenu } from "./ai";
 import { ai, aiProviders, builtinAssistantId } from "./ai-api";
 import { useAiTerms } from "./ai-terms";
@@ -28,6 +28,7 @@ function ThinkingEffort({ efforts, effort, busy, save }: {
   const labels = [t("Instant", "即时"), t("Medium", "中"), t("High", "高")];
   const label = t("Thinking effort", "思考强度");
   const index = preview ?? Math.max(0, efforts.indexOf(effort ?? ""));
+  const position = `${index / (labels.length - 1) * 100}%`;
 
   useEffect(() => {
     const input = slider.current;
@@ -43,17 +44,22 @@ function ThinkingEffort({ efforts, effort, busy, save }: {
 
   return <div className="builtin-effort">
     <button type="button" className="builtin-effort-button" popoverTarget={id} disabled={busy}
-      aria-label={label + " · " + labels[index]} title={label}>
+      aria-label={label + " · " + labels[index]}>
       <SlidersHorizontal size={16} aria-hidden />
-      <span>{labels[index]}</span>
+      <span>{label}</span>
       <ChevronDown size={12} aria-hidden />
     </button>
     <div className="builtin-effort-popover" id={id} popover="auto" role="group" aria-label={label}>
-      <label htmlFor={id + "-slider"}>{label}</label>
-      <input type="range" ref={slider} id={id + "-slider"} min={0} max={efforts.length - 1} step={1}
-        value={index} aria-valuetext={labels[index]} aria-disabled={busy}
-        onChange={event => { if (!busy) setPreview(event.currentTarget.valueAsNumber); }} />
-      <div className="builtin-effort-labels" aria-hidden="true">{labels.map(text => <span key={text}>{text}</span>)}</div>
+      <label className="sr-only" htmlFor={id + "-slider"}>{label}</label>
+      <span className="builtin-effort-value" aria-hidden="true">{labels[index]}</span>
+      <div className="builtin-effort-control" style={{ "--effort-position": position } as CSSProperties}>
+        <div className="builtin-effort-track" aria-hidden="true">
+          <div className="builtin-effort-ticks">{labels.map(text => <span key={text} />)}</div>
+        </div>
+        <input type="range" ref={slider} id={id + "-slider"} min={0} max={efforts.length - 1} step={1}
+          value={index} aria-valuetext={labels[index]} aria-disabled={busy}
+          onChange={event => { if (!busy) setPreview(event.currentTarget.valueAsNumber); }} />
+      </div>
     </div>
   </div>;
 }
