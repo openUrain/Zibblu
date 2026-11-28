@@ -10,7 +10,7 @@ import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, u
 import type { FormEvent, ReactNode } from "react";
 import { ai, builtinAssistantId } from "./ai-api";
 import type { AiJob, AiPrompt, AiReply, Assistant } from "./ai-api";
-import { AssistantSettings, builtinAssistantName } from "./ai";
+import { AssistantSettings, builtinAssistantName, useBuiltinRemark } from "./ai";
 import { AiTermsDialog, aiTermsLabel } from "./ai-terms";
 import { BuiltinAssistant } from "./builtin-assistant";
 import { StorageSettings } from "./storage-settings";
@@ -19,17 +19,19 @@ import type { AddDraftsResult, CloseAction, Conversation, ConversationRequest, D
 import { mediaKind } from "./attachment-media";
 import { Avatar, Blank, Brand, Choice, Dialog, People, PersonAvatar, chatName, dateTimeLabel, displayName } from "./common";
 import { orderContacts } from "./contact-order";
-import { actions, t } from "./locale";
+import { actions, appLanguage, t } from "./locale";
+import type { AppLanguage } from "./locale";
 import { ChatList, ChatView } from "./chat";
 import { FilesView } from "./files";
 import { exclusivePrivateRoom, NearbyDevices, PrivateChatView, PrivateInvitationOverlay, PrivateTargets, privateSessionActive, usePrivateRooms } from "./private-chat";
 import { QrContent, ScanQr, ShareQr } from "./qr";
 import type { SharedCode } from "./qr";
-import { ProfileView } from "./profile";
+import { AssistantContact, ProfileView } from "./profile";
 import { useMenu, useMenuAnchor, useRowMenu } from "./context-menu";
 import { CloseActionChoices, WindowControls, WindowDrag, windows } from "./window-chrome";
 import { ios, phone, useIpadSplit, useIosBack } from "./ios";
 import { WorkspaceSearchField } from "./workspace-search";
+import { Selector } from "./selector";
 import { ChatHistoryCache } from "./chat-history-cache";
 import { ImageCache, ProfileCache } from "./workspace-cache";
 import { WorkspaceImages } from "./workspace-image";
@@ -39,14 +41,16 @@ const pages = [
   { name: "Files", Icon: FolderOpen },
 ] as const;
 type Navigation = typeof pages[number]["name"] | "Me" | "Settings";
-const tabLabels = { Chats: t("Chats", "聊天"), Contacts: t("Contacts", "联系人"), Files: t("Files", "文件"), Me: t("Me", "我的") };
+const tabLabel = (name: typeof pages[number]["name"] | "Me") =>
+  ({ Chats: t("Chats", "聊天"), Contacts: t("Contacts", "联系人"), Files: t("Files", "文件"), Me: t("Me", "我的") })[name];
 const hour = 60 * 60 * 1000;
 const currentHour = () => Math.floor(Date.now() / hour) * hour;
 
-export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction, setCloseAction, signedOut }: {
+export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction, setCloseAction, language, setLanguage, signedOut }: {
   session: Session; signedOut: (notice?: string) => void;
   privateQuiet: boolean; setPrivateQuiet: (quiet: boolean) => Promise<void>;
   closeAction?: CloseAction; setCloseAction: (action: CloseAction) => Promise<void>;
+  language: AppLanguage; setLanguage: (language: AppLanguage) => Promise<void>;
 }) {
   const [nav, setNav] = useState<Navigation>("Chats");
   const [openAssistants, setOpenAssistants] = useState(false);
@@ -65,6 +69,10 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [deleteError, setDeleteError] = useState("");
   const [allConversations, setAllConversations] = useState<Conversation[]>([]);
   const [assistantChat, setAssistantChat] = useState<Conversation>();
+  const [assistantRemark, setAssistantRemark] = useBuiltinRemark(session.server, session.user.id);
+  const assistantAvailable = windows && !!assistantChat;
+  const assistantContact = useMemo(() => assistantAvailable
+    ? { id: builtinAssistantId, handle: builtinAssistantName() } : undefined, [assistantAvailable, language]);
   const [sourceFocus, setSourceFocus] = useState<{ conversation: string; seq: number }>();
   const [directory, setDirectory] = useState<Directory>({ contacts: [], conversations: [], pending_contacts: [], remarks: {}, names: {}, avatars: {}, read_receipts: false });
   const [historyCache] = useState(() => new ChatHistoryCache());
@@ -103,7 +111,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   const [latestAiSeq, setLatestAiSeq] = useState(0);
   const [connection, setConnection] = useState<"Connecting" | "Connected" | "Reconnecting">("Connecting");
   const [transfers, setTransfers] = useState<Transfer[]>([]);
-  const [failure, setFailure] = useState(session.notice ?? "");
+  const [failure, setFailure] = useState(session.notice ? errorMessage(session.notice) : "");
   const [syncProblem, setSyncProblem] = useState("");
   const [sendFailures, setSendFailures] = useState<number[]>([]);
   const nextFailure = useRef(0);
@@ -184,6 +192,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
   }
 
   const directoryContact = directory.contacts.find(person => person.id === selectedContact?.id);
+  const selectedAssistant = assistantAvailable && selectedContact?.id === builtinAssistantId;
   const invalidateContact = useCallback((id: string) => {
     profiles.retain(key => !key.startsWith(id + "/"));
     images.retain(key => !key.startsWith("cover/" + id + "/"));
@@ -191,8 +200,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     setQuickProfile(current => current?.fromContacts && current.user.id === id ? undefined : current);
   }, [profiles, images]);
   useEffect(() => {
-    if (selectedContact && !directoryContact) invalidateContact(selectedContact.id);
-  }, [selectedContact, directoryContact, invalidateContact]);
+    if (selectedContact && !directoryContact && !selectedAssistant) invalidateContact(selectedContact.id);
+  }, [selectedContact, directoryContact, selectedAssistant, invalidateContact]);
 
   function openContactCard(user: User) {
     setSelectedContact({ id: user.id, narrowDetail: false });
@@ -282,7 +291,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       });
     }
     if (result.errors.length > 0) {
-      setFailure(result.errors.join("\n"));
+      setFailure(result.errors.map(errorMessage).join("\n"));
     }
   }, [setDraft]);
 
@@ -509,11 +518,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           .catch(error => setFailure(errorMessage(error)));
       } else {
         void api.cancelAttachmentOffer(event.payload.ticket).catch(() => {});
-        setFailure("Open a chat before dropping a file or folder.");
+        setFailure(t("Open a chat before dropping a file or folder.", "请先打开会话，再拖入文件或文件夹。"));
       }
     });
     const error = listen<string>("attachment-drop-error", event => {
-      if (!privateOpen) setFailure(event.payload);
+      if (!privateOpen) setFailure(errorMessage(event.payload));
     });
     return () => { void drop.then(unlisten => unlisten()); void error.then(unlisten => unlisten()); };
   }, [activeId, mobileChat, privateOpen, appendDraftResult]);
@@ -707,13 +716,14 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
     catch (error) { signedOut(errorMessage(error)); }
   }
 
-  const names = useMemo(() => ({ ...directory.names, ...directory.remarks }), [directory.names, directory.remarks]);
+  const names = useMemo(() => ({ ...directory.names, ...directory.remarks, [builtinAssistantId]: assistantRemark }),
+    [directory.names, directory.remarks, assistantRemark]);
   const connected = connection === "Connected";
   const invitation = privateRooms.find(room => room.id === prompt && room.id !== privateId);
   const attention: Partial<Record<Navigation, string>> = {
-    Chats: directory.conversations.some(chat => chat.unread > 0 || chat.manual_unread) ? "Unread messages" : undefined,
-    Contacts: directory.pending_contacts.some(request => request.incoming) ? "Pending contact requests" : undefined,
-    Files: transfers.some(transfer => transfer.status !== "complete" && !mediaKind(transfer.attachment)) ? "Unfinished transfers" : undefined,
+    Chats: directory.conversations.some(chat => chat.unread > 0 || chat.manual_unread) ? t("Unread messages", "有未读消息") : undefined,
+    Contacts: directory.pending_contacts.some(request => request.incoming) ? t("Pending contact requests", "有待处理的联系人申请") : undefined,
+    Files: transfers.some(transfer => transfer.status !== "complete" && !mediaKind(transfer.attachment)) ? t("Unfinished transfers", "有未完成的传输") : undefined,
   };
 
   const conversationOpen = nav === "Chats" && mobileChat && (!!active || privateOpen);
@@ -759,18 +769,18 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       : { x: target?.right ?? 0, y: target?.top ?? 0 };
   }} className={"shell" + (conversationOpen ? " conversation-open" : "") + (profile ? " profile-open" : "")
     + (ipadSplit ? " ipad-split" : "")}>
-    <nav className="rail" aria-label="Main navigation">
+    <nav className="rail" aria-label={t("Main navigation", "主导航")}>
       <button className="rail-brand icon-button" aria-label={t("Your profile", "我的资料")} title={t("Your profile", "我的资料")}
         aria-haspopup={windows ? "dialog" : undefined} aria-expanded={windows ? quickProfile?.user.id === session.user.id : undefined}
         onClick={() => openProfile(session.user)}><PersonAvatar user={session.user} /></button>
       <div className="rail-links">{pages.map(({ name, Icon }) =>
-        <button key={name} aria-label={tabLabels[name]} title={tabLabels[name]}
+        <button key={name} aria-label={tabLabel(name)} title={tabLabel(name)}
           aria-describedby={attention[name] ? `rail-status-${name}` : undefined}
           aria-current={nav === name ? "page" : undefined} onClick={() => navigate(name)}>
           <span className="rail-icon">{nav !== name ? <Icon size={22} strokeWidth={1.9} />
             : windows ? <WindowsActiveRailIcon name={name} /> : <ActiveRailIcon name={name} />}
             {attention[name] && <span className="rail-dot" aria-hidden="true" />}
-          </span><span>{tabLabels[name]}</span>
+          </span><span>{tabLabel(name)}</span>
         </button>)}</div>
       <button className="rail-menu icon-button" ref={railMenu} title={t("Menu", "菜单")} aria-label={t("Menu", "菜单")} aria-haspopup="menu"
         aria-expanded={menuAnchor !== undefined && menuAnchor === railMenu.current}
@@ -781,7 +791,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           { label: t("Sign out", "退出登录"), icon: <LogOut size={17} />, divider: true, action: () => void signOut(), disabled: leaving },
         ])}><Menu size={23} /></button>
     </nav>
-    {ios && <nav className="phone-tabs" aria-label="Main navigation">
+    {ios && <nav className="phone-tabs" aria-label={t("Main navigation", "主导航")}>
       {[...pages, { name: "Me", Icon: UserRound } as const].map(({ name, Icon }) => {
         const selectedTab = name === nav || (name === "Me" && nav === "Settings");
         return <button key={name} aria-current={selectedTab ? "page" : undefined}
@@ -789,7 +799,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
           <span className="rail-icon">{selectedTab && name !== "Me" ? <ActiveRailIcon name={name} />
             : <Icon size={22} fill={selectedTab ? "currentColor" : "none"} />}
             {attention[name] && <span className="rail-dot" aria-hidden="true" />}
-          </span><span>{tabLabels[name]}</span>
+          </span><span>{tabLabel(name)}</span>
         </button>;
       })}
     </nav>}
@@ -807,7 +817,7 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
         {windows && <WindowControls />}
       </header>
       {failure && <div className="workspace-error" role="alert">{failure}
-        <button className="icon-button" aria-label="Dismiss error" onClick={() => setFailure("")}><X size={17} /></button>
+        <button className="icon-button" aria-label={t("Dismiss error", "关闭错误提示")} onClick={() => setFailure("")}><X size={17} /></button>
       </div>}
       {syncProblem && <div className="workspace-error" role="alert">{syncProblem}</div>}
       {visibleFailure !== undefined && <div key={visibleFailure} className="send-failure-toast" role="alert">
@@ -816,10 +826,10 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
       {viewerSentNotice && <div className="viewer-sent-toast" role="status">
         {viewerSentNotice}
       </div>}
-      {ios && !connected && <div className="mobile-connection" role="status">{connection}</div>}
+      {ios && !connected && <div className="mobile-connection" role="status">{connection === "Reconnecting" ? t("Reconnecting", "重连中") : t("Connecting", "连接中")}</div>}
       <div className={"workspace-content" + (splitProfile ? " ipad-profile-layout" : "")
         + (desktopContacts ? " contacts-layout" : "")
-        + (desktopContacts && directoryContact && selectedContact?.narrowDetail ? " contact-detail-open" : "")
+        + (desktopContacts && (directoryContact || selectedAssistant) && selectedContact?.narrowDetail ? " contact-detail-open" : "")
         + (profile && !splitProfile && !chatProfile && !desktopContacts ? " profile-replaces-root" : "")}>
       {nav === "Chats" && <div className={"chat-layout" + (mobileChat && (active || builtinActive || privateOpen) ? " mobile-chat-open" : "")
         + (profile && chatProfile ? " chat-profile-open" : "")}>
@@ -876,24 +886,24 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
         {chatProfile && profilePage}
       </div>}
       {(windows || nav === "Contacts") && <Contacts active={nav === "Contacts"} details={openDetails} directory={directory} own={session.user.id}
-        selected={windows ? directoryContact?.id : profile?.id} refresh={refresh} create={create} reopenGroup={reopenHiddenGroup}
+        selected={windows ? selectedContact?.id : profile?.id} refresh={refresh} create={create} reopenGroup={reopenHiddenGroup}
         openAvatar={openContactCard} addContact={() => setNewContact(true)}
-        openAssistant={assistantChat ? () => selectChat(builtinAssistantId) : undefined} />}
+        assistant={assistantContact} openAssistant={() => selectChat(builtinAssistantId)} />}
       {nav === "Files" && <FilesView revision={revision} recalled={recalled} hidden={hidden} transfers={transfers} onChanged={changed} />}
       {nav === "Me" && <section className="settings-page phone-me">
-        <header className="workspace-heading"><h1>{tabLabels.Me}</h1></header>
+        <header className="workspace-heading"><h1>{tabLabel("Me")}</h1></header>
         <button className="phone-profile drawer-action" onClick={() => openProfile(session.user)}>
           <PersonAvatar user={session.user} large />
           <span><strong>{displayName(session.user, names)}</strong><small className="muted">@{session.user.handle}</small></span><ChevronRight size={20} />
         </button>
         <div className="phone-me-actions">
-          <button className="drawer-action" onClick={() => setNearby(true)}><Radar size={19} /> Nearby <ChevronRight size={17} /></button>
-          <button className="drawer-action" onClick={() => navigate("Settings")}><Settings size={19} /> Settings <ChevronRight size={17} /></button>
-          <button className="drawer-action" onClick={() => setAbout(true)}><Info size={19} /> About Zibblu <ChevronRight size={17} /></button>
+          <button className="drawer-action" onClick={() => setNearby(true)}><Radar size={19} />{t("Nearby", "附近设备")}{" "}<ChevronRight size={17} /></button>
+          <button className="drawer-action" onClick={() => navigate("Settings")}><Settings size={19} />{t("Settings", "设置")}{" "}<ChevronRight size={17} /></button>
+          <button className="drawer-action" onClick={() => setAbout(true)}><Info size={19} />{t("About Zibblu", "关于 Zibblu")}{" "}<ChevronRight size={17} /></button>
         </div>
-        <button className="drawer-action danger" disabled={leaving} onClick={() => void signOut()}><LogOut size={19} /> Sign out</button>
+        <button className="drawer-action danger" disabled={leaving} onClick={() => void signOut()}><LogOut size={19} />{t("Sign out", "退出登录")}</button>
       </section>}
-      {nav === "Settings" && <SettingsView {...{ session, privateQuiet, setPrivateQuiet, closeAction, setCloseAction }}
+      {nav === "Settings" && <SettingsView {...{ session, privateQuiet, setPrivateQuiet, closeAction, setCloseAction, language, setLanguage }}
         back={ios ? () => navigate("Me") : undefined} openAssistants={openAssistants}
         readReceipts={directory.read_receipts} setReadReceipts={async enabled => {
           await api.setReadReceipts(enabled);
@@ -924,8 +934,11 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
         user={directoryContact} session={session} relationVersion="contact" reconnecting={connection === "Reconnecting"}
         close={() => closeContactDetails(directoryContact.id)} refresh={refresh} edited={profileEdited}
         onContactUnavailable={invalidateContact} message={() => create({ kind: "direct", contact_id: directoryContact.id })} />}
-      {desktopContacts && windows && !directoryContact && <section className="chat-blank contact-detail-empty">
-        {(directory.contacts.length > 0 || directory.pending_contacts.length > 0)
+      {desktopContacts && selectedAssistant && <AssistantContact id={builtinAssistantId}
+        name={builtinAssistantName(assistantRemark)} remark={assistantRemark} save={setAssistantRemark}
+        close={() => closeContactDetails(builtinAssistantId)} message={() => selectChat(builtinAssistantId)} />}
+      {desktopContacts && windows && !directoryContact && !selectedAssistant && <section className="chat-blank contact-detail-empty">
+        {(assistantAvailable || directory.contacts.length > 0 || directory.pending_contacts.length > 0)
           && <p>{t("Select a contact", "选择联系人")}</p>}
       </section>}
       {(splitProfile || (desktopContacts && !windows)) && !profile && <section className="chat-blank">
@@ -1033,7 +1046,7 @@ function About({ close }: { close: () => void }) {
   useEffect(() => { void getVersion().then(setVersion).catch(() => {}); }, []);
   if (terms) return <AiTermsDialog close={() => setTerms(false)} />;
   return <Dialog title={t("About Zibblu", "关于 Zibblu")} close={close}>
-    <div className="about-app"><Brand /><div><strong>Zibblu {version}</strong><p className="muted">Chat freely. Share privately.</p></div></div>
+    <div className="about-app"><Brand /><div><strong>Zibblu {version}</strong><p className="muted">{t("Chat freely. Share privately.", "畅快聊天，私下分享。")}</p></div></div>
     {windows && <div className="about-links"><button type="button" className="text-button" onClick={() => setTerms(true)}>{aiTermsLabel()}</button></div>}
   </Dialog>;
 }
@@ -1072,13 +1085,13 @@ function AddContact({ session, close, open }: { session: Session; close: () => v
   </Dialog>;
 }
 
-function Contacts({ active, directory, own, selected, refresh, create, reopenGroup, addContact, details, openAvatar, openAssistant }: {
+function Contacts({ active, directory, own, selected, refresh, create, reopenGroup, addContact, details, openAvatar, assistant, openAssistant }: {
   active: boolean; openAvatar: (user: User) => void; own: string;
   details: (user: User) => void;
   directory: Directory; selected?: string; refresh: () => Promise<void>; create: (request: ConversationRequest) => Promise<void>;
   reopenGroup: (id: string) => Promise<void>;
   addContact: () => void;
-  openAssistant?: () => void;
+  assistant?: User; openAssistant: () => void;
 }) {
   const { contacts, pending_contacts } = directory;
   const { remarks, open } = useContext(People);
@@ -1112,7 +1125,8 @@ function Contacts({ active, directory, own, selected, refresh, create, reopenGro
     finally { setBusy(false); }
   }
 
-  const windowsContacts = useMemo(() => active && windows ? orderContacts(contacts, remarks) : [], [active, contacts, remarks]);
+  const windowsContacts = useMemo(() => active && windows ? orderContacts(assistant ? [...contacts, assistant] : contacts, remarks) : [],
+    [active, contacts, remarks, assistant]);
   if (!active) return null;
   const query = search.trim().toLocaleLowerCase();
   const matches = (name: string) => name.toLocaleLowerCase().includes(query);
@@ -1120,25 +1134,23 @@ function Contacts({ active, directory, own, selected, refresh, create, reopenGro
     user, name: displayName(user, remarks), letter: "", showHandle: false,
   })))
     .filter(({ user, name }) => matches(user.handle) || matches(name));
-  if (!windows) filtered.sort((a, b) => a.name.localeCompare(b.name, navigator.language));
+  if (!windows) filtered.sort((a, b) => a.name.localeCompare(b.name, appLanguage()));
   const groups = new Map<string, typeof filtered>();
   for (const entry of filtered) {
     const group = groups.get(entry.letter);
     if (group) group.push(entry);
     else groups.set(entry.letter, [entry]);
   }
-  const showAssistant = !!openAssistant && (matches(builtinAssistantName()) || matches("Zibblu Assistant"));
   const emptyText = query ? t("No matching contacts", "没有匹配的联系人") : t("No contacts yet", "暂无联系人");
   const matchingHiddenGroups = hiddenGroups
     .map(chat => ({ chat, name: chatName(chat, own, remarks) }))
     .filter(({ name }) => !query || matches(name));
   return <section className="settings-page contacts-screen">
-    {ios && <header className="workspace-heading"><h1>{tabLabels.Contacts}</h1></header>}
+    {ios && <header className="workspace-heading"><h1>{tabLabel("Contacts")}</h1></header>}
     <form className="chat-list-head" role={windows ? "search" : undefined} onSubmit={event => {
       event.preventDefault();
       if (!query || matchingHiddenGroups.length) return;
-      if (showAssistant && !filtered.length) openAssistant?.();
-      else if (!showAssistant && filtered.length === 1) details(filtered[0].user);
+      if (filtered.length === 1) details(filtered[0].user);
     }}>
       <WorkspaceSearchField label={t("Search contacts", "搜索联系人")} otherIconSize={17}
         value={search} onChange={event => {
@@ -1155,12 +1167,6 @@ function Contacts({ active, directory, own, selected, refresh, create, reopenGro
     <div className="contacts-list" ref={list}
       onScroll={windows ? event => { scrollTop.current = event.currentTarget.scrollTop; } : undefined}>
     {failure && <p className="inline-error" role="alert">{failure}</p>}
-    {showAssistant && <section className="contact-group">
-      <h2 className="contact-group-letter">{t("System contacts", "系统联系人")}</h2>
-      <div className="contact-row system-contact"><button type="button" className="person-link contact-name" onClick={openAssistant}>
-        <span className="avatar ai-builtin-avatar"><Bot size={20} /></span><span><strong>{builtinAssistantName()}</strong></span>
-      </button></div>
-    </section>}
     {matchingHiddenGroups.length > 0 && <section>
       <h2 className="section-title">{t("Hidden group chats", "已隐藏的群聊")}</h2>
       <div className="contact-requests">
@@ -1180,42 +1186,49 @@ function Contacts({ active, directory, own, selected, refresh, create, reopenGro
         {pending_contacts.map(({ user, incoming, greeting, request_id }) => <div className="contact-row" key={user.id}>
           <button className="person-link contact-name" aria-current={selected === user.id || undefined} onClick={() => open?.(user)}>
             <PersonAvatar user={user} /><span><strong>{displayName(user, remarks)}</strong>
-              <small>{incoming ? "Wants to connect" : "Waiting for approval"}</small>
+              <small>{incoming ? t("Wants to connect", "请求添加你为联系人") : t("Waiting for approval", "等待通过")}</small>
               {greeting && <span className="contact-greeting">{greeting}</span>}
             </span>
           </button>
           {incoming ? <>
             <button className="button subtle" disabled={busy} onClick={() => void perform(async () => {
               await api.respondContact(user.id, false, request_id); await refresh();
-            })}>Decline</button>
+            })}>{t("Decline", "拒绝")}</button>
             <button className="button primary" disabled={busy} onClick={() => void perform(async () => {
               await api.respondContact(user.id, true, request_id); await refresh();
-            })}>Approve</button>
+            })}>{t("Approve", "通过")}</button>
           </> : <button className="button subtle" disabled={busy} onClick={() => void perform(async () => {
             await api.removeContact(user.id); await refresh();
-          })}>Cancel request</button>}
+          })}>{t("Cancel request", "取消申请")}</button>}
         </div>)}
       </div>
     </section>}
-    {filtered.length ? <div className="contacts" aria-label={tabLabels.Contacts}>
+    {filtered.length ? <div className="contacts" aria-label={tabLabel("Contacts")}>
       {[...groups].map(([letter, entries]) => <div className={letter ? "contact-group" : undefined} key={letter}>
         {letter && <h2 className="contact-group-letter">{letter}</h2>}
-        {entries.map(({ user, name, showHandle }) => <div className="contact-row" key={user.id}>
-          {windows && <button className="contact-avatar icon-button" type="button" aria-haspopup="dialog" onClick={() => openAvatar(user)}
-            aria-label={t("View profile", "查看资料") + " " + name}><PersonAvatar user={user} /></button>}
-          <button className="person-link contact-name" aria-current={selected === user.id || undefined}
-            data-contact-id={windows ? user.id : undefined} onClick={() => details(user)}
-            {...menu([
-              { label: t("View profile", "查看资料"), icon: <UserRound size={17} />, action: () => details(user) },
-              { label: t("Message", "发消息"), icon: <MessageSquare size={17} />, action: () => void perform(() => create({ kind: "direct", contact_id: user.id })) },
-            ])}>
-            {!windows && <PersonAvatar user={user} />}
-            {showHandle ? <span className="contact-identity"><strong>{name}</strong><small>@{user.handle}</small></span> : <strong>{name}</strong>}
-            {ios && <ChevronRight size={20} aria-hidden />}
-          </button>
-        </div>)}
+        {entries.map(({ user, name, showHandle }) => {
+          const builtin = user.id === builtinAssistantId;
+          const avatar = builtin ? <span className="avatar ai-builtin-avatar"><Bot size={20} aria-hidden /></span>
+            : <PersonAvatar user={user} />;
+          const message = builtin ? openAssistant : () => void perform(() => create({ kind: "direct", contact_id: user.id }));
+          return <div className="contact-row" key={user.id}>
+            {windows && <button className="contact-avatar icon-button" type="button" aria-haspopup={builtin ? undefined : "dialog"}
+              onClick={() => builtin ? details(user) : openAvatar(user)}
+              aria-label={t("View profile", "查看资料") + " " + name}>{avatar}</button>}
+            <button className="person-link contact-name" aria-current={selected === user.id || undefined}
+              data-contact-id={windows ? user.id : undefined} onClick={() => details(user)}
+              {...menu([
+                { label: t("View profile", "查看资料"), icon: <UserRound size={17} />, action: () => details(user) },
+                { label: t("Message", "发消息"), icon: <MessageSquare size={17} />, action: message },
+              ])}>
+              {!windows && avatar}
+              {showHandle ? <span className="contact-identity"><strong>{name}</strong><small>{builtin ? "" : "@"}{user.handle}</small></span> : <strong>{name}</strong>}
+              {ios && <ChevronRight size={20} aria-hidden />}
+            </button>
+          </div>;
+        })}
       </div>)}
-    </div> : matchingHiddenGroups.length === 0 && !showAssistant ? <p className="list-empty muted" role={windows ? "status" : undefined}>{windows ? emptyText
+    </div> : matchingHiddenGroups.length === 0 ? <p className="list-empty muted" role={windows ? "status" : undefined}>{windows ? emptyText
       : query ? t("No matching contacts.", "没有匹配的联系人。") : t("No contacts yet.", "暂无联系人。")}</p> : null}
     </div>
   </section>;
@@ -1245,19 +1258,19 @@ function NewChat({ contacts, create, close, findPeople }: {
     void start({ kind: "group", title, contact_ids: members });
   }
 
-  return <Dialog title="New conversation" mobilePage closeDisabled={busy} close={close}>
+  return <Dialog title={t("New conversation", "新建会话")} mobilePage closeDisabled={busy} close={close}>
     {contacts.length === 0 ? <div className="dialog-empty">
-      <p>Add a contact to start a conversation.</p>
-      <button className="button primary" onClick={findPeople}>Find contacts <ArrowRight size={16} /></button>
+      <p>{t("Add a contact to start a conversation.", "添加联系人后即可发起聊天。")}</p>
+      <button className="button primary" onClick={findPeople}>{t("Find contacts", "查找联系人")}{" "}<ArrowRight size={16} /></button>
     </div> : <>
       <fieldset className="tabs" disabled={busy}>
-        <legend className="sr-only">Conversation type</legend>
-        <Choice type="radio" name="conversation-type" checked={!group} onChange={() => { setGroup(false); setFailure(""); }}>Direct message</Choice>
-        <Choice type="radio" name="conversation-type" checked={group} onChange={() => { setGroup(true); setFailure(""); }}>Group</Choice>
+        <legend className="sr-only">{t("Conversation type", "会话类型")}</legend>
+        <Choice type="radio" name="conversation-type" checked={!group} onChange={() => { setGroup(false); setFailure(""); }}>{t("Direct message", "单聊")}</Choice>
+        <Choice type="radio" name="conversation-type" checked={group} onChange={() => { setGroup(true); setFailure(""); }}>{t("Group", "群聊")}</Choice>
       </fieldset>
       {group ? <form className="group-form" onSubmit={submit}>
-        <FloatingField label="Group name" required maxLength={64} value={title} onChange={event => setTitle(event.target.value)} />
-        <fieldset className="dialog-contacts"><legend>Choose 2–15 contacts</legend>{contacts.map(user => {
+        <FloatingField label={t("Group name", "群聊名称")} required maxLength={64} value={title} onChange={event => setTitle(event.target.value)} />
+        <fieldset className="dialog-contacts"><legend>{t("Choose 2–15 contacts", "选择 2 至 15 位联系人")}</legend>{contacts.map(user => {
           const checked = members.includes(user.id);
           return <Choice key={user.id} checked={checked} disabled={busy || (!checked && members.length >= 15)}
             onChange={() => setMembers(current => checked ? current.filter(id => id !== user.id) : [...current, user.id])}>
@@ -1265,7 +1278,7 @@ function NewChat({ contacts, create, close, findPeople }: {
           </Choice>;
         })}</fieldset>
         {failure && <p className="inline-error" role="alert">{failure}</p>}
-        <button className="button primary" type="submit" disabled={busy || members.length < 2 || !title.trim()}>Create group</button>
+        <button className="button primary" type="submit" disabled={busy || members.length < 2 || !title.trim()}>{t("Create group", "创建群聊")}</button>
       </form> : <>
         <div className="dialog-contacts">{contacts.map(user => <button className="pick-contact" key={user.id} disabled={busy}
           onClick={() => void start({ kind: "direct", contact_id: user.id })}><PersonAvatar user={user} /> {displayName(user, remarks)}<ArrowRight size={16} /></button>)}</div>
@@ -1275,9 +1288,10 @@ function NewChat({ contacts, create, close, findPeople }: {
   </Dialog>;
 }
 
-function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, setReadReceipts, closeAction, setCloseAction, storageSettings, assistantSettings, back, openAssistants }: {
+function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, setReadReceipts, closeAction, setCloseAction, language, setLanguage, storageSettings, assistantSettings, back, openAssistants }: {
   session: Session;
   closeAction?: CloseAction; setCloseAction: (action: CloseAction) => Promise<void>;
+  language: AppLanguage; setLanguage: (language: AppLanguage) => Promise<void>;
   privateQuiet: boolean; setPrivateQuiet: (quiet: boolean) => Promise<void>;
   readReceipts: boolean; setReadReceipts: (enabled: boolean) => Promise<void>;
   storageSettings: ReactNode;
@@ -1379,12 +1393,27 @@ function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, se
         {pending === "devices" && <p className="settings-feedback muted" role="status">{t("Loading devices…", "正在加载设备…")}</p>}
         {retryError("devices")}
       </section>}
-      {section === "general" && <section className="settings-group">
+      {section === "general" && <>
+        <section className="settings-group">
+          <label className="settings-row settings-language">
+            <span>{t("App language", "应用语言")}</span>
+            <Selector value={language} aria-disabled={!!pending}
+              onChange={event => {
+                const next = event.currentTarget.value === "zh-CN" ? "zh-CN" : "en";
+                void run("preferences", () => setLanguage(next));
+              }}>
+              <option value="zh-CN" lang="zh-CN">简体中文</option>
+              <option value="en" lang="en">English</option>
+            </Selector>
+          </label>
+        </section>
+        <section className="settings-group">
           <h2>{t("Window behavior", "窗口行为")}</h2>
           <div className="settings-row" aria-disabled={!!pending}>
             <CloseActionChoices action={closeAction} choose={action => void run("preferences", () => setCloseAction(action))} />
           </div>
-        </section>}
+        </section>
+      </>}
       {section === "chat" && <section className="settings-group">
           <h2>{sectionLabel}</h2>
           <label className="choice setting-switch settings-row">
@@ -1416,19 +1445,19 @@ function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, se
       setDeviceList(undefined); setRetiring(undefined); setFailure(undefined);
     }} closeDisabled={!!pending}>
       {deviceList.map(device => <div className="drawer-action" key={device.id}>
-        <span>{device.current ? "This device" : "Device " + device.id.slice(0, 8)} · {dateTimeLabel(device.last_seen_at)}</span>
+        <span>{device.current ? t("This device", "此设备") : t("Device", "设备") + " " + device.id.slice(0, 8)} · {dateTimeLabel(device.last_seen_at)}</span>
         {!device.current && <button className="button subtle small" disabled={!!pending} onClick={() => {
           setRetiring(device); setFailure(undefined);
-        }}>Retire</button>}
+        }}>{t("Retire", "移除")}</button>}
       </div>)}
       {retiring && <div className="file-download-actions">
-        <p>End sign-in for device {retiring.id.slice(0, 8)}?</p>
-        <button className="button subtle" onClick={() => { setRetiring(undefined); setFailure(undefined); }} disabled={!!pending}>Cancel</button>
+        <p>{t("End sign-in for device", "结束设备登录")}{" "}{retiring.id.slice(0, 8)}?</p>
+        <button className="button subtle" onClick={() => { setRetiring(undefined); setFailure(undefined); }} disabled={!!pending}>{t("Cancel", "取消")}</button>
         <button className="button danger" disabled={!!pending} onClick={() => void run("retire", async () => {
           await api.retireDevice(retiring.id);
           setDeviceList(current => current?.filter(device => device.id !== retiring.id));
           setRetiring(undefined);
-        })}>Retire device</button>
+        })}>{t("Retire device", "移除设备")}</button>
       </div>}
       {failure?.operation === "retire" && <p className="inline-error" role="alert">{failure.message}</p>}
     </Dialog>}

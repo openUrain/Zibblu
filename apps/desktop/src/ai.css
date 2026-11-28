@@ -51,7 +51,7 @@
 .ai-composer { border-color: var(--accent); }
 .ai-sources { list-style: none; margin: 4px 0; padding: 0; }
 .ai-source-link { display: inline-block; text-align: start; overflow-wrap: anywhere; cursor: pointer; user-select: text; }
-.ai-source-link:focus-visible { outline: 2px solid var(--accent); }
+.ai-source-link:focus-visible { outline: 2px solid var(--ink); }
 .ai-builtin-avatar { color: var(--accent); background: var(--tint); }
 
 .builtin-assistant .chat-header { position: relative; z-index: 20; }
@@ -141,21 +141,40 @@
 .builtin-chat-chip-remove:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
+.builtin-effort { grid-area: effort; }
 .builtin-effort-button {
   display: inline-flex; align-items: center; gap: 4px;
-  height: 32px; padding: 0 10px 0 8px; border: 1px solid var(--line); border-radius: 9999px;
-  background: var(--soft); color: var(--ink); font-size: 12px; font-weight: 500; white-space: nowrap;
-  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+  height: 32px; padding: 0 8px; border: 0; border-radius: 9999px;
+  background: transparent; color: var(--muted); font-size: 12px; font-weight: 500; white-space: nowrap;
+  transition: background 150ms ease, color 150ms ease;
 }
-.builtin-effort-button:hover:not(:disabled),
-.builtin-effort-button[aria-expanded="true"] {
-  background: var(--tint); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 24%, transparent);
+.builtin-effort-button:hover:enabled,
+.builtin-effort-button:has(+ :popover-open) {
+  background: var(--hover); color: var(--ink);
 }
-.builtin-effort-button svg { color: var(--accent); flex: none; }
+.builtin-effort-button:active:enabled { background: var(--soft); color: var(--ink); }
+.builtin-effort-popover {
+  position-area: block-start span-inline-start;
+  justify-self: end; inset: auto; margin: 0 0 8px; width: 192px; padding: 12px;
+  border: 1px solid var(--line); border-radius: 12px;
+  background: var(--panel); color: var(--ink); box-shadow: var(--shadow);
+}
+.builtin-effort-popover label { font-weight: 600; }
+.builtin-effort-popover input[type="range"] { width: 100%; margin: 8px 0 4px; accent-color: var(--ink); }
+.builtin-effort-labels {
+  display: grid; grid-template-columns: repeat(3, 1fr); color: var(--muted); font-size: 12px;
+}
+.builtin-effort-labels span:nth-child(2) { text-align: center; }
+.builtin-effort-labels span:last-child { text-align: end; }
 .builtin-menu-spacer { display: inline-block; width: 15px; flex: none; }
 .windows .chat-view .composer-input.builtin-composer-input {
   padding-inline-start: 6px;
 }
+.windows .chat-view .builtin-composer-input:has(.builtin-effort) {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-areas: ". editor . ." "attach editor effort send";
+}
+.builtin-composer-input .composer-text:placeholder-shown + .field-label { color: var(--muted); }
 @media (prefers-reduced-motion: reduce) {
   .ai-settings-row, .ai-settings-row > svg:last-child, .builtin-model-trigger, .builtin-effort-button { transition: none; }
 }

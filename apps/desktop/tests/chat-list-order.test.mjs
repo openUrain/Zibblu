@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildChatContextMenu, sortConversationsForDisplay } from "../src/chat-list-menu.ts";
+import { applyAppLanguage } from "../src/locale.ts";
 
 function makeChat(overrides = {}) {
   return {
@@ -51,6 +52,7 @@ test("sortConversationsForDisplay keeps pinned chats ahead of unpinned chats and
 });
 
 test("buildChatContextMenu produces the exact 6 items without info/search items", () => {
+  applyAppLanguage("zh-CN");
   const calls = [];
   const handlers = {
     windows: true,
@@ -121,4 +123,9 @@ test("buildChatContextMenu produces the exact 6 items without info/search items"
   assert.equal(readMenu[1].label, "标为未读");
   readMenu[1].action();
   assert.equal(nextRead, true);
+
+  applyAppLanguage("en");
+  assert.deepEqual(buildChatContextMenu(unreadChat, handlers).map(item => item.label), [
+    "Pin chat", "Mark as read", "Mute chat", "Open in a new window", "Hide chat", "Delete chat",
+  ]);
 });

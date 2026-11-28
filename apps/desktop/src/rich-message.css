@@ -44,7 +44,7 @@
 .rich-link { color: var(--rich-link); text-decoration: underline; -webkit-touch-callout: none; }
 .rich-link-error { color: var(--danger); margin-inline-start: 4px; }
 :where(.rich-link, .rich-scroll, .rich-formula-block):focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
 @media (forced-colors: active) {
@@ -99,7 +99,7 @@
   padding: 8px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--panel); color: var(--ink); box-shadow: var(--shadow); overflow: auto;
 }
-.rich-preview:focus-visible { outline: 2px solid var(--accent); }
+.rich-preview:focus-visible { outline: 2px solid var(--ink); }
 .rich-preview-result:not(:has(img)) { min-block-size: 32px; display: grid; place-items: center; }
 .rich-preview-result img {
   display: block; width: auto; height: auto; object-fit: contain;

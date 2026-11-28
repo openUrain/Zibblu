@@ -1,0 +1,13 @@
+﻿﻿Zibblu Windows AI Terms and Privacy Notice · Version 2
+
+AI runs only when you actively submit a question to a configured provider. In an ordinary chat, @AI can search the current ordinary conversation by default, and accessing any other ordinary conversation requires specific one-time approval for that task.
+
+In the built-in Zibblu Assistant, actively submitting a question authorizes that single request without repeating per-request or per-chat confirmation cards. When you attach ordinary conversations you can access to a question, Zibblu Assistant retrieves relevant ordinary messages or attachments only from those attached conversations for that task and cannot expand to other conversations.
+
+Your question and relevant ordinary messages or attachments may be sent to the third-party model endpoint you configure. Model discovery sends your API key to that endpoint. The provider handles this data under its own terms and may charge for usage. Use an endpoint you trust.
+
+In an ordinary chat, if you deny access to another conversation, it is neither read nor sent, and the task will not ask again for that conversation. Task permissions expire when the task ends and are never reused. Account isolation, membership checks, attachment limits and explicit sharing controls always apply.
+
+AI has read-only access. Private LAN chats stay outside AI, indexing, retrieval and citations. AI cannot listen in the background, edit chat history or files, run commands, or send ordinary messages on your behalf.
+
+Accepting this version enables AI requests on this Windows user profile. Zibblu stores the accepted terms locally. You can read the terms again in AI settings or About Zibblu. Declining leaves ordinary and private chat available when running the app.

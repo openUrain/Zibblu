@@ -30,7 +30,7 @@ export function QrContent({ code, server }: { code: SharedCode; server: string }
     url.searchParams.set("v", code.value);
     QRCode.toDataURL(url.toString(), { width: 320, margin: 2, errorCorrectionLevel: "M" })
       .then(value => { if (current) setImage(value); })
-      .catch(() => { if (current) setError("Could not generate this QR code."); });
+      .catch(() => { if (current) setError(t("Could not generate this QR code.", "无法生成此二维码。")); });
     const tick = code.expiresAt ? window.setTimeout(() => setNow(Date.now()), Math.max(0, code.expiresAt - Date.now())) : undefined;
     return () => { current = false; window.clearInterval(tick); };
   }, [code, server]);
@@ -38,12 +38,11 @@ export function QrContent({ code, server }: { code: SharedCode; server: string }
   return <div className="qr-content">
       {error && <p className="inline-error" role="alert">{error}</p>}
       {expired
-        ? <p role="status">This QR code expired.</p>
-        : image && <img className="qr-image" src={image} alt="Zibblu QR code" />}
+        ? <p role="status">{t("This QR code expired.", "此二维码已过期。")}</p>
+        : image && <img className="qr-image" src={image} alt={t("Zibblu QR code", "Zibblu 二维码")} />}
       {code.kind === "private" && !expired &&
-        <p>Anyone with this code on the allowed LAN can join. They receive messages sent after they join.</p>}
-      {code.expiresAt && !expired && <p className="muted">
-        Expires {code.kind === "private" ? messageTimeLabel(code.expiresAt) : dateTimeLabel(code.expiresAt)}
+        <p>{t("Anyone with this code on the allowed LAN can join. They receive messages sent after they join.", "允许的局域网内，持有此二维码的人都可以加入。对方只能收到加入后发送的消息。")}</p>}
+      {code.expiresAt && !expired && <p className="muted">{t("Expires", "到期时间")}{" "}{code.kind === "private" ? messageTimeLabel(code.expiresAt) : dateTimeLabel(code.expiresAt)}
       </p>}
   </div>;
 }
@@ -124,7 +123,7 @@ export function ScanQr({ session, close, contactFound, groupJoined, privateJoine
       } catch {
         if (!stopped) {
           setCamera(false);
-          setFailure("Camera unavailable. Choose a QR image or allow camera access.");
+          setFailure(t("Camera unavailable. Choose a QR image or allow camera access.", "摄像头不可用。请选择二维码图片或允许摄像头访问。"));
         }
       }
     }
@@ -190,10 +189,10 @@ export function ScanQr({ session, close, contactFound, groupJoined, privateJoine
       {result ? <>
         {result.kind === "contact" && <><PersonAvatar user={result.user} large /><strong>{displayName(result.user, remarks)}</strong></>}
         {result.kind === "group" && <><Avatar name={result.group.title} group large />
-          <strong>{result.group.title}</strong><p>{result.group.member_count} members · New messages only</p></>}
-        {result.kind === "private" && <p>Join this temporary private chat over the local network.</p>}
+          <strong>{result.group.title}</strong><p>{result.group.member_count}{t("members · New messages only", "位成员 · 仅接收新消息")}</p></>}
+        {result.kind === "private" && <p>{t("Join this temporary private chat over the local network.", "通过局域网加入此临时私密聊天。")}</p>}
         <button className="button primary" disabled={busy} onClick={() => void confirm()}>
-          {result.kind === "contact" ? "View profile" : "Join chat"}
+          {result.kind === "contact" ? t("View profile", "查看资料") : t("Join chat", "加入聊天")}
         </button>
       </> : <div className="qr-actions">
         <button className="button subtle" disabled={busy} onClick={() => void startCamera()}>

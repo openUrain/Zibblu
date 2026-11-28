@@ -3,7 +3,7 @@ import { ai } from "./ai-api";
 import type { AiTerms } from "./ai-api";
 import { errorMessage } from "./api";
 import { Dialog } from "./common";
-import { actions, t } from "./locale";
+import { actions, appLanguage, t } from "./locale";
 import { windows } from "./window-chrome";
 
 export const aiTermsLabel = () => t("AI terms and privacy", "AI 服务条款与隐私说明");
@@ -22,6 +22,7 @@ export function useAiTerms() {
 }
 
 export function AiTermsDialog({ close }: { close: () => void }) {
+  const language = appLanguage();
   const [terms, setTerms] = useState<AiTerms>();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
@@ -30,7 +31,7 @@ export function AiTermsDialog({ close }: { close: () => void }) {
     void ai.terms().then(value => { if (active) setTerms(value); })
       .catch(error => { if (active) setFailure(errorMessage(error)); });
     return () => { active = false; };
-  }, []);
+  }, [language]);
 
   async function accept() {
     if (!terms || terms.accepted || busy) return;

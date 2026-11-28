@@ -1,13 +1,16 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { AiProvider, AiSource } from "./ai-api";
 import type { VideoExportProgress, VideoProbeInfo } from "./media-viewer-types";
+import type { AppLanguage } from "./locale";
+import { appLanguage } from "./locale";
+import { chineseErrorMessage } from "./app-errors";
 
 export type User = { id: string; handle: string };
 export type Session = { user: User; server: string; notice?: string };
 export type Device = { id: string; last_seen_at: number; current: boolean };
 export type SavedAccount = { user: User; server: string; avatar: number[] | null };
 export type CloseAction = "exit" | "tray";
-export type Preferences = { server: string; official_server: string; private_quiet: boolean; close_action?: CloseAction; saved_account?: SavedAccount };
+export type Preferences = { server: string; official_server: string; private_quiet: boolean; close_action?: CloseAction; saved_account?: SavedAccount; app_language?: AppLanguage };
 export type Conversation = {
   id: string; title: string | null; members: User[]; activity_at: number; preview: string | null;
   preview_attachment_kind?: Attachment["kind"];
@@ -152,6 +155,8 @@ export type SyncUpdate = {
 export const api = {
   preferences: () => invoke<Preferences>("preferences"),
   setCloseAction: (action: CloseAction) => invoke<void>("set_close_action", { action }),
+  setAppLanguage: (language: AppLanguage) => invoke<void>("set_app_language", { language }),
+  appLanguage: () => invoke<AppLanguage | null>("app_language"),
   login: (server: string, handle: string, password: string, register: boolean) =>
     invoke<Session>("login", { server, handle, password, register }),
   restoreSession: (account: SavedAccount) => invoke<Session>("restore_session", { accountId: account.user.id, server: account.server }),
@@ -325,8 +330,8 @@ export function isSourceChanged(error: unknown): boolean {
 }
 
 export function errorMessage(error: unknown): string {
-  if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string") {
-    return error.message;
-  }
-  return typeof error === "string" ? error : "Something went wrong. Try again.";
+  const message = typeof error === "string" ? error
+    : typeof error === "object" && error !== null && "message" in error && typeof error.message === "string"
+      ? error.message : "Something went wrong. Try again.";
+  return appLanguage() === "zh-CN" ? chineseErrorMessage(message) : message;
 }

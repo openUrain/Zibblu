@@ -1,0 +1,47 @@
+const chineseErrors = new Map([
+  ["Sign in to continue", "请先登录。"],
+  ["Sign in first", "请先登录。"],
+  ["The session has ended", "当前登录已结束，请重新登录。"],
+  ["Your session has expired. Sign in again.", "登录已过期，请重新登录。"],
+  ["The saved sign-in is unavailable. Enter your password to sign in.", "已保存的登录不可用，请输入密码登录。"],
+  ["The saved sign-in was rejected and could not be removed. Enter your password to sign in.", "已保存的登录已失效且无法移除，请输入密码登录。"],
+  ["This sign-in could not be saved for next time.", "无法保存本次登录供下次使用。"],
+  ["The saved sign-in could not be replaced or removed.", "无法替换或移除已保存的登录。"],
+  ["The server address could not be saved.", "无法保存服务器地址。"],
+  ["This device was registered again. Older messages may have expired while it was inactive.", "此设备已重新注册。停用期间的较早消息可能已过期。"],
+  ["Could not read saved server settings. Check preferences.json in your Zibblu data folder and restart the app.", "无法读取已保存的设置。请检查 Zibblu 数据目录中的 preferences.json，然后重启应用。"],
+  ["Enter a valid account handle", "请输入有效的用户名。"],
+  ["Check your username and password.", "请检查用户名和密码。"],
+  ["That username is already in use.", "此用户名已被使用。"],
+  ["Use a username of 3–32 letters, numbers or underscores starting with a letter, and a password of at least 12 characters (256 bytes maximum).", "用户名须以字母开头，由 3 至 32 个字母、数字或下划线组成。密码至少 12 个字符，最多 256 字节。"],
+  ["Update Zibblu to sign in and sync with this service.", "请更新 Zibblu 后再登录和同步。"],
+  ["Could not reach the Zibblu server. Check your connection and that the server is online.", "无法连接 Zibblu 服务器。请检查网络连接并确认服务器已上线。"],
+  ["The Zibblu server took too long to respond. Try again in a moment.", "Zibblu 服务器响应超时，请稍后再试。"],
+  ["The server's security certificate could not be verified. Check the address and your system clock, or contact the server administrator.", "无法验证服务器的安全证书。请检查地址与系统时间，或联系服务器管理员。"],
+  ["The service returned an invalid response.", "服务器返回了无效响应。"],
+  ["Review and accept the current AI terms in AI settings before using AI.", "请先在 AI 设置中阅读并接受当前条款。"],
+  ["The AI terms changed. Review the current version.", "AI 条款已更新，请阅读当前版本。"],
+  ["Could not read AI terms acceptance", "无法读取 AI 条款的接受记录。"],
+  ["Could not record AI terms acceptance", "无法保存 AI 条款的接受记录。"],
+  ["Configure this provider in Settings first.", "请先在设置中配置此提供商。"],
+  ["The provider settings changed. Review the new destination.", "提供商设置已更改，请核对新的发送地址。"],
+  ["The model does not support this thinking effort.", "当前模型不支持这一档思考强度。"],
+  ["Could not save assistant settings", "无法保存助手设置。"],
+  ["Enter a valid model ID.", "请输入有效的模型 ID。"],
+  ["Enter a question within the AI prompt size limit.", "请输入长度在限制内的问题。"],
+  ["Select an ordinary conversation.", "请选择普通会话。"],
+  ["This conversation is unavailable", "此会话不可用。"],
+  ["Open the active private conversation from the main chat list.", "请从主窗口的聊天列表打开当前私密会话。"],
+  ["Open General settings in the main window.", "请在主窗口打开通用设置。"],
+  ["Open the QR scanner in the main window", "请在主窗口打开二维码扫描。"],
+  ["Use your device's available camera", "请使用设备上的摄像头。"],
+  ["This attachment is unavailable or expired", "此附件不可用或已过期。"],
+  ["The file was not found.", "未找到文件。"],
+  ["Something went wrong. Try again.", "操作未完成，请重试。"],
+]);
+
+export function chineseErrorMessage(message: string) {
+  const dropLimit = /^Drop up to (\d+) files or folders at a time\.$/.exec(message);
+  if (dropLimit) return `每次最多拖入 ${dropLimit[1]} 个文件或文件夹。`;
+  return chineseErrors.get(message) ?? (/\p{Script=Han}/u.test(message) ? message : "操作未完成，请重试。");
+}

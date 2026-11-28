@@ -1,5 +1,5 @@
 import { FloatingField } from "./floating-field";
-import { ChevronLeft, ChevronRight, MessageCircle, MoreHorizontal, QrCode, UserRoundMinus } from "lucide-react";
+import { Bot, ChevronLeft, ChevronRight, MessageCircle, MoreHorizontal, QrCode, UserRoundMinus } from "lucide-react";
 import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api, errorMessage } from "./api";
@@ -16,12 +16,12 @@ import { useWorkspaceImage, WorkspaceImages } from "./workspace-image";
 type ImageField = "avatar" | "cover";
 type Page = ImageField | "display_name" | "bio" | "notes" | "greeting" | "qr" | "remove";
 
-const labels: Record<Page, string> = {
+const profileLabels = (): Record<Page, string> => ({
   avatar: t("Avatar", "头像"), cover: t("Cover", "封面"), display_name: t("Name", "名称"),
   bio: t("Bio", "简介"), notes: t("Contact notes", "备注与资料"), greeting: t("Contact request", "添加联系人"),
   qr: t("My QR code", "我的二维码"),
   remove: t("Remove contact", "删除联系人"),
-};
+});
 
 function Row({ label, children, choose, disabled, entry }: {
   label: string; children?: ReactNode; choose: () => void; disabled?: boolean; entry?: Page | "details";
@@ -29,6 +29,47 @@ function Row({ label, children, choose, disabled, entry }: {
   return <button className="profile-row" disabled={disabled} onClick={choose} data-profile-entry={entry}>
     <span>{label}</span><span className="profile-value">{children}</span><ChevronRight size={17} aria-hidden />
   </button>;
+}
+
+export function AssistantContact({ id, name, remark, save, message, close }: {
+  id: string; name: string; remark: string; save: (remark: string) => void; message: () => void; close: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [failure, setFailure] = useState("");
+  const back = () => {
+    if (editing) { setEditing(false); setFailure(""); }
+    else close();
+  };
+  const title = editing ? t("Remark", "备注名") : t("Profile", "个人资料");
+  return <section className="profile-page contact-profile" data-contact-detail={id} aria-label={title}
+    onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); back(); } }}>
+    <header className="profile-header">
+      <button className="icon-button" type="button" onClick={back} aria-label={actions.back}><ChevronLeft size={25} /></button>
+      <h1>{title}</h1>
+    </header>
+    <div className="profile-content">
+      {editing ? <form className="profile-fields" onSubmit={event => {
+        event.preventDefault();
+        try {
+          save(String(new FormData(event.currentTarget).get("remark") ?? "").trim());
+          back();
+        } catch (error) { setFailure(errorMessage(error)); }
+      }}>
+        <FloatingField label={t("Remark", "备注名")} name="remark" maxLength={64} defaultValue={remark} autoFocus />
+        <div className="dialog-actions">
+          <button className="button subtle" type="button" onClick={back}>{actions.cancel}</button>
+          <button className="button primary" type="submit">{actions.save}</button>
+        </div>
+      </form> : <>
+        <div className="profile-person">
+          <span className="avatar large ai-builtin-avatar"><Bot size={24} aria-hidden /></span><div><h2>{name}</h2></div>
+        </div>
+        <div className="profile-rows"><Row label={t("Remark", "备注")} choose={() => setEditing(true)}>{remark}</Row></div>
+        <button className="button primary profile-direct" type="button" onClick={message}><MessageCircle size={18} /> {t("Message", "发消息")}</button>
+      </>}
+      {failure && <p className="inline-error" role="alert">{failure}</p>}
+    </div>
+  </section>;
 }
 
 export function ProfileView({ session, user, relationVersion, reconnecting, close, refresh, edited, message,
@@ -39,6 +80,7 @@ export function ProfileView({ session, user, relationVersion, reconnecting, clos
   active?: boolean; onContactUnavailable?: (id: string) => void;
   cache: ProfileCache; directoryVersion: string;
 }) {
+  const labels = profileLabels();
   const { remarks, avatars } = useContext(People);
   const openMenu = useMenu();
   const menuAnchor = useMenuAnchor();

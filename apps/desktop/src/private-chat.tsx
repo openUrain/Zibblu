@@ -78,24 +78,26 @@ export function PrivateInvitationOverlay({ room }: { room: PrivateSummary }) {
     dialog?.showModal();
     return () => dialog?.close();
   }, []);
-  return <dialog ref={element} className="private-invite-modal" aria-label="Private chat invitation"
+  return <dialog ref={element} className="private-invite-modal" aria-label={t("Private chat invitation", "私密聊天邀请")}
     onCancel={event => event.preventDefault()}>
     <InvitePrompt room={room} />
   </dialog>;
 }
 
-export const privatePhaseLabel: Record<PrivateSummary["phase"], string> = {
-  discovering: "Finding LAN devices",
-  waiting: "Waiting for approval",
-  invited: "Invitation",
-  authenticating: "Verifying account consent",
-  connected: "Connected",
-  suspended: t("LAN connection interrupted", "局域网连接已中断"),
-  reconnecting: t("Reconnecting on LAN", "正在重新连接局域网"),
-  missed: "Missed invitation",
-  failed: "Connection interrupted",
-  ended: "Ended",
+const privatePhaseLabels: Record<PrivateSummary["phase"], [string, string]> = {
+  discovering: ["Finding LAN devices", "正在查找局域网设备"],
+  waiting: ["Waiting for approval", "等待同意"],
+  invited: ["Invitation", "邀请"],
+  authenticating: ["Verifying account consent", "正在验证账号授权"],
+  connected: ["Connected", "已连接"],
+  suspended: ["LAN connection interrupted", "局域网连接已中断"],
+  reconnecting: ["Reconnecting on LAN", "正在重新连接局域网"],
+  missed: ["Missed invitation", "错过邀请"],
+  failed: ["Connection interrupted", "连接已中断"],
+  ended: ["Ended", "已结束"],
 };
+
+export const privatePhaseLabel = (phase: PrivateSummary["phase"]) => t(...privatePhaseLabels[phase]);
 
 function InvitePrompt({ room, compact = false }: { room: PrivateSummary; compact?: boolean }) {
   const { remarks } = useContext(People);
@@ -120,12 +122,12 @@ function InvitePrompt({ room, compact = false }: { room: PrivateSummary; compact
   return <div className={"private-invite" + (compact ? " compact" : "")}>
     <Avatar name={displayName(room.host, names)} large />
     <h2>{displayName(room.host, names)}</h2>
-    {room.invited.length > 1 && <ul className="invitees" aria-label="Invited accounts" tabIndex={compact ? 0 : undefined}>
+    {room.invited.length > 1 && <ul className="invitees" aria-label={t("Invited accounts", "受邀账号")} tabIndex={compact ? 0 : undefined}>
       {room.invited.map(person => <li key={person.id}>{displayName(person, names)}</li>)}
     </ul>}
     <div className="private-actions">
-      <button className="button subtle" disabled={busy} onClick={() => void respond(false)}>Decline</button>
-      <button className="button primary" disabled={busy} onClick={() => void respond(true)}>Accept</button>
+      <button className="button subtle" disabled={busy} onClick={() => void respond(false)}>{t("Decline", "拒绝")}</button>
+      <button className="button primary" disabled={busy} onClick={() => void respond(true)}>{t("Accept", "接受")}</button>
     </div>
     {failure && <p className="inline-error" role="alert">{failure}</p>}
   </div>;
@@ -138,8 +140,8 @@ export function PrivateTargets({ people, close, start }: {
   const [selected, setSelected] = useState<string[]>([]);
   const [failure, setFailure] = useState("");
   const [busy, setBusy] = useState(false);
-  return <Dialog title="Invite to private chat" close={() => { if (!busy) close(); }}>
-    <fieldset className="dialog-contacts"><legend>Group members</legend>
+  return <Dialog title={t("Invite to private chat", "邀请加入私密聊天")} close={() => { if (!busy) close(); }}>
+    <fieldset className="dialog-contacts"><legend>{t("Group members", "群成员")}</legend>
       {people.map(person => <Choice key={person.id} disabled={busy} checked={selected.includes(person.id)}
         onChange={event => setSelected(previous => event.target.checked
           ? [...previous, person.id] : previous.filter(id => id !== person.id))}>
@@ -148,12 +150,12 @@ export function PrivateTargets({ people, close, start }: {
     </fieldset>
     {failure && <p className="inline-error" role="alert">{failure}</p>}
     <div className="dialog-actions">
-      <button className="button subtle" disabled={busy} onClick={close}>Cancel</button>
+      <button className="button subtle" disabled={busy} onClick={close}>{t("Cancel", "取消")}</button>
       <button className="button primary" disabled={busy || selected.length === 0} onClick={async () => {
         setBusy(true);
         try { await start(selected); }
         catch (error) { setFailure(errorMessage(error)); setBusy(false); }
-      }}>Send invitation</button>
+      }}>{t("Send invitation", "发送邀请")}</button>
     </div>
   </Dialog>;
 }
@@ -195,37 +197,37 @@ export function NearbyDevices({ own, close, invited }: {
     catch (error) { setFailure(errorMessage(error)); setBusy(false); }
   }
 
-  return <Dialog title="Nearby" close={close} closeDisabled={busy}>
+  return <Dialog title={t("Nearby", "附近设备")} close={close} closeDisabled={busy}>
     {devices.length ? <fieldset className="dialog-contacts" disabled={busy}>
-      <legend>Seen on LAN · identity unverified</legend>
+      <legend>{t("Seen on LAN · identity unverified", "局域网内发现 · 身份未验证")}</legend>
       {devices.map(device => <Choice key={device.id} type="radio" name="nearby-device" checked={selected?.id === device.id}
         onChange={() => { setChoice(device); setFailure(""); }}>
         <span className="chat-row-text">
-          <strong>{device.matched_account ? `Possible match: ${displayName(device.matched_account, remarks)}` : "Unknown Zibblu device"}</strong>
-          <small>Device {device.id.slice(0, 8)}</small>
+          <strong>{device.matched_account ? t(`Possible match: ${displayName(device.matched_account, remarks)}`, `可能是 ${displayName(device.matched_account, remarks)}`) : t("Unknown Zibblu device", "未知 Zibblu 设备")}</strong>
+          <small>{t("Device", "设备")}{" "}{device.id.slice(0, 8)}</small>
         </span>
       </Choice>)}
     </fieldset> : <p className="muted" role="status">
-      {status === "starting" ? "Starting LAN discovery…"
-        : status === "network_unavailable" ? (ios ? "Nearby requires an allowed Wi-Fi network."
-          : "Nearby requires an approved IPv4 LAN. Connect to an allowed Wi-Fi or Ethernet network.")
-        : status === "permission_denied" ? "Allow Zibblu to use the Local Network in iOS Settings, then return here."
-        : status === "discovery_failed" ? "LAN discovery could not start or the configured discovery service failed."
-        : "No Zibblu devices found. Keep both clients open and signed in on the same allowed network."}
+      {status === "starting" ? t("Starting LAN discovery…", "正在启动局域网发现…")
+        : status === "network_unavailable" ? (ios ? t("Nearby requires an allowed Wi-Fi network.", "附近设备功能需要接入允许的 Wi-Fi 网络。")
+          : t("Nearby requires an approved IPv4 LAN. Connect to an allowed Wi-Fi or Ethernet network.", "附近设备功能需要接入允许的 IPv4 局域网。请连接允许的 Wi-Fi 或以太网。"))
+        : status === "permission_denied" ? t("Allow Zibblu to use the Local Network in iOS Settings, then return here.", "请在 iOS 设置中允许 Zibblu 访问本地网络，然后返回这里。")
+        : status === "discovery_failed" ? t("LAN discovery could not start or the configured discovery service failed.", "无法启动局域网发现，或配置的发现服务出现故障。")
+        : t("No Zibblu devices found. Keep both clients open and signed in on the same allowed network.", "未发现 Zibblu 设备。请在同一允许的网络上打开并登录两端客户端。")}
     </p>}
-    {selected && !account && <p className="muted">Zibblu verifies the selected device’s account before sending the invitation.</p>}
-    {account === own && <p className="muted">Private invitations go to a different account.</p>}
-    {choice && !selected && status === "ready" && <p className="muted" role="status">The selected device is no longer listed for that account.</p>}
+    {selected && !account && <p className="muted">{t("Zibblu verifies the selected device’s account before sending the invitation.", "发送邀请前，Zibblu 会验证所选设备的账号。")}</p>}
+    {account === own && <p className="muted">{t("Private invitations go to a different account.", "请向其他账号发送私密聊天邀请。")}</p>}
+    {choice && !selected && status === "ready" && <p className="muted" role="status">{t("The selected device is no longer listed for that account.", "该账号下已找不到所选设备。")}</p>}
     {failure && <p className="inline-error" role="alert">{failure}</p>}
     {((status === "ready" && devices.length === 0) || status === "discovery_failed" || failure) && <details className="nearby-help">
-      <summary className="muted">Troubleshooting tips</summary>
-      <p className="muted">{ios ? "Check Local Network access in iOS Settings and make sure Wi-Fi allows devices to communicate."
-        : "Check that Windows Defender Firewall allows Zibblu on the Private profile. For managed networks, ensure mDNS and direct UDP are permitted."}</p>
+      <summary className="muted">{t("Troubleshooting tips", "排查连接问题")}</summary>
+      <p className="muted">{ios ? t("Check Local Network access in iOS Settings and make sure Wi-Fi allows devices to communicate.", "请确认 iOS 设置已授权访问本地网络，且 Wi-Fi 允许设备互相通信。")
+        : t("Check that Windows Defender Firewall allows Zibblu on the Private profile. For managed networks, ensure mDNS and direct UDP are permitted.", "请确认 Windows Defender 防火墙允许 Zibblu 使用专用网络。在受管理的网络上，还需允许 mDNS 和 UDP 直连。")}</p>
     </details>}
     <div className="dialog-actions">
-      <button className="button subtle" disabled={busy} onClick={close}>Close</button>
+      <button className="button subtle" disabled={busy} onClick={close}>{t("Close", "关闭")}</button>
       <button className="button primary" disabled={busy || !selected || account === own}
-        onClick={() => void invite()}>{busy ? "Connecting…" : "Send private invitation"}</button>
+        onClick={() => void invite()}>{busy ? t("Connecting…", "正在连接…") : t("Send private invitation", "发送私密聊天邀请")}</button>
     </div>
   </Dialog>;
 }
@@ -365,7 +367,7 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
     });
   }
 
-  return <section className="chat-view private-chat" aria-label="Private chat"
+  return <section className="chat-view private-chat" aria-label={t("Private chat", "私密聊天")}
     onCopy={event => {
       const selection = window.getSelection();
       const start = selection?.anchorNode;
@@ -374,31 +376,31 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
     }} onCut={event => event.preventDefault()}
     onDragStart={event => event.preventDefault()} onDrop={event => event.preventDefault()}>
     <header className="chat-header">
-      <button className="icon-button" onClick={back} aria-label="Return to chats"><ArrowLeft size={19} /></button>
+      <button className="icon-button" onClick={back} aria-label={t("Return to chats", "返回聊天")}><ArrowLeft size={19} /></button>
       {switchMode
-        ? <button className="icon-button private-ghost" type="button" aria-label="Switch to normal chat"
-          title="Switch to normal chat" onClick={switchMode}><Ghost size={22} /></button>
+        ? <button className="icon-button private-ghost" type="button" aria-label={t("Switch to normal chat", "切换到普通聊天")}
+          title={t("Switch to normal chat", "切换到普通聊天")} onClick={switchMode}><Ghost size={22} /></button>
         : <Ghost className="private-ghost" size={22} aria-hidden="true" />}
       <div className="chat-heading">
-        <h2>{room ? privateTitle(room, own.id, remarks) : "Private chat"}</h2>
-        <span role="status">{connected ? t("Verified private connection", "已验证私密连接") : room ? privatePhaseLabel[room.phase] : ""}
-          {" · "}{t("LAN only", "仅局域网")}{room?.open ? " · QR access" : ""}</span>
+        <h2>{room ? privateTitle(room, own.id, remarks) : t("Private chat", "私密聊天")}</h2>
+        <span role="status">{connected ? t("Verified private connection", "已验证私密连接") : room ? privatePhaseLabel(room.phase) : ""}
+          {" · "}{t("LAN only", "仅局域网")}{room?.open ? t(" · QR access", " · 扫码加入") : ""}</span>
       </div>
-      {room?.open && room.hosted && <button className="icon-button" title="Share private QR code"
-        aria-label="Share private QR code" onClick={() => void act(() => showCode(id))}><QrCode size={20} /></button>}
+      {room?.open && room.hosted && <button className="icon-button" title={t("Share private QR code", "分享私密聊天二维码")}
+        aria-label={t("Share private QR code", "分享私密聊天二维码")} onClick={() => void act(() => showCode(id))}><QrCode size={20} /></button>}
       {room && room.phase !== "invited" && <button className="button subtle" disabled={busy} onClick={() => void act(async () => {
         await api.endPrivate(id);
         closeRoom.current();
-      })}>End session</button>}
+      })}>{t("End session", "结束会话")}</button>}
     </header>
     {previewReady && connected ? <>
-      <div className="private-people" aria-label="Current participants">
+      <div className="private-people" aria-label={t("Current participants", "当前参与者")}>
         {people.map(person => <button className="person-link" key={person.id} onClick={() => open?.(person)}
-          title={person.id !== own.id && !isContact(person.id) ? "View profile or add contact" : "View profile"}>
+          title={person.id !== own.id && !isContact(person.id) ? t("View profile or add contact", "查看资料或添加联系人") : t("View profile", "查看资料")}>
           {person.id !== own.id && !isContact(person.id) && <UserPlus size={14} />}{displayName(person, remarks)}
         </button>)}
       </div>
-      <div className="timeline-wrap"><div className="timeline" ref={timeline} role="log" aria-label="Private messages" onScroll={event => {
+      <div className="timeline-wrap"><div className="timeline" ref={timeline} role="log" aria-label={t("Private messages", "私密消息")} onScroll={event => {
         const element = event.currentTarget;
         nearBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
         setAway(!nearBottom.current);
@@ -431,13 +433,13 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
         })}
       </div>{away && <button className="button subtle jump-bottom" onClick={() => {
         if (timeline.current) timeline.current.scrollTop = timeline.current.scrollHeight;
-      }}><ArrowDown size={15} /> Latest messages</button>}</div>
+      }}><ArrowDown size={15} />{t("Latest messages", "最新消息")}</button>}</div>
       <form className="composer" onSubmit={send}>
         {(failure || oversized) && <p className="inline-error" role="alert">
-          {oversized ? "Private messages can be up to 2 KiB." : failure}
+          {oversized ? t("Private messages can be up to 2 KiB.", "私密消息最多 2 KiB。") : failure}
         </p>}
         <div className="composer-box">
-          <FloatingField multiline id={inputId} label="Private message" rows={2} autoComplete="off"
+          <FloatingField multiline id={inputId} label={t("Private message", "私密消息")} rows={2} autoComplete="off"
             spellCheck={false} value={draft} onChange={event => { const value = event.target.value; setDraft(() => value); }}
             onKeyDown={event => {
               if (!ios && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -445,14 +447,14 @@ export function PrivateChatView({ id, own, back, showCode, draft, setDraft, isCo
                 event.currentTarget.form?.requestSubmit();
               }
             }} />
-            <button className="button primary send-button" type="submit" aria-label="Send private message"
-              disabled={busy || !draft.trim() || oversized}>{busy ? "Sending…" : "Send"} <Send size={16} /></button>
+            <button className="button primary send-button" type="submit" aria-label={t("Send private message", "发送私密消息")}
+              disabled={busy || !draft.trim() || oversized}>{busy ? t("Sending…", "正在发送…") : t("Send", "发送")} <Send size={16} /></button>
         </div>
       </form>
     </> : <div className="private-status" aria-live="polite">
       {room?.phase === "invited" ? <InvitePrompt key={room.id} room={room} /> : <Blank
-        icon={<Ghost size={26} />} title={room?.open && room.hosted ? "Waiting for a QR scan"
-          : room ? privatePhaseLabel[room.phase] : "Opening private chat"}>
+        icon={<Ghost size={26} />} title={room?.open && room.hosted ? t("Waiting for a QR scan", "等待扫码")
+          : room ? privatePhaseLabel(room.phase) : t("Opening private chat", "正在打开私密聊天")}>
         {failure && <p className="inline-error" role="alert">{failure}</p>}
       </Blank>}
     </div>}

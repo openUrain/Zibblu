@@ -23,7 +23,7 @@ import { exclusivePrivateRoom, privatePhaseLabel, privateTitle } from "./private
 import { RichMessage } from "./rich-message";
 import { conversationSummary, messageSummary } from "./rich-markdown";
 import { phone, ios, useIosBack } from "./ios";
-import { actions as actionLabels, t } from "./locale";
+import { actions as actionLabels, appLanguage, t } from "./locale";
 import { ShareQr } from "./qr";
 import type { SharedCode } from "./qr";
 import { windows } from "./window-chrome";
@@ -64,7 +64,7 @@ export function ChatList({ chats, drafts, own, selected, open, newChat, addConta
   const [search, setSearch] = useState("");
   const query = search.trim().toLocaleLowerCase();
   const ordered = sortConversationsForDisplay(chats);
-  const filtered = ordered.filter(chat => (chat.id === builtinAssistantId ? builtinAssistantName() : chatName(chat, own.id, remarks)).toLocaleLowerCase().includes(query));
+  const filtered = ordered.filter(chat => (chat.id === builtinAssistantId ? builtinAssistantName(remarks[chat.id]) : chatName(chat, own.id, remarks)).toLocaleLowerCase().includes(query));
   const paired = rooms.find(room => room.id === activePrivate)?.conversation;
   const standalone = rooms.filter(room => !chats.some(chat => chat.id === room.conversation));
   const add = <button className="icon-button new-conversation" type="button" ref={plus}
@@ -74,7 +74,7 @@ export function ChatList({ chats, drafts, own, selected, open, newChat, addConta
       ...(phone ? [{ label: t("Scan QR code", "扫一扫"), icon: <ScanLine size={18} />, action: scan }] : []),
       { label: t("Add friend", "添加朋友"), icon: <UserRoundPlus size={18} />, action: addContact },
       { label: t("Private chat QR code", "私聊二维码"), icon: <QrCode size={18} />, action: createQr },
-      ...(windows ? [{ label: "Nearby", icon: <Radar size={18} />, action: openNearby }] : []),
+      ...(windows ? [{ label: t("Nearby", "附近设备"), icon: <Radar size={18} />, action: openNearby }] : []),
     ])}><Plus size={22} /></button>;
   return <aside className="chat-list">
     {ios && <header className="chat-list-title"><h1>{t("Chats", "聊天")}</h1>{add}</header>}
@@ -90,7 +90,7 @@ export function ChatList({ chats, drafts, own, selected, open, newChat, addConta
       {filtered.map(chat => {
         const privateRoom = exclusivePrivateRoom(rooms, chat);
         const builtin = chat.id === builtinAssistantId;
-        const name = builtin ? builtinAssistantName() : chatName(chat, own.id, remarks);
+        const name = builtin ? builtinAssistantName(remarks[chat.id]) : chatName(chat, own.id, remarks);
         const peer = chat.members.find(user => user.id !== own.id);
         const draftPreview = paired === chat.id ? undefined : deriveDraftPreview(drafts[chat.id]);
         return <div className="conversation-entry" key={chat.id}><button type="button"
@@ -109,7 +109,7 @@ export function ChatList({ chats, drafts, own, selected, open, newChat, addConta
           {builtin ? <span className="avatar ai-builtin-avatar"><Bot size={20} /></span>
             : chat.title || !peer ? <Avatar name={name} group={!!chat.title} /> : <PersonAvatar user={peer} />}
           <span className="chat-row-text"><strong title={name}>{name}</strong><small>{privateRoom
-            ? privateRoom.phase === "connected" ? t("Private chat", "私密聊天") : privatePhaseLabel[privateRoom.phase]
+            ? privateRoom.phase === "connected" ? t("Private chat", "私密聊天") : privatePhaseLabel(privateRoom.phase)
             : paired === chat.id
             ? t("Private chat", "私密聊天")
             : draftPreview ? <><span className="draft-prefix">{draftPreview.prefix}</span>{" "}{draftPreview.body}</>
@@ -133,14 +133,14 @@ export function ChatList({ chats, drafts, own, selected, open, newChat, addConta
             <PersonAvatar user={peer} /></button>}
         </div>;
       })}
-      {filtered.length === 0 && <p className="list-empty muted">{search ? "No matching chats." : "Start a chat with a contact."}</p>}
-      {standalone.length > 0 && <div className="private-rows" aria-label="Private chats">
-        <h2>Private chats</h2>
+      {filtered.length === 0 && <p className="list-empty muted">{search ? t("No matching chats.", "没有匹配的会话。") : t("Start a chat with a contact.", "选择联系人开始聊天。")}</p>}
+      {standalone.length > 0 && <div className="private-rows" aria-label={t("Private chats", "私密聊天")}>
+        <h2>{t("Private chats", "私密聊天")}</h2>
         {standalone.map(room => <button key={room.id} className={"chat-row" + (room.id === activePrivate ? " selected" : "")}
           aria-current={room.id === activePrivate ? "true" : undefined} onClick={() => openPrivate(room.id)}>
           <Ghost size={20} className="private-ghost" />
           <span className="chat-row-text"><strong>{privateTitle(room, own.id, remarks)}</strong><small>
-            {room.phase === "waiting" && room.open ? "Waiting for a QR scan" : privatePhaseLabel[room.phase]}
+            {room.phase === "waiting" && room.open ? t("Waiting for a QR scan", "等待扫码") : privatePhaseLabel(room.phase)}
           </small></span>
         </button>)}
       </div>}
@@ -200,7 +200,7 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
   const wantInvite = useRef(false);
   const { remarks, open } = useContext(People);
   const name = chatName(chat, own.id, remarks);
-  const count = new Intl.NumberFormat(navigator.language).format(chat.members.length);
+  const count = new Intl.NumberFormat(appLanguage()).format(chat.members.length);
   const memberCount = t(` (${count})`, `（${count}）`);
   const heading = chat.title ? name + memberCount : name;
   const details = chat.title ? t("Group details", "群聊信息") : t("Conversation details", "聊天信息");
@@ -313,7 +313,7 @@ export function ChatView({ chat, own, server, revision, latestAiSeq, recalled, c
     }
   }}>
     <header className="chat-header">
-      <button className="icon-button mobile-back" onClick={() => { closeDrawer(); back(); }} aria-label="Back to chats"><ArrowLeft size={20} /></button>
+      <button className="icon-button mobile-back" onClick={() => { closeDrawer(); back(); }} aria-label={t("Back to chats", "返回聊天列表")}><ArrowLeft size={20} /></button>
       <div className="chat-heading"><h2>{peer && open
         ? <button className="person-link" type="button" title={name} onClick={() => open(peer)}>{name}</button>
         : <><span className="chat-title" title={name}>{name}</span>{chat.title && <span className="chat-member-count">{memberCount}</span>}</>}</h2></div>
@@ -450,14 +450,14 @@ function SearchResults({ conversation, search, revision, latestAiSeq, recalled, 
   const { page, failure, loading, older } = usePage(read, revision, recalled, false, latestAiSeq, hidden);
   return <div className="chat-search-results">
     {failure && <p className="inline-error" role="alert">{failure}</p>}
-    {!page && !failure && <p className="muted" role="status">Searching…</p>}
-    {page?.items.length === 0 && <p className="muted">No matching messages.</p>}
+    {!page && !failure && <p className="muted" role="status">{t("Searching…", "正在搜索…")}</p>}
+    {page?.items.length === 0 && <p className="muted">{t("No matching messages.", "没有匹配的消息。")}</p>}
     {page?.items.map(message => <article key={message.seq}>
       <small>{message.ai_provider ? <ProviderLogo provider={message.ai_provider} /> : displayName(message.sender, remarks)}
         {" · "}{dateTimeLabel(message.created_at)}</small>
       <p>{message.text && messageSummary(message.text, message)}</p>
     </article>)}
-    {page?.has_more && <button className="button subtle" disabled={loading} onClick={() => void older()}>Load older matches</button>}
+    {page?.has_more && <button className="button subtle" disabled={loading} onClick={() => void older()}>{t("Load older matches", "加载更早的结果")}</button>}
   </div>;
 }
 
@@ -694,14 +694,14 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
       {failure && <p className="inline-error" role="alert">{failure}</p>}
       {recallError && <p className="inline-error" role="alert">{recallError}</p>}
       {saveFailure && <p className="inline-error" role="alert">{saveFailure}</p>}
-      {!page && !failure && <div className="history-placeholder" role="status" aria-label="Loading messages">
+      {!page && !failure && <div className="history-placeholder" role="status" aria-label={t("Loading messages", "正在加载消息")}>
         <LoaderCircle className="preview-spinner" size={16} aria-hidden="true" />
       </div>}
-      {page?.has_more && <button className="button subtle more" disabled={loading} onClick={() => void older()}>Load older messages</button>}
-      {page && history.length === 0 && pending.length === 0 && <Blank icon={<MessageCircle size={27} />} title="Start the conversation">
-        <p>Say hello or share a file.</p>
+      {page?.has_more && <button className="button subtle more" disabled={loading} onClick={() => void older()}>{t("Load older messages", "加载更早的消息")}</button>}
+      {page && history.length === 0 && pending.length === 0 && <Blank icon={<MessageCircle size={27} />} title={t("Start the conversation", "开始聊天")}>
+        <p>{t("Say hello or share a file.", "打声招呼，或分享文件。")}</p>
       </Blank>}
-      <div className="messages" role="log" aria-label="Messages">
+      <div className="messages" role="log" aria-label={t("Messages", "消息")}>
         {history.map(({ message, reply, transfer, aiPrompt, aiJob, key, time }) => {
           const newGroup = startsTimeGroup(time, previousTime);
           previousTime = time;
@@ -726,7 +726,7 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
           const now = Date.now() + clockOffset;
           const canRecall = !!message && message.seq > 0 && mine && (windows || !provider) && !message.recalled && !message.expired && now - (message.published_at ?? time) <= 5 * 60_000;
           const avatar = provider ? <ProviderLogo provider={provider} /> : <button className="person-link message-avatar"
-            aria-label={`View ${displayName(message!.sender, remarks)}'s profile`} onClick={() => open?.(message!.sender)}>
+            aria-label={t(`View ${displayName(message!.sender, remarks)}'s profile`, `查看 ${displayName(message!.sender, remarks)} 的资料`)} onClick={() => open?.(message!.sender)}>
             <PersonAvatar user={message!.sender} />
           </button>;
           const text = message?.text ?? reply?.text;
@@ -769,11 +769,11 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
               ...(copy ? [{ label: t("Copy", "复制"), icon: <Copy size={15} />, action: () => {
                 void copyText(copy).catch(error => setRecallError(errorMessage(error)));
               } }] : []),
-              ...(message && message.seq > 0 && !message.recalled && !message.expired && !expiredFile ? [{ label: "Quote", icon: <Reply size={15} />, action: () => {
+              ...(message && message.seq > 0 && !message.recalled && !message.expired && !expiredFile ? [{ label: t("Quote", "引用"), icon: <Reply size={15} />, action: () => {
                 setDraft(previous => ({ ...previous, quote: message, nonce: undefined }));
                 viewport.current?.closest(".chat-view")?.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus();
               } }] : []),
-              ...(canRecall ? [{ label: "Recall message", icon: <Undo2 size={15} />, disabled: recalling !== undefined,
+              ...(canRecall ? [{ label: t("Recall message", "撤回消息"), icon: <Undo2 size={15} />, disabled: recalling !== undefined,
                 action: () => void recall(message.seq) }] : []),
               ...(message && !transfer && message.seq !== 0 ? [{ label: t("Delete for me", "仅为我删除"), icon: <Trash2 size={15} />, action: () => void deleteForMe(message.seq) }] : []),
             ];
@@ -840,11 +840,11 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                       : transfer && (transfer.status === "failed" || transfer.status === "paused")
                         ? () => void changeTransfer("resume") : undefined}
                     receipt={receiptStatus} ended={deliveryEnded} />}
-                  {message?.recalled ? <div className="bubble recalled-message">Message recalled</div>
+                  {message?.recalled ? <div className="bubble recalled-message">{t("Message recalled", "消息已撤回")}</div>
                   : message && file ? <ChatAttachment key={file.id} message={message} transfer={download} upload={transfer}
                     expired={expiredFile} onChanged={changed} open={() => openMedia(message)} />
                     : message?.expired ? <div className="bubble recalled-message">
-                      {message.expired === "file" ? "This file expired. Ask the sender to share it again." : "This message expired before delivery."}
+                      {message.expired === "file" ? t("This file expired. Ask the sender to share it again.", "此文件已过期，请联系发送者重新分享。") : t("This message expired before delivery.", "此消息在送达前已过期。")}
                     </div>
                     : <RichMessage text={text} cacheKey={message ?? reply} />}
                 </div>
@@ -854,19 +854,19 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
                 }} />}
                 <div className="message-meta">
                   {!windows && message?.pending && <>
-                    <small role="status">{message.pending.error ?? <span className="status-icon" title={t("Queued", "排队中")} aria-label={t("Queued", "排队中")} role="img" tabIndex={0}><Clock size={14} aria-hidden /></span>}</small>
+                    <small role="status">{message.pending.error ? errorMessage(message.pending.error) : <span className="status-icon" title={t("Queued", "排队中")} aria-label={t("Queued", "排队中")} role="img" tabIndex={0}><Clock size={14} aria-hidden /></span>}</small>
                     {message.pending.blocked && message.nonce && <button className="text-button" type="button"
-                      onClick={() => void retry(message.nonce!)}><RotateCcw size={13} /> Retry</button>}
+                      onClick={() => void retry(message.nonce!)}><RotateCcw size={13} />{t("Retry", "重试")}</button>}
                   </>}
                   {!windows && deliveryEnded
-                    && <small>Online delivery window ended</small>}
+                    && <small>{t("Online delivery window ended", "在线投递期限已结束")}</small>}
                   {!windows && receiptStatus && <span className="read-mark" role="img" aria-label={receiptLabel} title={receiptLabel}>
                     {receiptLabel === "Read" ? <CheckCheck size={15} aria-hidden /> : <Check size={15} aria-hidden />}
                   </span>}
                   {reply && <>
                     <small><LockKeyhole size={12} /> {t("Only you", "仅自己可见")}</small>
                     <button type="button" className="text-button" onClick={() => setSharingReply(reply)}><UsersRound size={13} /> {t("Visible to", "分享给")}</button>
-                    {!windows && <button className="icon-button" aria-label="Dismiss AI reply" onClick={() => aiChat.dismiss(reply.id)}><X size={14} /></button>}
+                    {!windows && <button className="icon-button" aria-label={t("Dismiss AI reply", "删除 AI 回复")} onClick={() => aiChat.dismiss(reply.id)}><X size={14} /></button>}
                   </>}
 
                 </div>
@@ -879,9 +879,9 @@ function ChatMessages({ chat, own, revision, latestAiSeq, recalled, clockOffset,
     </div>
     {away && <button className="button subtle jump-bottom" onClick={() => {
       if (viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
-    }}><ArrowDown size={15} /> Latest messages</button>}
+    }}><ArrowDown size={15} />{t("Latest messages", "最新消息")}</button>}
   </div>
-    {!windows && pending.length > 0 && <section className="composer-transfers" aria-label="Pending uploads">
+    {!windows && pending.length > 0 && <section className="composer-transfers" aria-label={t("Pending uploads", "待上传文件")}>
       <TransferList transfers={pending} onChanged={changed} inChat />
     </section>}
     <Composer conversation={chat.id} refresh={refresh} pickAttachments={pickAttachments} pasteFiles={pasteFiles} changed={changed} aiChat={aiChat}
@@ -903,7 +903,7 @@ function MessageDelivery({ pending, upload, receipt, ended, retry }: {
   const busy = !!pending && !pending.blocked && !error || upload?.status === "queued"
     || upload?.status === "running" || upload?.status === "complete";
   const failed = !!error || pending?.blocked || upload?.status === "failed" || upload?.status === "expired";
-  const status = failed ? error || t("Could not send", "发送失败")
+  const status = failed ? (error ? errorMessage(error) : t("Could not send", "发送失败"))
     : upload?.status === "paused" ? t("Waiting to upload", "待上传")
       : upload?.status === "complete" ? t("Updating chat", "正在更新聊天")
       : upload?.status === "running" ? t("Uploading", "上传中")
@@ -937,7 +937,7 @@ function QuotedMessage({ conversation, seq, known, hidden }: { conversation: str
   const quote = known ?? loaded;
   return <div className="message-quote"><Reply size={14} />{quote && !hidden && !quote.recalled && !quote.expired
     ? <span><strong>{displayName(quote.sender, remarks)}</strong> {quote.text === null ? quote.attachment?.name : messageSummary(quote.text, quote)}</span>
-    : <span>Message unavailable</span>}</div>;
+    : <span>{t("Message unavailable", "消息不可用")}</span>}</div>;
 }
 
 function syncComposerScrollEdges(editor: HTMLTextAreaElement) {
@@ -1166,7 +1166,7 @@ function Composer({ conversation, refresh, pickAttachments, pasteFiles, changed,
     }}>
       {(failure || oversized) && <div className="inline-error" role="alert">{oversized
         ? t(`Text can be up to ${maxTextKiB} KiB.`, `文本最多 ${maxTextKiB} KiB。`) : failure}</div>}
-      {ambiguous && <p className="inline-error" role="alert">Rename one of the matching assistants in Settings.</p>}
+      {ambiguous && <p className="inline-error" role="alert">{t("Rename one of the matching assistants in Settings.", "请在设置中修改其中一位助理的名称。")}</p>}
       {menu && <AssistantMenu id={menuId} assistants={suggestions} active={menuIndex}
         choose={choose} settings={aiChat.settings} />}
       <div className="composer-box">
@@ -1246,15 +1246,15 @@ function Composer({ conversation, refresh, pickAttachments, pasteFiles, changed,
             }} />
           <button className="button primary send-button" type="submit"
             disabled={(!draft.trim() && attachments.length === 0) || ambiguous || quoteUnavailable || oversized || sending || checkingImage || (!!assistant && (!view || !prompt))}
-            aria-label={assistant && !windows ? "Choose AI context" : sending ? t("Sending message", "正在发送消息") : t("Send message", "发送消息")}>
-            {assistant && !windows ? <>Choose context <ArrowRight size={16} /></>
+            aria-label={assistant && !windows ? t("Choose AI context", "选择 AI 上下文") : sending ? t("Sending message", "正在发送消息") : t("Send message", "发送消息")}>
+            {assistant && !windows ? <>{t("Choose context", "选择范围")}{" "}<ArrowRight size={16} /></>
               : <span>{sending ? t("Sending…", "发送中…") : t("Send", "发送")}</span>}
           </button>
         </div>
         {saved.quote && <div className="message-quote composer-quote"><Reply size={15} />
           {quote ? <span><strong>{displayName(quote.sender, remarks)}</strong> {quote.text === null ? quote.attachment?.name : messageSummary(quote.text, quote)}</span>
-            : <span>Message unavailable</span>}
-          <button className="icon-button" type="button" aria-label="Remove quote" disabled={sending}
+            : <span>{t("Message unavailable", "消息不可用")}</span>}
+          <button className="icon-button" type="button" aria-label={t("Remove quote", "移除引用")} disabled={sending}
             onClick={() => setDraft(previous => ({ ...previous, quote: undefined, nonce: undefined }))}><X size={15} /></button>
         </div>}
         {preparing && <span className="drop-hint" role="status">{t("Preparing attachment…", "正在准备附件…")}</span>}
@@ -1283,7 +1283,7 @@ function DraftAttachmentCard({ item, disabled, onPreview, onRemove }: {
   const iconFile = { id: item.id, name: item.name, kind: item.kind, size: item.size, sha256: "" };
   const subtitle = item.kind === "folder" ? t("Folder", "文件夹") : decimalSize(item.size);
   return <div className={"draft-card" + (item.error ? " draft-card-invalid" : "")} role="listitem">
-    <button type="button" className="draft-card-main" onClick={onPreview} title={item.error ? `${item.name}\n${item.error}` : item.name}
+    <button type="button" className="draft-card-main" onClick={onPreview} title={item.error ? `${item.name}\n${errorMessage(item.error)}` : item.name}
       aria-label={t("Preview attachment", "预览附件") + " " + item.name}>
       <span className="draft-card-thumb" aria-hidden="true">
         {imageThumb ? <img src={api.draftMediaUrl(item.id, "thumbnail")} alt="" onError={() => setThumbFailed(true)} />
@@ -1298,7 +1298,7 @@ function DraftAttachmentCard({ item, disabled, onPreview, onRemove }: {
           <strong dir="auto">{stem}</strong>{extension && <strong>{extension}</strong>}
         </span>
         {item.error
-          ? <small className="draft-card-error" role="alert"><CircleAlert size={12} aria-hidden="true" /><span>{item.error}</span></small>
+          ? <small className="draft-card-error" role="alert"><CircleAlert size={12} aria-hidden="true" /><span>{errorMessage(item.error)}</span></small>
           : <small className="draft-card-meta">{subtitle}</small>}
       </span>
     </button>
@@ -1334,10 +1334,10 @@ function DraftPreviewDialog({ item, items, onSelect, close }: {
       const target = event.key === "ArrowLeft" ? previous : event.key === "ArrowRight" ? next : undefined;
       if (target) { event.preventDefault(); onSelect(target.id); }
     }}>
-    {item.error && <p className="inline-error" role="alert">{item.error}</p>}
+    {item.error && <p className="inline-error" role="alert">{errorMessage(item.error)}</p>}
     {isImage || isVideo ? <>
       <div className="media-viewer-stage" data-ready={!failed ? "" : undefined}
-        tabIndex={zoom > 100 ? 0 : undefined} aria-label={zoom > 100 ? "Pan zoomed image" : undefined}>
+        tabIndex={zoom > 100 ? 0 : undefined} aria-label={zoom > 100 ? t("Pan zoomed image", "拖动放大的图片") : undefined}>
         {failed ? <div className="media-viewer-placeholder">
           <p role="status">{t("Local preview is unavailable.", "无法加载本地预览。")}</p>
         </div> : isVideo ? <video key={item.id} src={api.draftMediaUrl(item.id)} controls controlsList="nodownload noremoteplayback"

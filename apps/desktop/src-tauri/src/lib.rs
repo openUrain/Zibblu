@@ -50,7 +50,8 @@ fn restrict_viewer(
         if invoke.message.webview().label() == image_viewer::LABEL
             && !matches!(
                 invoke.message.command(),
-                "image_viewer_selection"
+                "app_language"
+                    | "image_viewer_selection"
                     | "image_viewer_step"
                     | "copy_viewer_image"
                     | "save_attachment"
@@ -183,6 +184,8 @@ pub fn run() {
             commands::ios_scan_qr,
             commands::preferences,
             commands::set_close_action,
+            commands::app_language,
+            commands::set_app_language,
             commands::login,
             commands::restore_session,
             commands::logout,

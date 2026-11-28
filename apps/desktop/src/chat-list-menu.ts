@@ -1,6 +1,7 @@
 import { builtinAssistantId } from "./ai-api";
 import type { Conversation } from "./api";
 import type { MenuItem } from "./context-menu";
+import { t } from "./locale";
 
 export type ChatListConversation = Conversation & {
   pinned?: boolean;
@@ -26,26 +27,26 @@ export function buildChatContextMenu(
 
   return [
     {
-      label: pinned ? "取消置顶" : "置顶聊天",
+      label: pinned ? t("Unpin chat", "取消置顶") : t("Pin chat", "置顶聊天"),
       action: () => options.onPin(!pinned),
     },
     ...(chat.id === builtinAssistantId ? [] : [{
-      label: unread ? "标为已读" : "标为未读",
+      label: unread ? t("Mark as read", "标为已读") : t("Mark as unread", "标为未读"),
       action: () => options.onRead(!unread),
     },
     {
-      label: muted ? "取消免打扰" : "消息免打扰",
+      label: muted ? t("Unmute chat", "取消免打扰") : t("Mute chat", "消息免打扰"),
       action: () => options.onMute(!muted),
     }]),
     {
-      label: "独立窗口显示",
+      label: t("Open in a new window", "独立窗口显示"),
       divider: true,
       disabled: !options.windows,
       action: options.onPopout,
     },
-    ...(chat.id === builtinAssistantId ? [] : [{ label: "隐藏聊天", action: options.onHide }]),
+    ...(chat.id === builtinAssistantId ? [] : [{ label: t("Hide chat", "隐藏聊天"), action: options.onHide }]),
     {
-      label: "删除聊天",
+      label: t("Delete chat", "删除聊天"),
       divider: true,
       danger: true,
       action: options.onDelete,

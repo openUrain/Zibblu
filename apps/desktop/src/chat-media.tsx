@@ -85,7 +85,7 @@ function MediaTile({ message, open, fitImage, size: hint }: {
       }
       open();
     }}
-    aria-label={`Open ${kind === "video" ? "video" : "image"} ${file.name}`}>
+    aria-label={(kind === "video" ? t("Open video", "打开视频") : t("Open image", "打开图片")) + " " + file.name}>
     {cachedMedia ? url && <img key="cached" src={url} alt="" /> : visible && status !== "failed" && (kind === "image"
       ? <img key="online" src={api.mediaUrl(file.id, "thumbnail") + (onlineQuery ? "&" + onlineQuery : "")
         + (attempt ? "&retry=" + attempt : "")} alt="" onLoad={event => {
@@ -99,7 +99,7 @@ function MediaTile({ message, open, fitImage, size: hint }: {
       <span>{file.name}</span><small>{canPreview(file) ? (kind === "video"
         ? t("Play video", "播放视频") : t("Preview unavailable", "无法预览")) : t("Download to open", "下载后打开")}</small>
     </span> : <>
-      {status === "loading" && <span className="media-tile-status" role="status" aria-label="Loading preview"><LoaderCircle className="preview-spinner" size={16} aria-hidden /></span>}
+      {status === "loading" && <span className="media-tile-status" role="status" aria-label={t("Loading preview", "正在加载预览")}><LoaderCircle className="preview-spinner" size={16} aria-hidden /></span>}
       {kind === "video" && status === "ready" && <span className="media-play" aria-hidden="true"><Play size={20} fill="currentColor" /></span>}
     </>}
   </button>;
@@ -159,7 +159,7 @@ export function MediaHistory({ conversation, revision, recalled, hidden, open, t
     && job.status !== "complete" && mediaKind(job.attachment));
   return <>
     {downloads.length > 0 && <details className="media-transfers">
-      <summary>Transfers ({downloads.length})</summary>
+      <summary>{t("Transfers", "传输任务")} ({downloads.length})</summary>
       <TransferList transfers={downloads} onChanged={onChanged} inChat />
     </details>}
     <MediaResults {...{ conversation, revision, recalled, hidden, open }} />
@@ -175,14 +175,14 @@ function MediaResults({ conversation, revision, recalled, hidden, open }: ChatMe
   const { page, failure, loading, older } = usePage(read, revision, recalled, false, undefined, hidden);
   return <div className="chat-search-results">
     {failure && <p className="inline-error" role="alert">{failure}</p>}
-    {!page && !failure && <p className="muted" role="status">Loading photos and videos…</p>}
-    {page?.items.length === 0 && <Blank icon={<Image size={25} />} title="No photos or videos" />}
+    {!page && !failure && <p className="muted" role="status">{t("Loading photos and videos…", "正在加载图片和视频…")}</p>}
+    {page?.items.length === 0 && <Blank icon={<Image size={25} />} title={t("No photos or videos", "暂无图片或视频")} />}
     {page && page.items.length > 0 && <div className="media-grid">{page.items.map(message =>
       fileExpired(message)
-        ? <span className="media-tile-fallback" key={message.seq}>{message.attachment!.name}<small>File expired</small></span>
+        ? <span className="media-tile-fallback" key={message.seq}>{message.attachment!.name}<small>{t("File expired", "文件已过期")}</small></span>
         : <MediaTile key={message.seq} message={message} open={() => open(message)} />)}</div>}
     {page?.has_more && <button className="button subtle more" disabled={loading} onClick={() => void older()}>
-      {loading ? "Loading…" : "Load older media"}
+      {loading ? t("Loading…", "正在加载…") : t("Load older media", "加载更早的图片和视频")}
     </button>}
   </div>;
 }
@@ -220,27 +220,26 @@ export function MediaViewer({ message, conversation, revision, recalled, hidden,
   const transfer = transfers.find(job => job.direction === "download" && job.attachment.id === file.id);
   const expired = transfer?.status === "expired" || (transfer?.status !== "complete" && fileExpired(message));
 
-  return <Dialog title="Media viewer" className="media-viewer" close={close} onKeyDown={event => {
+  return <Dialog title={t("Media viewer", "媒体查看器")} className="media-viewer" close={close} onKeyDown={event => {
     if (event.defaultPrevented || (event.target instanceof Element && event.target.closest("video, input, .media-viewer-stage"))) return;
     const item = event.key === "ArrowLeft" ? previous : event.key === "ArrowRight" ? next : undefined;
     if (item && !unavailable) { event.preventDefault(); open(item); }
   }}>
-    {unavailable ? <p className="inline-error" role="alert">This attachment is no longer available.</p> :
-      expired ? <p className="inline-error" role="alert">This file expired. Ask the sender to share it again.</p> : <>
+    {unavailable ? <p className="inline-error" role="alert">{t("This attachment is no longer available.", "此附件已不可用。")}</p> :
+      expired ? <p className="inline-error" role="alert">{t("This file expired. Ask the sender to share it again.", "此文件已过期，请联系发送者重新分享。")}</p> : <>
       <ViewerMedia key={"preview:" + file.id} file={file} />
       <div className="media-viewer-footer">
         <strong title={file.name}>{file.name}</strong>
         <div className="media-nav">
-          <button className="icon-button" type="button" title="Previous media" aria-label="Previous media"
+          <button className="icon-button" type="button" title={t("Previous media", "上一项")} aria-label={t("Previous media", "上一项")}
             disabled={!previous} onClick={() => { if (previous) open(previous); }}><ChevronLeft size={20} /></button>
-          <button className="icon-button" type="button" title="Next media" aria-label="Next media"
+          <button className="icon-button" type="button" title={t("Next media", "下一项")} aria-label={t("Next media", "下一项")}
             disabled={!next} onClick={() => { if (next) open(next); }}><ChevronRight size={20} /></button>
         </div>
       </div>
-      {current?.error && <div className="media-viewer-error"><p className="inline-error" role="alert">{current.error}</p>
+      {current?.error && <div className="media-viewer-error"><p className="inline-error" role="alert">{errorMessage(current.error)}</p>
         <button className="button subtle small" type="button" onClick={() => { setNeighbors(undefined); setRetry(value => value + 1); }}>
-          <RotateCcw size={15} /> Retry media history
-        </button>
+          <RotateCcw size={15} />{t("Retry media history", "重试加载图片和视频")}{" "}</button>
       </div>}
       <AttachmentDownload key={"download:" + file.id} {...{ file, transfer, onChanged }} />
     </>}
@@ -257,7 +256,7 @@ function ViewerMedia({ file }: { file: Attachment }) {
 
   return <>
     <div className="media-viewer-stage" data-ready={state === "ready" ? "" : undefined}
-      tabIndex={zoom > 100 ? 0 : undefined} aria-label={zoom > 100 ? "Pan zoomed image" : undefined}>
+      tabIndex={zoom > 100 ? 0 : undefined} aria-label={zoom > 100 ? t("Pan zoomed image", "拖动放大的图片") : undefined}>
       {!video && supported && state !== "failed" && <img className="media-viewer-thumbnail" alt="" aria-hidden="true"
         src={api.mediaUrl(file.id, "cached-thumbnail")} onLoad={() => setThumbnailReady(true)} />}
       {state !== "failed" && (video
@@ -268,16 +267,15 @@ function ViewerMedia({ file }: { file: Attachment }) {
           <img key={attempt} src={api.mediaUrl(file.id)} alt={file.name}
             onLoad={() => setState("ready")} onError={() => { setZoom(100); setState("failed"); }} />
         </div>)}
-      {state === "loading" && !thumbnailReady && <p className="media-viewer-placeholder" role="status" aria-label="Loading preview"><LoaderCircle className="preview-spinner" size={16} aria-hidden /></p>}
+      {state === "loading" && !thumbnailReady && <p className="media-viewer-placeholder" role="status" aria-label={t("Loading preview", "正在加载预览")}><LoaderCircle className="preview-spinner" size={16} aria-hidden /></p>}
       {state === "failed" && <div className="media-viewer-placeholder">
-        <p role="status">{supported ? "Preview unavailable. You can try again or save the attachment." : "Download this attachment to open it."}</p>
+        <p role="status">{supported ? t("Preview unavailable. You can try again or save the attachment.", "无法预览。你可以重试或保存附件。") : t("Download this attachment to open it.", "下载此附件后即可打开。")}</p>
         {supported && <button className="button subtle small" type="button" onClick={() => {
           setThumbnailReady(false); setState("loading"); setAttempt(value => value + 1);
-        }}><RotateCcw size={15} /> Retry preview</button>}
+        }}><RotateCcw size={15} />{t("Retry preview", "重试预览")}</button>}
       </div>}
     </div>
-    {!video && state === "ready" && <label className="media-zoom">Zoom
-      <input type="range" min={100} max={300} step={25} value={zoom} onChange={event => setZoom(Number(event.target.value))} />
+    {!video && state === "ready" && <label className="media-zoom">{t("Zoom", "缩放")}{" "}<input type="range" min={100} max={300} step={25} value={zoom} onChange={event => setZoom(Number(event.target.value))} />
       <span>{zoom}%</span>
     </label>}
   </>;

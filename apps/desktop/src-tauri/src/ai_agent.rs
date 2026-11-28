@@ -102,11 +102,14 @@ fn supported_efforts(provider: AiProvider, model: &str, base_url: Option<&str>) 
             "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.5" | "gpt-5.6" |
             "gpt-6.2-astra" | "gpt-6.2-sol" | "o3" | "o4-mini"
         ) => &["low", "medium", "high"],
-        (AiProvider::DeepSeek, "deepseek-flash" | "deepseek-v4-pro") => &["none", "low", "high", "max"],
-        (AiProvider::Grok, "grok-4.5") => &["low", "medium", "high"],
-        (AiProvider::Grok, "grok-4.6" | "grok-4.7") => &["low", "medium", "high", "xhigh"],
+        (AiProvider::DeepSeek, "deepseek-flash" | "deepseek-v4-pro") => &["low", "high", "max"],
+        (AiProvider::Grok, "grok-4.5" | "grok-4.6" | "grok-4.7") => &["low", "medium", "high"],
         _ => &[],
     }
+}
+
+fn default_effort(efforts: &[&str]) -> Option<String> {
+    efforts.get(1).map(|effort| (*effort).to_owned())
 }
 
 fn validate_model(model: &str) -> Result<()> {
@@ -164,7 +167,14 @@ pub(crate) async fn ai_builtin_model(
         if saving {
             return Err(anyhow::anyhow!("The model does not support this thinking effort.").into());
         }
-        selection.effort = None;
+        selection.effort = match selection.effort.as_deref() {
+            Some("none") => efforts.first().map(|effort| (*effort).to_owned()),
+            Some("xhigh") => efforts.last().map(|effort| (*effort).to_owned()),
+            _ => None,
+        };
+    }
+    if selection.effort.is_none() {
+        selection.effort = default_effort(efforts);
     }
     if saving || initializing {
         let mut file = tempfile::NamedTempFile::new_in(client.profile_dir()).map_err(anyhow::Error::from)?;
@@ -276,7 +286,7 @@ pub(crate) async fn ai_start_builtin(
         assistant,
         prompt,
         autonomous: true,
-        effort: selection.effort,
+        effort: selection.effort.or_else(|| default_effort(efforts)),
         authorized_chats,
         message_seqs: Vec::new(),
         messages: Vec::new(),

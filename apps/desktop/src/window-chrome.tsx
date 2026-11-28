@@ -38,13 +38,13 @@ export function WindowControls() {
     void action().catch(error => setFailure(errorMessage(error)));
   }
 
-  const maximizeLabel = maximized ? "Restore window" : "Maximize window";
-  return <div className="window-controls" role="group" aria-label="Window controls">
-    <button type="button" aria-label="Minimize window" title="Minimize window" onClick={() => run(() => appWindow.minimize())}><Minus size={16} /></button>
+  const maximizeLabel = maximized ? t("Restore window", "还原窗口") : t("Maximize window", "最大化窗口");
+  return <div className="window-controls" role="group" aria-label={t("Window controls", "窗口控制")}>
+    <button type="button" aria-label={t("Minimize window", "最小化窗口")} title={t("Minimize window", "最小化窗口")} onClick={() => run(() => appWindow.minimize())}><Minus size={16} /></button>
     <button type="button" aria-label={maximizeLabel} title={maximizeLabel} onClick={() => run(() => appWindow.toggleMaximize())}>
       {maximized ? <Copy size={14} /> : <Square size={13} />}
     </button>
-    <button type="button" className="window-close" aria-label="Close window" title="Close window" onClick={() => run(() => appWindow.close())}><X size={17} /></button>
+    <button type="button" className="window-close" aria-label={t("Close window", "关闭窗口")} title={t("Close window", "关闭窗口")} onClick={() => run(() => appWindow.close())}><X size={17} /></button>
     {failure && <p className="window-error inline-error" role="alert">{failure}</p>}
   </div>;
 }
