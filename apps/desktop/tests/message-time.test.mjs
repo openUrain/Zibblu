@@ -86,3 +86,14 @@ test("uses local calendar day and Monday natural week across time zones and DST 
   ]`;
   assert.deepEqual(evalInTz("America/New_York", dstChecks), ["昨天", "3月8日", "星期一", "昨天", "11月1日", "星期一"]);
 });
+
+test("formats the same local calendar in English when selected", () => {
+  const now = new Date(2026, 10, 29, 20);
+  const format = (year, month, day) => messageTimeLabel(new Date(year, month, day, 8).getTime(), now, "en");
+  assert.equal(format(2026, 10, 29), "08:00");
+  assert.equal(format(2026, 10, 28), "Yesterday");
+  assert.equal(format(2026, 10, 27), "Day before yesterday");
+  assert.equal(format(2026, 10, 26), "Thursday");
+  assert.equal(format(2026, 10, 22), "Nov 22");
+  assert.equal(format(2025, 10, 22), "Nov 22, 2025");
+});

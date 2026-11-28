@@ -62,11 +62,11 @@ export function SharedFile({ message, transfer, onChanged, previewStatus, upload
       <FileIcon file={file} upload={upload} />
       <div className="file-info">
         <FileName name={file.name} />
-        <small>{file.kind === "folder" ? "Folder" : (splitFileName(file.name)[1].slice(1).toUpperCase() || "File")} · {bytes(file.size)}</small>
+        <small>{file.kind === "folder" ? t("Folder", "文件夹") : (splitFileName(file.name)[1].slice(1).toUpperCase() || t("File", "文件"))} · {bytes(file.size)}</small>
       </div>
     </div>
     {expired || transfer?.status === "expired"
-      ? <small className="file-preview-status" role="status">This file expired. Ask the sender to share it again.</small>
+      ? <small className="file-preview-status" role="status">{t("This file expired. Ask the sender to share it again.", "此文件已过期，请联系发送者重新分享。")}</small>
       : <>
         {previewStatus && <small className="file-preview-status" role="status">{previewStatus}</small>}
         {upload ? <div className="attachment-download" aria-hidden="true" style={{ visibility: "hidden" }}>
@@ -152,7 +152,7 @@ function TransferProgress({ transfer, onChanged, chooseNew, choosing, compact = 
 
   const pause = running || queued;
   const recovery = failed ? t("Retry", "重试") : t("Resume", "继续");
-  const error = pickerError || failure || transfer.error;
+  const error = pickerError || failure || (transfer.error ? errorMessage(transfer.error) : "");
   if (transfer.direction === "upload") {
     const uploadStatus = complete ? t("Shared", "已发送")
       : expired ? t("Expired", "已过期")
@@ -226,22 +226,22 @@ function TransferProgress({ transfer, onChanged, chooseNew, choosing, compact = 
   return <div className="transfer-progress">
     <div className="transfer-status"><span role="status" className={complete ? "verified" : failed || expired ? "danger" : ""}>
       {complete && <Check size={14} />}{queued ? <span className="status-icon" role="img" aria-label={status} title={status} tabIndex={0}><Clock size={14} aria-hidden /></span> : status}
-    </span>{!complete && <span>{bytes(transfer.received)} of {bytes(total)} · {percentage}%</span>}</div>
+    </span>{!complete && <span>{bytes(transfer.received)}{t("of", "/")}{" "}{bytes(total)} · {percentage}%</span>}</div>
     {!complete && <>
       <progress max={100} value={percentage} aria-label={status + " " + transfer.attachment.name} />
-      {(failure || transfer.error) && <p className="inline-error" role="alert">{failure || transfer.error}</p>}
+      {(failure || transfer.error) && <p className="inline-error" role="alert">{failure || error}</p>}
       <div className="transfer-buttons">
         {running || queued
-          ? <button className="button subtle small" onClick={() => void action("pause")} disabled={busy}><Pause size={14} /> Pause</button>
+          ? <button className="button subtle small" onClick={() => void action("pause")} disabled={busy}><Pause size={14} />{t("Pause", "暂停")}</button>
           : <>
             {!expired && <button className="button subtle small" onClick={() => void action("resume")} disabled={busy}>
-              {failed ? <RotateCcw size={14} /> : <Play size={14} />}{failed ? "Retry" : "Resume"}
+              {failed ? <RotateCcw size={14} /> : <Play size={14} />}{failed ? t("Retry", "重试") : t("Resume", "继续")}
             </button>}
             {chooseNew && !expired && <button className="button subtle small" disabled={busy || choosing} onClick={chooseNew}>
               {choosing ? actions.saving : t("Save as…", "另存为…")}
             </button>}
             <button className="icon-button danger" aria-label={"Discard transfer for " + transfer.attachment.name}
-              title="Discard partial transfer" onClick={() => void action("discard")} disabled={busy}><Trash2 size={15} /></button>
+              title={t("Discard partial transfer", "丢弃未完成的传输")} onClick={() => void action("discard")} disabled={busy}><Trash2 size={15} /></button>
           </>}
       </div>
     </>}
@@ -256,8 +256,8 @@ export function TransferList({ transfers, onChanged, inChat = false }: {
     <div className="shared-file" key={transfer.direction + transfer.attachment.id}>
       <div className="file-main"><FileIcon file={transfer.attachment} upload={transfer.direction === "upload" ? transfer : undefined} />
         <div className="file-info"><FileName name={transfer.attachment.name} />
-          <small>{transfer.direction === "upload" && transfer.status !== "complete" ? "Not yet shared"
-            : transfer.direction === "upload" ? "Upload" : "Download"} · {bytes(transfer.attachment.size)}</small>
+          <small>{transfer.direction === "upload" && transfer.status !== "complete" ? t("Not yet shared", "尚未分享")
+            : transfer.direction === "upload" ? t("Upload", "上传") : t("Download", "下载")} · {bytes(transfer.attachment.size)}</small>
           {!inChat && transfer.sharer && <div className="file-origin"><span className="file-sharer">
             <PersonAvatar user={transfer.sharer} /><span>{displayName(transfer.sharer, remarks)}</span>
           </span></div>}
@@ -288,8 +288,9 @@ export function FilesView({ conversation, transfers, revision, recalled, hidden,
         <option value="">{t("All types", "所有类型")}</option><option value="file">{t("Files", "文件")}</option><option value="folder">{t("Folders", "文件夹")}</option>
       </Selector>
       <button className="file-sort" type="button" onClick={() => setOldestFirst(value => !value)}
-        aria-label="时间排序" aria-pressed={oldestFirst} title={oldestFirst ? "最早优先" : "最新优先"}>
-        时间排序<span className="file-sort-arrows" aria-hidden><i /><i /></span>
+        aria-label={t("Sort by time", "时间排序")} aria-pressed={oldestFirst}
+        title={oldestFirst ? t("Oldest first", "最早优先") : t("Newest first", "最新优先")}>
+        {t("Sort by time", "时间排序")}<span className="file-sort-arrows" aria-hidden><i /><i /></span>
       </button>
     </div>
     <SharedHistory key={JSON.stringify([conversation, kind, oldestFirst, name])} {...{
@@ -311,9 +312,9 @@ function SharedHistory({ conversation, kind, oldestFirst, name, revision, recall
   const downloads = new Map(transfers.filter(job => job.direction === "download").map(job => [job.attachment.id, job]));
   const uploads = new Map(transfers.filter(job => job.direction === "upload" && job.status !== "complete").map(job => [job.attachment.id, job]));
   if (failure) return <p className="inline-error" role="alert">{failure}</p>;
-  if (!page) return <p className="muted loading" role="status">Loading shared files…</p>;
-  if (page.items.length === 0) return <Blank icon={<FolderOpen size={27} />} title="No shared files found">
-    <p>{kind || name ? "Try changing the filters." : "Files and folders shared in chats will appear here."}</p>
+  if (!page) return <p className="muted loading" role="status">{t("Loading shared files…", "正在加载共享文件…")}</p>;
+  if (page.items.length === 0) return <Blank icon={<FolderOpen size={27} />} title={t("No shared files found", "未找到共享文件")}>
+    <p>{kind || name ? t("Try changing the filters.", "试试调整筛选条件。") : t("Files and folders shared in chats will appear here.", "聊天中分享的文件和文件夹会显示在这里。")}</p>
   </Blank>;
   // A publication may replace a local pending row while an older page is being appended.
   const items = [...new Map(page.items.map(item => [item.attachment!.id, item])).values()];
@@ -324,7 +325,7 @@ function SharedHistory({ conversation, kind, oldestFirst, name, revision, recall
       const transfer = message.seq < 0 ? uploads.get(id) ?? download : download;
       return <LibraryFile key={id} {...{ message, transfer, onChanged }} />;
     })}
-    {page.has_more && <button className="button subtle more" disabled={loading} onClick={() => void older()}>Load more files</button>}
+    {page.has_more && <button className="button subtle more" disabled={loading} onClick={() => void older()}>{t("Load more files", "加载更多文件")}</button>}
   </div>;
 }
 
@@ -372,7 +373,7 @@ function LibraryFile({ message, transfer, onChanged }: { message: Message; trans
       {transfer && transfer.status !== "complete" ? <TransferProgress transfer={transfer} onChanged={onChanged} compact
         chooseNew={message.seq > 0 && transfer.direction === "download" && !ios ? () => void save(file.id) : undefined}
         choosing={saving} pickerError={error} />
-        : expired ? <span role="status" className="library-expired" title="Ask the sender to share this file again.">{t("Expired", "已过期")}</span>
+        : expired ? <span role="status" className="library-expired" title={t("Ask the sender to share this file again.", "请联系发送者重新分享。")}>{t("Expired", "已过期")}</span>
         : message.seq > 0 && (ios ? <AttachmentDownload file={file} transfer={transfer} onChanged={onChanged} /> :
           <>
             <LibraryError error={error} id={errorId} />

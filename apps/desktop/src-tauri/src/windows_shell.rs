@@ -1,5 +1,5 @@
 use crate::{
-    commands::{CloseAction, Desktop},
+    commands::{AppLanguage, CloseAction, Desktop},
     quit,
 };
 use sha2::{Digest, Sha256};
@@ -19,6 +19,7 @@ use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, Window,
 };
 use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
 use windows_sys::Win32::Graphics::Dwm::{
     DWMWA_DISALLOW_PEEK, DWMWA_FORCE_ICONIC_REPRESENTATION, DwmInvalidateIconicBitmaps,
     DwmSetWindowAttribute,
@@ -187,10 +188,30 @@ fn restore_main(app: &AppHandle) {
     }
 }
 
+pub(crate) fn system_language() -> AppLanguage {
+    if unsafe { GetUserDefaultUILanguage() } & 0x03ff == 0x04 {
+        AppLanguage::SimplifiedChinese
+    } else {
+        AppLanguage::English
+    }
+}
+
+fn tray_menu(app: &AppHandle, language: AppLanguage) -> tauri::Result<Menu<tauri::Wry>> {
+    let show = MenuItem::with_id(app, "show-zibblu", language.text("Show Zibblu", "显示 Zibblu"), true, None::<&str>)?;
+    let exit = MenuItem::with_id(app, "exit-zibblu", language.text("Exit Zibblu", "退出 Zibblu"), true, None::<&str>)?;
+    Menu::with_items(app, &[&show, &exit])
+}
+
+pub(crate) fn set_tray_language(app: &AppHandle, language: AppLanguage) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID)
+        && let Ok(menu) = tray_menu(app, language)
+    {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
 pub(crate) fn create_tray(app: &AppHandle) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show-zibblu", "Show Zibblu", true, None::<&str>)?;
-    let exit = MenuItem::with_id(app, "exit-zibblu", "Exit Zibblu", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &exit])?;
+    let menu = tray_menu(app, app.state::<Desktop>().app_language().unwrap_or_default())?;
     TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Zibblu")
         .icon(app.default_window_icon().expect("Zibblu icon").clone())

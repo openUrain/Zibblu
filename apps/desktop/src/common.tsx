@@ -4,7 +4,8 @@ import type { ComponentPropsWithoutRef, KeyboardEventHandler, ReactNode } from "
 import { api, errorMessage } from "./api";
 import type { Conversation, Directory, Message, Page, User } from "./api";
 import { ios, useIosBack } from "./ios";
-import { actions, t } from "./locale";
+import { actions, appLanguage, t } from "./locale";
+import { messageTimeLabel as formatMessageTime } from "./message-time";
 import { useWorkspaceImage, WorkspaceImages } from "./workspace-image";
 
 export const People = createContext<Pick<Directory, "remarks" | "avatars"> & { online?: boolean; open?: (user: User) => void }>({ remarks: {}, avatars: {} });
@@ -58,7 +59,10 @@ export function chatName(chat: Conversation, ownId: string, remarks: Directory["
   return chat.title ?? (peer ? displayName(peer, remarks) : "Direct chat");
 }
 
-export { dateTimeLabel, messageTimeLabel, startsTimeGroup } from "./message-time";
+export { startsTimeGroup } from "./message-time";
+
+export const messageTimeLabel = (value: number) => formatMessageTime(value, new Date(), appLanguage());
+export const dateTimeLabel = messageTimeLabel;
 
 export function bytes(value: number): string {
   if (value < 1024) return value + " B";

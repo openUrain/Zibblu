@@ -8,7 +8,7 @@ import type { AiJob, AiPrompt, AiReply, Assistant } from "./ai-api";
 import { api, errorMessage } from "./api";
 import type { AddDraftsResult, Directory, Draft, DropOffer, Profile, SyncUpdate, Transfer, User } from "./api";
 import { ChatView } from "./chat";
-import { builtinAssistantName } from "./ai";
+import { builtinAssistantName, useBuiltinRemark } from "./ai";
 import { BuiltinAssistant } from "./builtin-assistant";
 import { ChatHistoryCache } from "./chat-history-cache";
 import { Blank, People, chatName } from "./common";
@@ -203,7 +203,7 @@ export function ChatWindow() {
       });
     }
     if (result.errors.length > 0) {
-      setFailure(result.errors.join("\n"));
+      setFailure(result.errors.map(errorMessage).join("\n"));
     }
   }, [setDraft]);
 
@@ -217,7 +217,7 @@ export function ChatWindow() {
         .catch(error => setFailure(errorMessage(error)));
     });
     const dropError = listen<string>("attachment-drop-error", event => {
-      setFailure(event.payload);
+      setFailure(errorMessage(event.payload));
     });
     return () => {
       void drop.then(unlisten => unlisten());
@@ -262,10 +262,12 @@ export function ChatWindow() {
     images.retain(() => false);
   }, [profiles, images]);
 
-  const names = useMemo(() => ({ ...directory.names, ...directory.remarks }), [directory.names, directory.remarks]);
+  const [assistantRemark] = useBuiltinRemark(session?.server, session?.user.id);
+  const names = useMemo(() => ({ ...directory.names, ...directory.remarks, [builtinAssistantId]: assistantRemark }),
+    [directory.names, directory.remarks, assistantRemark]);
   const windowTitle = session && active
     ? chatName(active, session.user.id, names)
-    : conversationId === builtinAssistantId ? builtinAssistantName() : "Zibblu";
+    : conversationId === builtinAssistantId ? builtinAssistantName(assistantRemark) : "Zibblu";
 
   useEffect(() => {
     document.title = windowTitle;

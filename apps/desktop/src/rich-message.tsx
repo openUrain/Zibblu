@@ -8,12 +8,12 @@ import rust from "highlight.js/lib/languages/rust";
 import typescript from "highlight.js/lib/languages/typescript";
 import { Check, CircleAlert, Copy } from "lucide-react";
 import { createLowlight } from "lowlight";
-import { memo, useMemo, useState } from "react";
+import { memo, useContext, useMemo, useState } from "react";
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 import type { Components } from "hast-util-to-jsx-runtime";
 import "katex/dist/katex.min.css";
 import { copyText } from "./context-menu";
-import { t } from "./locale";
+import { LanguageContext, t } from "./locale";
 import { RichLink } from "./rich-links";
 import { renderMessage } from "./rich-markdown";
 import "./rich-message.css";
@@ -90,9 +90,10 @@ const privateComponents = components(true);
 export const RichMessage = memo(function RichMessage({ text, cacheKey, privateRoom = false }: {
   text?: string | null; cacheKey?: object; privateRoom?: boolean;
 }) {
+  const language = useContext(LanguageContext);
   const tree = useMemo(() => text ? renderMessage(text, privateRoom ? undefined : cacheKey) : null, [text, cacheKey, privateRoom]);
   const body = useMemo(() => tree ? toJsxRuntime(tree, {
     ...runtime, components: privateRoom ? privateComponents : normalComponents, passNode: true, elementAttributeNameCase: "react",
-  }) : null, [tree, privateRoom]);
+  }) : null, [tree, privateRoom, language]);
   return <div className={tree ? "bubble rich-message rich-markdown" : "bubble rich-message"}>{body ?? text}</div>;
 });

@@ -152,12 +152,12 @@ export function ImageViewer() {
     return () => document.removeEventListener("keydown", escape);
   }, [changeFullscreen, requestClose]);
 
-  return <main className="image-viewer" aria-label="Media viewer">
+  return <main className="image-viewer" aria-label={t("Media viewer", "媒体查看器")}>
     {selection ? (selection.media_kind === "video"
       ? <VideoCanvas key={selection.file.id} {...selection} {...{ refresh, fullscreen, changeFullscreen, registerCloseGuard, forceCloseWindow }} />
       : <ImageCanvas key={selection.file.id} {...selection} {...{ refresh, fullscreen, changeFullscreen, registerCloseGuard, forceCloseWindow }} />)
       : <><ViewerToolbar fullscreen={fullscreen} /><div className="image-viewer-note" role={failure ? "alert" : "status"}>
-        {failure || <LoaderCircle className="preview-spinner" aria-label="Loading media" />}
+        {failure || <LoaderCircle className="preview-spinner" aria-label={t("Loading media", "正在加载媒体")} />}
       </div></>}
     {selection && failure && <div className="image-action-status" role="alert">{failure}</div>}
   </main>;
@@ -166,7 +166,7 @@ export function ImageViewer() {
 function ViewerToolbar({ fullscreen, children }: { fullscreen: boolean; children?: ReactNode }) {
   return <header className="image-toolbar">
     {fullscreen ? <div /> : <WindowDrag />}
-    <div className="image-tools" role="group" aria-label="Media controls">{children}</div>
+    <div className="image-tools" role="group" aria-label={t("Media controls", "媒体控件")}>{children}</div>
     <div className="image-window-end">
       {!fullscreen && <><WindowDrag /><WindowControls /></>}
     </div>
@@ -349,7 +349,7 @@ function ImageCanvas({
     setBusy(true);
     await operate(async () => {
       await invoke("copy_viewer_image", { id: file.id });
-      setNotice("Image copied");
+      setNotice(t("Image copied", "已复制图片"));
     });
     setBusy(false);
   }
@@ -486,8 +486,8 @@ function ImageCanvas({
 
   const saving = requestedSave && (download?.status === "running" || download?.status === "queued");
   const saveError = requestedSave && download && ["expired", "failed", "paused"].includes(download.status)
-    ? download.error || "The image could not be saved. Try again." : "";
-  const saveStatus = saving ? "Saving image…" : requestedSave && download?.status === "complete" ? "Image saved" : "";
+    ? (download.error ? errorMessage(download.error) : t("The image could not be saved. Try again.", "无法保存图片，请重试。")) : "";
+  const saveStatus = saving ? t("Saving image…", "正在保存图片…") : requestedSave && download?.status === "complete" ? t("Image saved", "图片已保存") : "";
   const tool = (label: string, icon: ReactNode, action: () => void, disabled = false, pressed?: boolean) =>
     <button type="button" className="icon-button" title={label} aria-label={label} aria-pressed={pressed}
       onClick={action} disabled={disabled}>{icon}</button>;
@@ -576,12 +576,12 @@ function ImageCanvas({
         />
       )}
       {!loaded && <div className="image-viewer-note">
-        {failed ? <><p role="alert">Image unavailable.</p>
+        {failed ? <><p role="alert">{t("Image unavailable.", "图片不可用。")}</p>
           <button type="button" className="button subtle small" onClick={() => {
             setAttempt(value => value + 1);
             setFailed(false);
-          }}><RotateCw size={16} /> Retry preview</button></>
-          : <LoaderCircle className="preview-spinner" role="status" aria-label="Loading image" />}
+          }}><RotateCw size={16} />{t("Retry preview", "重试预览")}</button></>
+          : <LoaderCircle className="preview-spinner" role="status" aria-label={t("Loading image", "正在加载图片")} />}
       </div>}
       {(notice || actionError || saveStatus || saveError) && <div className="image-action-status" role={actionError || saveError ? "alert" : "status"}>
         {actionError || saveError || notice || saveStatus}
@@ -789,7 +789,7 @@ function VideoCanvas({
           pendingVideoSendRef.current = null;
           setSendingMedia(false);
           if (status.error) {
-            setActionError(status.error);
+            setActionError(errorMessage(status.error));
           }
         }
       }).catch(() => {});
@@ -970,8 +970,8 @@ function VideoCanvas({
 
   const saving = requestedSave && (download?.status === "running" || download?.status === "queued");
   const saveError = requestedSave && download && ["expired", "failed", "paused"].includes(download.status)
-    ? download.error || "The video could not be saved. Try again." : "";
-  const saveStatus = saving ? "Saving video…" : requestedSave && download?.status === "complete" ? "Video saved" : "";
+    ? (download.error ? errorMessage(download.error) : t("The video could not be saved. Try again.", "无法保存视频，请重试。")) : "";
+  const saveStatus = saving ? t("Saving video…", "正在保存视频…") : requestedSave && download?.status === "complete" ? t("Video saved", "视频已保存") : "";
   const tool = (label: string, icon: ReactNode, action: () => void, disabled = false, pressed?: boolean) =>
     <button type="button" className="icon-button" title={label} aria-label={label} aria-pressed={pressed}
       onClick={action} disabled={disabled}>{icon}</button>;
@@ -1076,7 +1076,7 @@ function VideoCanvas({
               setSourceRevision(value => value + 1);
             }}><RotateCw size={16} /> {t("Retry", "重试")}</button>
           </div>
-        </> : <LoaderCircle className="preview-spinner" role="status" aria-label="Loading video" />}
+        </> : <LoaderCircle className="preview-spinner" role="status" aria-label={t("Loading video", "正在加载视频")} />}
       </div>}
       {trimming && loadingTrimAssets && (
         <div className="image-viewer-note" role="status">
@@ -1111,7 +1111,7 @@ function VideoCanvas({
       )}
       {(notice || actionError || saveStatus || saveError || origDownload?.error) && <div className="image-action-status"
         role={actionError || saveError || origDownload?.error ? "alert" : "status"}>
-        {actionError || saveError || origDownload?.error || notice || saveStatus}
+        {actionError || saveError || (origDownload?.error && errorMessage(origDownload.error)) || notice || saveStatus}
       </div>}
     </div>
     {trimming && <div className="video-trim-divider" role="separator" tabIndex={0}

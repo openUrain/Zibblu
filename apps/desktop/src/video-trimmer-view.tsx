@@ -1,3 +1,4 @@
+import { errorMessage } from "./api";
 import { Check, LoaderCircle, Pause, Play, Redo2, Undo2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent } from "react";
@@ -486,7 +487,7 @@ export function VideoExportBar({
       ? `${t("Export complete", "导出完成")} · ${decimalSize(progress.output_size)}`
       : t("Export complete", "导出完成");
   } else if (isFailed) {
-    statusText = progress.error || t("Export failed", "导出失败");
+    statusText = progress.error ? errorMessage(progress.error) : t("Export failed", "导出失败");
   } else if (isCancelled) {
     statusText = t("Export cancelled", "已取消导出");
   }

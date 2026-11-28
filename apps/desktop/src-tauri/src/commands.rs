@@ -56,6 +56,14 @@ impl Desktop {
         &self.data
     }
 
+    pub(crate) fn app_language(&self) -> Option<AppLanguage> {
+        let selected = self.preferences.lock().expect("preferences").as_ref().ok()
+            .and_then(|preferences| preferences.app_language);
+        #[cfg(windows)]
+        let selected = selected.or_else(|| Some(crate::windows_shell::system_language()));
+        selected
+    }
+
     pub fn new(data: PathBuf) -> Self {
         let preferences = Preferences::load(&data);
         Self {
@@ -348,6 +356,27 @@ struct Preferences {
     private_quiet: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     close_action: Option<CloseAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    app_language: Option<AppLanguage>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub(crate) enum AppLanguage {
+    #[serde(rename = "en")]
+    #[default]
+    English,
+    #[serde(rename = "zh-CN")]
+    SimplifiedChinese,
+}
+
+impl AppLanguage {
+    #[cfg(windows)]
+    pub(crate) fn text<'a>(self, english: &'a str, chinese: &'a str) -> &'a str {
+        match self {
+            Self::English => english,
+            Self::SimplifiedChinese => chinese,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -365,6 +394,7 @@ impl Preferences {
                 server: OFFICIAL_SERVER.into(),
                 private_quiet: false,
                 close_action: None,
+                app_language: None,
             }),
             Err(error) => Err(error.into()),
         }
@@ -405,12 +435,14 @@ mod tests {
         )?;
         assert_eq!(Preferences::load(data.path())?.close_action, None);
         let desktop = Desktop::new(data.path().to_owned());
+        desktop.update_preferences(|settings| settings.app_language = Some(AppLanguage::SimplifiedChinese))?;
         for action in [CloseAction::Tray, CloseAction::Exit] {
             desktop.update_preferences(|settings| settings.close_action = Some(action))?;
             let saved = Preferences::load(data.path())?;
             assert_eq!(saved.close_action, Some(action));
             assert_eq!(saved.server, "https://chat.example.com");
             assert!(saved.private_quiet);
+            assert_eq!(saved.app_language, Some(AppLanguage::SimplifiedChinese));
         }
         Ok(())
     }
@@ -533,6 +565,11 @@ pub(crate) fn preferences(
         .as_ref()
         .map_err(|error| anyhow!("{error}"))?
         .clone();
+    #[cfg(windows)]
+    let saved = Preferences {
+        app_language: saved.app_language.or_else(|| Some(crate::windows_shell::system_language())),
+        ..saved
+    };
     let saved_account = (window.label() == "main")
         .then(|| {
             let session = saved_session::load(&state.data).ok().flatten()?;
@@ -549,6 +586,28 @@ pub(crate) fn preferences(
 #[tauri::command]
 pub(crate) fn set_close_action(state: State<'_, Desktop>, action: CloseAction) -> Result<()> {
     state.update_preferences(|settings| settings.close_action = Some(action))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn app_language(state: State<'_, Desktop>) -> Option<AppLanguage> {
+    state.app_language()
+}
+
+#[tauri::command]
+pub(crate) fn set_app_language(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, Desktop>,
+    language: AppLanguage,
+) -> Result<()> {
+    if window.label() != "main" {
+        return Err(anyhow!("Open General settings in the main window.").into());
+    }
+    state.update_preferences(|settings| settings.app_language = Some(language))?;
+    #[cfg(windows)]
+    crate::windows_shell::set_tray_language(&app, language);
+    let _ = app.emit("zibblu-app-language", language);
     Ok(())
 }
 

@@ -13,7 +13,7 @@ import type {
 } from "./ai-api";
 import { api, errorMessage } from "./api";
 import { decimalSize, splitFileName } from "./file-labels";
-import { actions, t } from "./locale";
+import { actions, appLanguage, t } from "./locale";
 import { windows } from "./window-chrome";
 import { RichMessage } from "./rich-message";
 import type { Attachment, Conversation, Message, User } from "./api";
@@ -163,9 +163,9 @@ function AssistantEditor({ provider, assistant, saved, requireTerms }: {
 }
 
 const scopes = [
-  { kind: "prompt", label: "Prompt only", Icon: MessageSquare },
-  { kind: "selected", label: "Select messages", Icon: ListChecks },
-  { kind: "recent", label: "Recent", Icon: Clock3 },
+  { kind: "prompt", labels: ["Prompt only", "仅发送问题"], Icon: MessageSquare },
+  { kind: "selected", labels: ["Select messages", "选择消息"], Icon: ListChecks },
+  { kind: "recent", labels: ["Recent", "最近消息"], Icon: Clock3 },
 ] as const;
 
 export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, loading, older, conversation: _conversation, close, sent, answered }: {
@@ -247,7 +247,7 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
       void answered;
       close();
     } catch (error) {
-      setFailure(errorMessage(error) + ". Start a new request to retry.");
+      setFailure(errorMessage(error) + t(" Start a new request to retry.", " 请重新发起请求。"));
     } finally {
       setBusy(undefined);
     }
@@ -267,18 +267,17 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
       <div><strong>{provider}</strong><span>{chosenAssistant.model}</span></div>
     </div>
       <fieldset className="ai-section">
-        <legend>Message context</legend>
+        <legend>{t("Message context", "消息范围")}</legend>
         <div className="ai-segments">
-          {scopes.map(({ kind: value, label, Icon }) => <Choice key={value} type="radio" name={scopeName} checked={kind === value}
-            onChange={() => updateSelection(() => setKind(value))} disabled={disabled}><Icon size={16} /><span>{label}</span></Choice>)}
+          {scopes.map(({ kind: value, labels, Icon }) => <Choice key={value} type="radio" name={scopeName} checked={kind === value}
+            onChange={() => updateSelection(() => setKind(value))} disabled={disabled}><Icon size={16} /><span>{t(labels[0], labels[1])}</span></Choice>)}
         </div>
-        {kind === "recent" && <label className="ai-recent">Include the latest
-          <Selector value={limit} onChange={event => updateSelection(() => setLimit(Number(event.target.value)))} disabled={disabled}>
-            {[5, 10, 20, 40, 60].map(count => <option key={count} value={count}>{count} messages</option>)}
+        {kind === "recent" && <label className="ai-recent">{t("Include the latest", "包含最近")}{" "}<Selector value={limit} onChange={event => updateSelection(() => setLimit(Number(event.target.value)))} disabled={disabled}>
+            {[5, 10, 20, 40, 60].map(count => <option key={count} value={count}>{t(`${count} messages`, `${count} 条消息`)}</option>)}
           </Selector>
         </label>}
         {kind === "selected" && <div className="ai-pick-messages">
-          <p className="muted">{sequences.length} of {MAX_MESSAGES} selected</p>
+          <p className="muted">{t(`${sequences.length} of ${MAX_MESSAGES} selected`, `已选 ${sequences.length} / ${MAX_MESSAGES} 条`)}</p>
           <div className="ai-message-options">
             {selectableMessages.map(message => {
               const checked = sequences.includes(message.seq);
@@ -297,18 +296,17 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
                 </span>
               </Choice>;
             })}
-            {selectableMessages.length === 0 && <p className="muted">No messages to select.</p>}
+            {selectableMessages.length === 0 && <p className="muted">{t("No messages to select.", "没有可选消息。")}</p>}
             {hasMore && <button className="button subtle" type="button" disabled={loading || disabled}
-              onClick={() => void older()}>{loading ? "Loading…" : "Load older messages"}</button>}
+              onClick={() => void older()}>{loading ? t("Loading…", "正在加载…") : t("Load older messages", "加载更早的消息")}</button>}
           </div>
         </div>}
       </fieldset>
       <div className="ai-section">
         <div className="ai-section-line">
-          <small className="muted">Up to 3 UTF-8 files · 32 KiB each</small>
+          <small className="muted">{t("Up to 3 UTF-8 files · 32 KiB each", "最多添加 3 个 UTF-8 文件，每个不超过 32 KiB")}</small>
           <button type="button" className="button subtle" onClick={() => void pick()} disabled={disabled || files.length >= MAX_FILES}>
-            <Paperclip size={15} /> Add text file
-          </button>
+            <Paperclip size={15} />{t("Add text file", "添加文本文件")}{" "}</button>
         </div>
         {files.length > 0 ? <ul className="ai-file-chips">
           {files.map(file => <li key={file.id}><FileText size={15} /><FileLabel name={file.name} />
@@ -321,11 +319,11 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
       {preview && <div className="ai-snapshot">
         <header className="ai-disclosure"><strong>{t(`Content sent to ${provider}`, `将发送给 ${provider} 的内容`)}</strong><small>{preview.endpoint}</small></header>
         <details open>
-          <summary><MessageSquare size={15} /> Prompt</summary>
+          <summary><MessageSquare size={15} />{t("Prompt", "问题")}</summary>
           <p>{preview.snapshot.prompt}</p>
         </details>
         {preview.snapshot.messages.length > 0 && <details open>
-          <summary><ListChecks size={15} /> Messages <span>{preview.snapshot.messages.length}</span></summary>
+          <summary><ListChecks size={15} />{t("Messages", "消息")}{" "}<span>{preview.snapshot.messages.length}</span></summary>
           {preview.snapshot.messages.map((message, index) => <div className="ai-excerpt" key={index}>
             <strong>@{message.sender}</strong>
             {message.text && <p>{message.text}</p>}
@@ -352,8 +350,8 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
           <p>{file.text}</p>
         </details>)}
       </div>}
-      {!preview && preparing && <p className="muted" role="status">Preparing content preview…</p>}
-      <p className="ai-visibility-note"><LockKeyhole size={15} /> One-time, read-only request. Reply visible only to you.</p>
+      {!preview && preparing && <p className="muted" role="status">{t("Preparing content preview…", "正在准备内容预览…")}</p>}
+      <p className="ai-visibility-note"><LockKeyhole size={15} />{t("One-time, read-only request. Reply visible only to you.", "本次请求仅限读取，回复仅自己可见。")}</p>
       {(failure || previewFailure) && <p className="inline-error" role="alert">{failure || previewFailure}</p>}
       <div className="dialog-actions">
         <button className="button subtle" onClick={close} disabled={!!busy}>{spent ? t("Close", "关闭") : t("Cancel", "取消")}</button>
@@ -363,7 +361,26 @@ export function AiRequest({ view, draft, assistant, prompt, messages, hasMore, l
   </Dialog>;
 }
 
-export const builtinAssistantName = () => t("Zibblu Assistant", "Zibblu 助手");
+export const builtinAssistantName = (remark?: string) => remark || t("Zibblu Assistant", "Zibblu 助手");
+
+export function useBuiltinRemark(server?: string, account?: string) {
+  const key = server && account ? "zibblu-assistant-remark/" + JSON.stringify([server, account]) : undefined;
+  const [saved, setSaved] = useState(() => ({ key, remark: key ? localStorage.getItem(key) ?? "" : "" }));
+  useEffect(() => {
+    if (!key) return;
+    const load = () => setSaved({ key, remark: localStorage.getItem(key) ?? "" });
+    const onStorage = (event: StorageEvent) => { if (event.key === key || event.key === null) load(); };
+    load();
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [key]);
+  return [saved.key === key ? saved.remark : "", (remark: string) => {
+    if (!key) return;
+    if (remark) localStorage.setItem(key, remark);
+    else localStorage.removeItem(key);
+    setSaved({ key, remark });
+  }] as const;
+}
 
 export function selectedText(anchor: HTMLElement) {
   const selection = window.getSelection();
@@ -393,7 +410,7 @@ export function AiSources({ sources, open, failed }: {
   return <ul className="ai-sources" aria-label={t("Sources", "来源")}>
     {sources.map(source => {
       const time = new Date(source.created_at);
-      const title = new Intl.DateTimeFormat(undefined, {
+      const title = new Intl.DateTimeFormat(appLanguage(), {
         year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit",
         second: "2-digit", timeZoneName: "longOffset",
       }).format(time);
@@ -468,7 +485,7 @@ export function AiJobBubble({ job, onCancel, onDismiss, menu }: {
           <CircleAlert className="ai-job-error-icon" size={16} aria-hidden="true" />
           <div className="ai-job-copy">
             <strong>{t("AI request failed", "AI 生成失败")}</strong>
-            <span className="ai-job-error-text">{job.error || t("Could not complete the request.", "请求未能完成。")}</span>
+            <span className="ai-job-error-text">{job.error ? errorMessage(job.error) : t("Could not complete the request.", "请求未能完成。")}</span>
           </div>
           {onDismiss && <button type="button" className="icon-button ai-job-cancel"
             aria-label={t("Dismiss failed AI status", "关闭失败提示")} title={t("Dismiss", "关闭")}
@@ -564,8 +581,8 @@ export function AssistantMenu({ id, assistants, active, choose, settings }: {
   id: string; assistants: Assistant[]; active: number; choose: (assistant: Assistant) => void; settings: () => void;
 }) {
   return <div className="ai-mention-menu">
-    <div className="ai-menu-title">AI assistants</div>
-    <div id={id} role="listbox" aria-label="AI assistants">
+    <div className="ai-menu-title">{t("AI assistants", "AI 助理")}</div>
+    <div id={id} role="listbox" aria-label={t("AI assistants", "AI 助理")}>
       {assistants.map((assistant, index) => <button className="ai-mention-option" id={id + "-" + index}
         key={assistant.provider} type="button" role="option" aria-selected={active === index}
         onClick={() => choose(assistant)}>
@@ -575,7 +592,7 @@ export function AssistantMenu({ id, assistants, active, choose, settings }: {
       </button>)}
     </div>
     {assistants.length === 0 && <button className="ai-mention-option" type="button" onClick={settings}>
-      <Bot size={17} /><span>Manage assistants</span><ChevronRight size={15} />
+      <Bot size={17} /><span>{t("Manage assistants", "管理 AI 助理")}</span><ChevronRight size={15} />
     </button>}
   </div>;
 }

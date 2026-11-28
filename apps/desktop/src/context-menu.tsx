@@ -186,7 +186,7 @@ export function DesktopMenus({ children }: { children: ReactNode }) {
     {failure && createPortal(<div className="clipboard-error inline-error" role="alert">
       {failure}<button type="button" className="text-button" onClick={() => setFailure("")}>{t("Dismiss", "关闭")}</button>
     </div>, document.querySelector("dialog[open], .private-chat") ?? document.body)}
-    {menu && createPortal(<div className="app-menu" ref={panel} role="menu" aria-label="Actions" tabIndex={-1} data-navigation={navigation}
+    {menu && createPortal(<div className="app-menu" ref={panel} role="menu" aria-label={t("Actions", "操作")} tabIndex={-1} data-navigation={navigation}
       onPointerEnter={() => setNavigation("pointer")} onPointerMove={() => setNavigation("pointer")}
       onContextMenu={event => { event.preventDefault(); event.stopPropagation(); }}
       onKeyDown={event => {

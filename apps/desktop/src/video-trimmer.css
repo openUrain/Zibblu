@@ -155,11 +155,11 @@
 }
 
 .video-trimmer-handle:hover,
-.video-trimmer-handle:focus-visible {
+:where(html[data-tab-focus]) .video-trimmer-handle:focus-visible {
   background: #a78bfa;
 }
 
-.video-trimmer-handle:focus-visible {
+:where(html[data-tab-focus]) .video-trimmer-handle:focus-visible {
   outline: 2px solid #ffffff;
   outline-offset: 1px;
   z-index: 4;
@@ -325,8 +325,7 @@
 }
 
 @media (forced-colors: active) {
-  .video-trimmer-handle:focus-visible,
-  .video-trimmer-icon-btn:focus-visible {
+  :where(html[data-tab-focus]) :is(.video-trimmer-handle, .video-trimmer-icon-btn):focus-visible {
     outline: 2px solid Highlight;
   }
   .video-export-fill {

@@ -27,7 +27,7 @@
   },
   "bundle": {
     "active": true,
-    "licenseFile": "windows-ai-terms.txt",
+    "licenseFile": "windows-ai-terms.en.txt",
     "targets": ["nsis"],
     "icon": ["icons/icon.png", "icons/icon.ico"],
     "resources": {
@@ -38,7 +38,8 @@
       "nsis": {
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico",
-        "installerHooks": "windows-client.nsh"
+        "installerHooks": "windows-client.nsh",
+        "languages": ["English", "SimpChinese"]
       }
     }
   }

@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
-import { ArrowLeft, Bot, Check, ChevronDown, MessageSquare, Pencil, Plus, RefreshCw, Settings, Sparkles, X } from "lucide-react";
+import { ArrowLeft, Bot, Check, ChevronDown, MessageSquare, Pencil, Plus, RefreshCw, Settings, SlidersHorizontal, X } from "lucide-react";
 import { Fragment, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import type { CSSProperties, FormEvent } from "react";
 import { AiJobBubble, AiPromptBubble, AiSources, builtinAssistantName, ProviderLogo, ShareAiReply, useAiMessageMenu } from "./ai";
 import { ai, aiProviders, builtinAssistantId } from "./ai-api";
 import { useAiTerms } from "./ai-terms";
@@ -19,10 +19,50 @@ import { windows } from "./window-chrome";
 
 const MAX_ATTACHED_CHATS = 8;
 
-const effortLabels: Record<string, [string, string]> = {
-  none: ["Off", "关闭"], low: ["Low", "低"], medium: ["Medium", "中"],
-  high: ["High", "高"], xhigh: ["Extra high", "很高"], max: ["Max", "最高"],
-};
+function ThinkingEffort({ efforts, effort, busy, save }: {
+  efforts: string[]; effort: string | null; busy: boolean; save: (effort: string) => Promise<void>;
+}) {
+  const id = useId();
+  const slider = useRef<HTMLInputElement>(null);
+  const [preview, setPreview] = useState<number>();
+  const labels = [t("Instant", "即时"), t("Medium", "中"), t("High", "高")];
+  const label = t("Thinking effort", "思考强度");
+  const index = preview ?? Math.max(0, efforts.indexOf(effort ?? ""));
+  const position = `${index / (labels.length - 1) * 100}%`;
+
+  useEffect(() => {
+    const input = slider.current;
+    if (!input) return;
+    const commit = () => {
+      const next = efforts[input.valueAsNumber];
+      if (!busy && next && next !== effort) void save(next).finally(() => setPreview(undefined));
+      else setPreview(undefined);
+    };
+    input.addEventListener("change", commit);
+    return () => input.removeEventListener("change", commit);
+  }, [busy, effort, efforts, save]);
+
+  return <div className="builtin-effort">
+    <button type="button" className="builtin-effort-button" popoverTarget={id} disabled={busy}
+      aria-label={label + " · " + labels[index]}>
+      <SlidersHorizontal size={16} aria-hidden />
+      <span>{label}</span>
+      <ChevronDown size={12} aria-hidden />
+    </button>
+    <div className="builtin-effort-popover" id={id} popover="auto" role="group" aria-label={label}>
+      <label className="sr-only" htmlFor={id + "-slider"}>{label}</label>
+      <span className="builtin-effort-value" aria-hidden="true">{labels[index]}</span>
+      <div className="builtin-effort-control" style={{ "--effort-position": position } as CSSProperties}>
+        <div className="builtin-effort-track" aria-hidden="true">
+          <div className="builtin-effort-ticks">{labels.map(text => <span key={text} />)}</div>
+        </div>
+        <input type="range" ref={slider} id={id + "-slider"} min={0} max={efforts.length - 1} step={1}
+          value={index} aria-valuetext={labels[index]} aria-disabled={busy}
+          onChange={event => { if (!busy) setPreview(event.currentTarget.valueAsNumber); }} />
+      </div>
+    </div>
+  </div>;
+}
 
 function syncScrollEdges(editor: HTMLTextAreaElement) {
   const { scrollTop, scrollHeight, clientHeight } = editor;
@@ -216,19 +256,17 @@ export function BuiltinAssistant({ own, assistants, chats, prompts, replies, job
   const modelChoices = selection
     ? [...new Set([selection.model, provider?.model ?? selection.model, ...models])]
     : [];
-  const hasEfforts = !!selection && !!model?.efforts.length;
-  const activeEffortText = selection?.effort && effortLabels[selection.effort]
-    ? t(...effortLabels[selection.effort])
-    : t("Default", "默认");
+  const hasEfforts = !!model?.efforts.length;
+  const name = builtinAssistantName(remarks[builtinAssistantId]);
   const oversized = new TextEncoder().encode(question.trim()).length > 8192;
 
-  return <section className="chat-view builtin-assistant" aria-label={builtinAssistantName()}>
+  return <section className="chat-view builtin-assistant" aria-label={name}>
     <header className="chat-header">
       <button className="icon-button mobile-back" type="button" aria-label={t("Back to chats", "返回聊天列表")} onClick={back}>
         <ArrowLeft size={20} />
       </button>
       <div className="chat-heading builtin-heading">
-        <h2><span className="chat-title">{builtinAssistantName()}</span></h2>
+        <h2><span className="chat-title">{name}</span></h2>
         {selection && provider && <div className="builtin-model-picker" ref={pickerRef}>
           <button ref={pickerButton} type="button" className="builtin-model-trigger"
             aria-haspopup="dialog" aria-expanded={pickerOpen} aria-controls={pickerOpen ? pickerId : undefined}
@@ -393,29 +431,8 @@ export function BuiltinAssistant({ own, assistants, chats, prompts, replies, job
                   }}>
                   <Plus size={18} aria-hidden="true" />
                 </button>
-                {hasEfforts && selection && <button type="button" className="builtin-effort-button"
-                  aria-label={t("Thinking effort", "思考强度") + ": " + activeEffortText}
-                  title={t("Thinking effort", "思考强度")}
-                  aria-haspopup="menu"
-                  aria-expanded={menuAnchor?.classList.contains("builtin-effort-button") ?? false}
-                  disabled={busy}
-                  onClick={event => openMenu(event.currentTarget, [
-                    {
-                      label: t("Default effort", "默认强度"),
-                      icon: !selection.effort ? <Check size={15} /> : <span className="builtin-menu-spacer" aria-hidden="true" />,
-                      action: () => void save({ ...selection, effort: null }),
-                    },
-                    ...(model?.efforts ?? []).map(effort => ({
-                      label: t(...effortLabels[effort]),
-                      icon: selection.effort === effort ? <Check size={15} /> : <span className="builtin-menu-spacer" aria-hidden="true" />,
-                      action: () => void save({ ...selection, effort }),
-                    })),
-                  ])}>
-                  <Sparkles size={15} aria-hidden="true" />
-                  <span>{activeEffortText}</span>
-                </button>}
               </div>
-              <FloatingField multiline ref={textarea} label={t("Ask the assistant", "向助手提问")}
+              <FloatingField multiline ref={textarea} label={t("Ask the assistant", "询问助手")}
                 className="composer-text" rows={windows ? 1 : 2}
                 value={question}
                 onScroll={windows ? event => syncScrollEdges(event.currentTarget) : undefined}
@@ -427,6 +444,9 @@ export function BuiltinAssistant({ own, assistants, chats, prompts, replies, job
                     void submit();
                   }
                 }} />
+              {hasEfforts && model && <ThinkingEffort key={model.selection.provider + "/" + model.selection.model}
+                efforts={model.efforts} effort={model.selection.effort} busy={busy}
+                save={effort => save({ ...model.selection, effort })} />}
               <button type="submit" className="button primary send-button" disabled={!provider || !question.trim() || oversized || busy}
                 aria-label={busy ? t("Sending question", "正在发送问题") : t("Send question", "发送问题")}>
                 <span>{busy ? t("Sending…", "发送中…") : t("Send", "发送")}</span>

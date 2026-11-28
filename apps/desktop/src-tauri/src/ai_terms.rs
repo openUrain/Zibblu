@@ -4,7 +4,8 @@ use serde::Serialize;
 use std::{fs, io::Write, path::Path};
 use tauri::State;
 
-const TERMS: &str = include_str!("../windows-ai-terms.txt");
+const ENGLISH_TERMS: &str = include_str!("../windows-ai-terms.en.txt");
+const CHINESE_TERMS: &str = include_str!("../windows-ai-terms.zh-CN.txt");
 const ACCEPTED_FILE: &str = "accepted-ai-terms.txt";
 
 #[derive(Serialize)]
@@ -13,9 +14,19 @@ pub(crate) struct AiTerms {
     accepted: bool,
 }
 
+fn matches_terms(accepted: &str, english: &str, chinese: &str) -> bool {
+    if accepted.lines().eq(english.lines()) || accepted.lines().eq(chinese.lines()) {
+        return true;
+    }
+    // The previous installer put both headings before the two language bodies.
+    let mut english = english.lines();
+    let mut chinese = chinese.trim_start_matches('\u{feff}').lines();
+    accepted.lines().eq(english.next().into_iter().chain(chinese.next()).chain(english).chain(chinese))
+}
+
 fn is_accepted(data: &Path) -> Result<bool> {
     match fs::read_to_string(data.join(ACCEPTED_FILE)) {
-        Ok(accepted) => Ok(accepted.lines().eq(TERMS.lines())),
+        Ok(accepted) => Ok(matches_terms(&accepted, ENGLISH_TERMS, CHINESE_TERMS)),
         Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData) => Ok(false),
         Err(error) => Err(error).context("Could not read AI terms acceptance"),
     }
@@ -29,7 +40,7 @@ pub(crate) fn require_accepted(data: &Path) -> Result<()> {
 #[tauri::command]
 pub(crate) fn ai_terms(state: State<'_, Desktop>) -> CommandResult<AiTerms> {
     Ok(AiTerms {
-        text: TERMS.trim_start_matches('\u{feff}'),
+        text: state.app_language().unwrap_or_default().text(ENGLISH_TERMS, CHINESE_TERMS).trim_start_matches('\u{feff}'),
         accepted: is_accepted(state.data_dir())?,
     })
 }
@@ -37,9 +48,11 @@ pub(crate) fn ai_terms(state: State<'_, Desktop>) -> CommandResult<AiTerms> {
 #[tauri::command]
 pub(crate) fn ai_accept_terms(state: State<'_, Desktop>, text: String) -> CommandResult<()> {
     let result = (|| -> Result<()> {
-        ensure!(text == TERMS.trim_start_matches('\u{feff}'), "The AI terms changed. Review the current version.");
+        let terms = [ENGLISH_TERMS, CHINESE_TERMS].into_iter()
+            .find(|terms| text == terms.trim_start_matches('\u{feff}'))
+            .context("The AI terms changed. Review the current version.")?;
         let mut file = tempfile::NamedTempFile::new_in(state.data_dir())?;
-        file.write_all(TERMS.as_bytes())?;
+        file.write_all(terms.as_bytes())?;
         file.persist(state.data_dir().join(ACCEPTED_FILE))?;
         Ok(())
     })();
@@ -50,15 +63,25 @@ pub(crate) fn ai_accept_terms(state: State<'_, Desktop>, text: String) -> Comman
 mod tests {
     use super::*;
 
+    const LEGACY_TERMS: &str = include_str!("../windows-ai-terms.txt");
+
     #[test]
     fn missing_and_old_terms_fail_closed() -> Result<()> {
         let profile = tempfile::tempdir()?;
-        assert!(TERMS.contains("Version 2"));
+        assert!(ENGLISH_TERMS.contains("Version 2"));
+        assert!(CHINESE_TERMS.contains("第 2 版"));
+        assert!(!ENGLISH_TERMS.contains("第 2 版"));
+        assert!(!CHINESE_TERMS.contains("Version 2"));
         assert!(require_accepted(profile.path()).is_err());
         let accepted = profile.path().join(ACCEPTED_FILE);
         fs::write(&accepted, "Zibblu Windows AI Terms and Privacy Notice · Version 1\n")?;
         assert!(require_accepted(profile.path()).is_err());
-        fs::write(accepted, TERMS)?;
-        require_accepted(profile.path())
+        for terms in [ENGLISH_TERMS, CHINESE_TERMS, LEGACY_TERMS] {
+            fs::write(&accepted, terms)?;
+            require_accepted(profile.path())?;
+        }
+        let changed_terms = ENGLISH_TERMS.replace("Version 2", "Version 3");
+        assert!(!matches_terms(LEGACY_TERMS, &changed_terms, CHINESE_TERMS));
+        Ok(())
     }
 }

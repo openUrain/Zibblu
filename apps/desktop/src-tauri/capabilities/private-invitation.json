@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "private-invitation",
+  "description": "Receive application language changes in private invitation notifications.",
+  "platforms": ["windows"],
+  "windows": ["private-invitation"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

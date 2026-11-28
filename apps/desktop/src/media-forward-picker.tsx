@@ -337,7 +337,7 @@ export function MediaForwardPicker({
                   ? t("Queued", "已加入队列")
                   : item.status === "cancelled"
                     ? t("Cancelled", "已取消")
-                    : item.error || t("Failed", "失败");
+                    : (item.error ? errorMessage(item.error) : t("Failed", "失败"));
               return (
                 <div key={item.target.conversation_id} className="media-forward-result-row">
                   <span className="media-forward-row-title">{name}</span>
