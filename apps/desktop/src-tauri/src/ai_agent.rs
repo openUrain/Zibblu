@@ -452,6 +452,10 @@ fn tools() -> Vec<Value> {
     ]
 }
 
+fn requires_cross_chat_prompt(origin: Uuid) -> bool {
+    origin != ZIBBLU_ASSISTANT
+}
+
 async fn request_access(
     app: &AppHandle,
     client: &Arc<Client>,
@@ -498,8 +502,22 @@ async fn request_access(
         return Ok(None);
     }
     let desktop = app.state::<Desktop>();
+    crate::ai_terms::require_accepted(desktop.data_dir())?;
     if ensure_available(&desktop, client, approved.conversation_id, chat.id).await.is_err() {
         return Ok(None);
+    }
+    if !requires_cross_chat_prompt(approved.conversation_id) {
+        desktop
+            .ai
+            .lock()
+            .expect("AI state")
+            .jobs
+            .get_mut(&job_id)
+            .context("The task has ended.")?
+            .targets
+            .insert(chat.id);
+        ensure_available(&desktop, client, approved.conversation_id, chat.id).await?;
+        return Ok(Some(chat.id));
     }
     let (answer, receiver) = oneshot::channel();
     let view = AccessView {
@@ -656,7 +674,7 @@ pub(super) async fn execute(
             "The current device time is {current_time} ({zone}). Use the search period for relative dates and latest requests, or YYYY-MM-DD for explicit dates. Weeks start on Monday. Result dates are already in device-local time with their UTC offsets. Use these dates directly."
         )}),
         json!({"role":"system","content": if builtin {
-            "This is a local assistant without a current chat. Answer general questions directly. For ordinary chat context, request access to a chat named in the question and specify that approved chat in each search."
+            "This is a local assistant without a current chat. Answer general questions directly. When the user explicitly names an ordinary chat to search, call request_chat with that exact name and specify that approved chat in each search."
         } else {
             "Search the current chat if the question concerns it."
         }}),
@@ -936,6 +954,12 @@ pub(super) async fn execute(
 mod time_tests {
     use super::*;
     use chrono::FixedOffset;
+
+    #[test]
+    fn builtin_assistant_skips_cross_chat_prompt_while_ordinary_chat_requires_it() {
+        assert!(!requires_cross_chat_prompt(ZIBBLU_ASSISTANT));
+        assert!(requires_cross_chat_prompt(Uuid::new_v4()));
+    }
 
     #[test]
     fn converts_issue_examples_with_exact_milliseconds() -> Result<()> {

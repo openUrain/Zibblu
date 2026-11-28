@@ -772,13 +772,13 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
             {attention[name] && <span className="rail-dot" aria-hidden="true" />}
           </span><span>{tabLabels[name]}</span>
         </button>)}</div>
-      <button className="rail-menu icon-button" ref={railMenu} title="Menu" aria-label="Menu" aria-haspopup="menu"
+      <button className="rail-menu icon-button" ref={railMenu} title={t("Menu", "菜单")} aria-label={t("Menu", "菜单")} aria-haspopup="menu"
         aria-expanded={menuAnchor !== undefined && menuAnchor === railMenu.current}
         onClick={event => openMenu(event.currentTarget, [
-          { label: "Settings", icon: <Settings size={17} />, action: () => navigate("Settings") },
-          { label: "About Zibblu", icon: <Info size={17} />, action: () => setAbout(true) },
-          { label: "Feedback (unavailable)", icon: <MessageSquare size={17} />, action: () => {}, disabled: true },
-          { label: "Sign out", icon: <LogOut size={17} />, action: () => void signOut(), disabled: leaving },
+          { label: t("Settings", "设置"), icon: <Settings size={17} />, action: () => navigate("Settings") },
+          { label: t("About Zibblu", "关于 Zibblu"), icon: <Info size={17} />, action: () => setAbout(true) },
+          { label: t("Feedback (unavailable)", "意见反馈（暂不可用）"), icon: <MessageSquare size={17} />, action: () => {}, disabled: true },
+          { label: t("Sign out", "退出登录"), icon: <LogOut size={17} />, divider: true, action: () => void signOut(), disabled: leaving },
         ])}><Menu size={23} /></button>
     </nav>
     {ios && <nav className="phone-tabs" aria-label="Main navigation">
@@ -801,7 +801,8 @@ export function Workspace({ session, privateQuiet, setPrivateQuiet, closeAction,
         <WindowDrag className="app-name">Zibblu</WindowDrag>
         <div className="chat-actions">
         <div className={"connection " + (connected ? "connected" : "disconnected")} role="status">
-          <span className="connection-dot" />{connection}
+          <span className="connection-dot" />{connection === "Connected" ? t("Connected", "已连接")
+            : connection === "Reconnecting" ? t("Reconnecting", "重连中") : t("Connecting", "连接中")}
         </div></div>
         {windows && <WindowControls />}
       </header>
@@ -1031,9 +1032,9 @@ function About({ close }: { close: () => void }) {
   const [version, setVersion] = useState("");
   useEffect(() => { void getVersion().then(setVersion).catch(() => {}); }, []);
   if (terms) return <AiTermsDialog close={() => setTerms(false)} />;
-  return <Dialog title="About Zibblu" close={close}>
+  return <Dialog title={t("About Zibblu", "关于 Zibblu")} close={close}>
     <div className="about-app"><Brand /><div><strong>Zibblu {version}</strong><p className="muted">Chat freely. Share privately.</p></div></div>
-    {windows && <button type="button" className="text-button" onClick={() => setTerms(true)}>{aiTermsLabel()}</button>}
+    {windows && <div className="about-links"><button type="button" className="text-button" onClick={() => setTerms(true)}>{aiTermsLabel()}</button></div>}
   </Dialog>;
 }
 
@@ -1155,7 +1156,7 @@ function Contacts({ active, directory, own, selected, refresh, create, reopenGro
       onScroll={windows ? event => { scrollTop.current = event.currentTarget.scrollTop; } : undefined}>
     {failure && <p className="inline-error" role="alert">{failure}</p>}
     {showAssistant && <section className="contact-group">
-      <h2 className="section-title">{t("System contacts", "系统联系人")}</h2>
+      <h2 className="contact-group-letter">{t("System contacts", "系统联系人")}</h2>
       <div className="contact-row system-contact"><button type="button" className="person-link contact-name" onClick={openAssistant}>
         <span className="avatar ai-builtin-avatar"><Bot size={20} /></span><span><strong>{builtinAssistantName()}</strong></span>
       </button></div>
@@ -1291,7 +1292,7 @@ function SettingsView({ session, privateQuiet, setPrivateQuiet, readReceipts, se
     { id: "chat", label: t("Chat", "聊天"), Icon: MessageCircle },
     { id: "privacy", label: t("Privacy", "隐私"), Icon: Shield },
     { id: "storage", label: t("Storage", "存储空间"), Icon: HardDrive },
-    { id: "assistants", label: t("AI assistants", "AI 助理"), Icon: MessageSquare },
+    { id: "assistants", label: t("AI assistants", "AI 助理"), Icon: Bot },
   ] as const;
   type Section = typeof sections[number]["id"];
   type Operation = "preferences" | "devices" | "retire";

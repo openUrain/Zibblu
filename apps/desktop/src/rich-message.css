@@ -1,11 +1,18 @@
 .rich-message {
   --rich-link: var(--blue);
-  --rich-code-highlight: color-mix(in srgb, var(--ink) 8%, var(--soft));
+  --rich-code-keyword: var(--accent);
+  --rich-code-string: var(--green);
+  --rich-code-number: var(--amber);
+  --rich-code-title: var(--blue);
 }
 /* Let vertical wheel scrolling chain back to the chat timeline across horizontal-only scrollers. */
 .rich-message, .rich-message * { overscroll-behavior-y: auto; }
 .private-chat .rich-message {
   --rich-link: #c8d8ff;
+  --rich-code-keyword: #c4b5fd;
+  --rich-code-string: #87ddbd;
+  --rich-code-number: #f0c286;
+  --rich-code-title: #93c5fd;
 }
 .bubble.rich-markdown { white-space: normal; }
 /* Re-enable synthesized oblique/bold-oblique for CJK fonts lacking dedicated italic faces. */
@@ -47,21 +54,31 @@
 }
 .rich-markdown code { font-family: ui-monospace, Consolas, Menlo, monospace; font-size: .93em; }
 .rich-markdown :not(pre) > code { background: var(--soft); border-radius: 4px; padding-inline: 4px; }
-.rich-code { background: var(--soft); border-radius: 6px; min-width: 0; }
+.rich-code {
+  background: var(--soft); border: 1px solid var(--line); border-radius: 8px; min-width: 0;
+}
 .rich-code-actions {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding-inline: 8px 4px; color: var(--muted); font-size: 12px;
+  padding: 4px 4px 4px 12px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px;
 }
 .rich-code-actions .icon-button { width: 28px; height: 28px; }
 .rich-scroll, .rich-formula-block { max-inline-size: 100%; overflow: auto hidden; }
-.rich-code pre { margin: 0; padding: 4px 8px 8px; white-space: pre; overflow-wrap: normal; }
+.rich-code pre { margin: 0; padding: 8px 12px; white-space: pre; overflow-wrap: normal; line-height: 1.5; }
 .rich-markdown table { border-collapse: collapse; width: max-content; white-space: nowrap; }
 .rich-markdown :where(th, td) { border: 1px solid var(--line); padding: 4px 8px; }
-.rich-markdown th { background: var(--soft); font-weight: 650; }
-.rich-markdown .hljs-comment { color: var(--muted); }
-.rich-markdown :is(.hljs-keyword, .hljs-selector-tag, .hljs-meta, .hljs-string, .hljs-regexp,
-  .hljs-title, .hljs-literal, .hljs-number, .hljs-type, .hljs-built_in) {
-  background: var(--rich-code-highlight);
+.rich-markdown th { background: var(--soft); font-weight: 600; }
+.rich-markdown .hljs-comment { color: var(--muted); font-style: italic; }
+.rich-markdown :is(.hljs-keyword, .hljs-selector-tag, .hljs-meta, .hljs-built_in) {
+  color: var(--rich-code-keyword);
+}
+.rich-markdown :is(.hljs-string, .hljs-regexp) {
+  color: var(--rich-code-string);
+}
+.rich-markdown :is(.hljs-literal, .hljs-number) {
+  color: var(--rich-code-number);
+}
+.rich-markdown :is(.hljs-title, .hljs-type) {
+  color: var(--rich-code-title);
 }
 .rich-formula { overflow-wrap: anywhere; }
 .rich-formula:not(.rich-formula-block):has(.katex) {

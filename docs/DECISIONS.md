@@ -52,7 +52,9 @@ Small, durable decisions only. Add a dated entry when an actual choice changes; 
 
 [Issue #154](https://github.com/openUrain/Zibblu/issues/154) 确认同一联系人在 Windows 私密会话期间使用单一入口，不同联系人可独立并行。已同意的设备可在 LAN 暂时恢复时重新认证会话。分享引用以接收者的当前访问权限为准。
 
-[Issue #157](https://github.com/openUrain/Zibblu/issues/157) 确认方案 A。Windows AI 默认提供只读自主检索，由安装流程或应用内入口披露外发范围并取得当前条款版本的同意。普通聊天中主动提交 `@名称` 默认仅授权当前普通会话。跨普通会话仍须对具体会话授予本次权限，内置助手适用同一限制。M2 私密会话始终隔离。
+[Issue #157](https://github.com/openUrain/Zibblu/issues/157) 确认方案 A。Windows AI 默认提供只读自主检索，由安装流程或应用内入口披露外发范围并取得当前条款版本的同意。普通聊天中主动提交 `@名称` 默认仅授权当前普通会话，跨普通会话仍须对具体会话授予本次权限。
+
+[Issue #160](https://github.com/openUrain/Zibblu/issues/160) 升级 Windows AI 条款至第 2 版：对已接受第 2 版条款的用户，在内置「Zibblu 助手」中主动提交问题不再重复弹出单次发送确认或跨普通会话授权卡片，问题中明确写出的有权普通会话可在本次任务中直接只读检索；未接受最新条款仍由后端阻断外发，普通聊天 `@名称` 跨会话单次授权、账号与成员权限校验及 M2 私密会话隔离保持不变。
 
 ## Open decisions
 
