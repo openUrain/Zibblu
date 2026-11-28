@@ -75,8 +75,8 @@ export const ai = {
   acceptTerms: (text: string) => invoke<void>("ai_accept_terms", { text }),
   openBuiltinSettings: () => invoke<void>("ai_open_builtin_settings"),
   builtinModel: (selection?: BuiltinSelection) => invoke<BuiltinModel | null>("ai_builtin_model", { selection }),
-  startBuiltin: (selection: BuiltinSelection, endpoint: string | null, prompt: string) =>
-    invoke<void>("ai_start_builtin", { selection, endpoint, prompt }),
+  startBuiltin: (selection: BuiltinSelection, endpoint: string | null, prompt: string, conversations: string[] = []) =>
+    invoke<void>("ai_start_builtin", { selection, endpoint, prompt, conversations }),
   locateSource: (conversation: string, seq: number) => invoke<Message>("ai_locate_source", { conversation, seq }),
   deleteLocal: (conversation: string, id: string, kind: "prompt" | "reply" | "job") =>
     invoke<void>("ai_delete_local", { conversation, id, kind }),

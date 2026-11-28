@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
-import { ArrowLeft, Bot, Check, ChevronDown, Pencil, RefreshCw, Settings, Sparkles } from "lucide-react";
-import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { ArrowLeft, Bot, Check, ChevronDown, MessageSquare, Pencil, Plus, RefreshCw, Settings, Sparkles, X } from "lucide-react";
+import { Fragment, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { AiJobBubble, AiPromptBubble, AiSources, builtinAssistantName, ProviderLogo, ShareAiReply, useAiMessageMenu } from "./ai";
 import { ai, aiProviders, builtinAssistantId } from "./ai-api";
@@ -8,13 +8,16 @@ import { useAiTerms } from "./ai-terms";
 import type { AiJob, AiPrompt, AiReply, Assistant, BuiltinModel, BuiltinSelection } from "./ai-api";
 import { errorMessage } from "./api";
 import type { Conversation, User } from "./api";
-import { Blank, Dialog, messageTimeLabel, startsTimeGroup } from "./common";
+import { Blank, chatName, Dialog, messageTimeLabel, People, startsTimeGroup } from "./common";
 import { clearMessageSelectionOnBlank, useEditMenu, useMenu, useMenuAnchor } from "./context-menu";
+import type { MenuItem } from "./context-menu";
 import { FloatingField } from "./floating-field";
 import { ios } from "./ios";
 import { t } from "./locale";
 import { RichMessage } from "./rich-message";
 import { windows } from "./window-chrome";
+
+const MAX_ATTACHED_CHATS = 8;
 
 const effortLabels: Record<string, [string, string]> = {
   none: ["Off", "关闭"], low: ["Low", "低"], medium: ["Medium", "中"],
@@ -32,6 +35,7 @@ export function BuiltinAssistant({ own, assistants, chats, prompts, replies, job
   prompts: AiPrompt[]; replies: AiReply[]; jobs: AiJob[];
   settings: () => void; refresh: () => Promise<void>; back: () => void;
 }) {
+  const { remarks } = useContext(People);
   const [model, setModel] = useState<BuiltinModel | null>(null);
   const selection = model?.selection;
   const provider = assistants.find(entry => entry.provider === selection?.provider);
@@ -39,6 +43,7 @@ export function BuiltinAssistant({ own, assistants, chats, prompts, replies, job
   const [manual, setManual] = useState<string>();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [discovering, setDiscovering] = useState(false);
+  const [attachedIds, setAttachedIds] = useState<string[]>([]);
   const [question, setQuestion] = useState("");
   const [sharing, setSharing] = useState<AiReply>();
   const [busy, setBusy] = useState(false);
@@ -52,9 +57,16 @@ export function BuiltinAssistant({ own, assistants, chats, prompts, replies, job
   const pickerRef = useRef<HTMLDivElement>(null);
   const pickerButton = useRef<HTMLButtonElement>(null);
   const atBottom = useRef(true);
+  const discoverOrder = useRef(0);
+  const activeTarget = useRef<{ provider: string; baseUrl: string } | undefined>(undefined);
+  activeTarget.current = provider ? { provider: provider.provider, baseUrl: provider.base_url ?? "" } : undefined;
   const pickerId = useId();
   const failed = (error: unknown) => setFailure(errorMessage(error));
   const menu = useAiMessageMenu(failed);
+  const attachableChats = chats.filter(chat => chat.id !== builtinAssistantId);
+  const attachedChats = attachedIds
+    .map(id => attachableChats.find(chat => chat.id === id))
+    .filter((chat): chat is Conversation => Boolean(chat));
 
   useEffect(() => {
     let current = true;
@@ -69,7 +81,19 @@ export function BuiltinAssistant({ own, assistants, chats, prompts, replies, job
     return () => { current = false; void unlisten.then(stop => stop()); };
   }, [assistants]);
 
-  useEffect(() => { setModels([]); }, [provider?.provider, provider?.base_url]);
+  useEffect(() => {
+    discoverOrder.current += 1;
+    setModels([]);
+    setDiscovering(false);
+  }, [provider?.provider, provider?.base_url]);
+
+  useEffect(() => {
+    const valid = new Set(chats.filter(chat => chat.id !== builtinAssistantId).map(chat => chat.id));
+    setAttachedIds(current => {
+      const next = current.filter(id => valid.has(id));
+      return next.length === current.length ? current : next;
+    });
+  }, [chats]);
 
   useEffect(() => {
     if (!pickerOpen) return;
@@ -123,15 +147,35 @@ export function BuiltinAssistant({ own, assistants, chats, prompts, replies, job
 
   async function discover() {
     if (!provider || discovering) return;
+    const targetProvider = provider.provider;
+    const targetBase = provider.base_url ?? "";
+    const ticket = ++discoverOrder.current;
+    const isCurrent = () =>
+      discoverOrder.current === ticket
+      && activeTarget.current?.provider === targetProvider
+      && activeTarget.current?.baseUrl === targetBase;
     setDiscovering(true);
     setFailure("");
     try {
       if (!await terms.requireAcceptance()) return;
-      const available = (await ai.testConnection(provider.provider, provider.base_url ?? "")).models;
+      if (!isCurrent()) return;
+      const available = (await ai.testConnection(targetProvider, targetBase)).models;
+      if (!isCurrent()) return;
       setModels(available);
       if (!available.length) setFailure(t("The provider returned no model IDs. Enter an ID to continue.", "提供商未返回模型 ID，可以手动输入。"));
-    } catch (error) { failed(error); }
-    finally { setDiscovering(false); }
+    } catch (error) {
+      if (isCurrent()) failed(error);
+    } finally {
+      if (discoverOrder.current === ticket) setDiscovering(false);
+    }
+  }
+
+  function toggleAttachedChat(id: string) {
+    setAttachedIds(current => {
+      if (current.includes(id)) return current.filter(item => item !== id);
+      if (current.length >= MAX_ATTACHED_CHATS) return current;
+      return [...current, id];
+    });
   }
 
   async function submit(event?: FormEvent) {
@@ -146,8 +190,9 @@ export function BuiltinAssistant({ own, assistants, chats, prompts, replies, job
     setBusy(true);
     try {
       if (!await terms.requireAcceptance()) return;
-      await ai.startBuiltin(selection, provider.base_url ?? null, trimmed);
+      await ai.startBuiltin(selection, provider.base_url ?? null, trimmed, attachedChats.map(chat => chat.id));
       setQuestion("");
+      setAttachedIds([]);
       atBottom.current = true;
     } catch (error) { failed(error); }
     finally { setBusy(false); }
@@ -303,28 +348,73 @@ export function BuiltinAssistant({ own, assistants, chats, prompts, replies, job
         <form className="composer" onSubmit={event => void submit(event)}>
           {oversized && <div className="inline-error" role="alert">{t("Text can be up to 8 KiB.", "文本最多 8 KiB。")}</div>}
           <div className="composer-box">
-            <div className={"composer-input" + (hasEfforts ? " builtin-composer-with-effort" : " builtin-composer-plain")}>
-              {hasEfforts && selection && <button type="button" className="builtin-effort-button"
-                aria-label={t("Thinking effort", "思考强度") + ": " + activeEffortText}
-                title={t("Thinking effort", "思考强度")}
-                aria-haspopup="menu"
-                aria-expanded={menuAnchor?.classList.contains("builtin-effort-button") ?? false}
-                disabled={busy}
-                onClick={event => openMenu(event.currentTarget, [
-                  {
-                    label: t("Default effort", "默认强度"),
-                    icon: !selection.effort ? <Check size={15} /> : <span className="builtin-menu-spacer" aria-hidden="true" />,
-                    action: () => void save({ ...selection, effort: null }),
-                  },
-                  ...(model?.efforts ?? []).map(effort => ({
-                    label: t(...effortLabels[effort]),
-                    icon: selection.effort === effort ? <Check size={15} /> : <span className="builtin-menu-spacer" aria-hidden="true" />,
-                    action: () => void save({ ...selection, effort }),
-                  })),
-                ])}>
-                <Sparkles size={15} aria-hidden="true" />
-                <span>{activeEffortText}</span>
-              </button>}
+            {attachedChats.length > 0 && <div className="builtin-attached-chats" role="list"
+              aria-label={t("Attached ordinary chats", "本次关联的普通聊天")}>
+              {attachedChats.map(chat => {
+                const label = chatName(chat, own.id, remarks);
+                return <span key={chat.id} className="builtin-chat-chip" role="listitem">
+                  <MessageSquare size={13} aria-hidden="true" />
+                  <span title={label}>{label}</span>
+                  <button type="button" className="builtin-chat-chip-remove" disabled={busy}
+                    aria-label={t("Remove", "移除") + " " + label}
+                    onClick={() => toggleAttachedChat(chat.id)}>
+                    <X size={13} aria-hidden="true" />
+                  </button>
+                </span>;
+              })}
+            </div>}
+            <div className="composer-input builtin-composer-input">
+              <div className="builtin-composer-actions">
+                <button type="button" className="icon-button builtin-attach-button"
+                  aria-label={t("Attach ordinary chat", "关联普通聊天")}
+                  title={attachableChats.length ? t("Attach ordinary chat", "关联普通聊天") : t("No ordinary chats available", "暂无可关联的普通聊天")}
+                  aria-haspopup="menu"
+                  aria-expanded={menuAnchor?.classList.contains("builtin-attach-button") ?? false}
+                  disabled={busy || !attachableChats.length}
+                  onClick={event => {
+                    const items: MenuItem[] = attachableChats.map(chat => {
+                      const selected = attachedIds.includes(chat.id);
+                      return {
+                        label: chatName(chat, own.id, remarks),
+                        icon: selected ? <Check size={15} /> : <span className="builtin-menu-spacer" aria-hidden="true" />,
+                        disabled: !selected && attachedIds.length >= MAX_ATTACHED_CHATS,
+                        action: () => toggleAttachedChat(chat.id),
+                      };
+                    });
+                    if (attachedIds.length) {
+                      items.push({
+                        label: t("Clear attached chats", "清除已关联聊天"),
+                        icon: <X size={15} />,
+                        divider: true,
+                        action: () => setAttachedIds([]),
+                      });
+                    }
+                    openMenu(event.currentTarget, items);
+                  }}>
+                  <Plus size={18} aria-hidden="true" />
+                </button>
+                {hasEfforts && selection && <button type="button" className="builtin-effort-button"
+                  aria-label={t("Thinking effort", "思考强度") + ": " + activeEffortText}
+                  title={t("Thinking effort", "思考强度")}
+                  aria-haspopup="menu"
+                  aria-expanded={menuAnchor?.classList.contains("builtin-effort-button") ?? false}
+                  disabled={busy}
+                  onClick={event => openMenu(event.currentTarget, [
+                    {
+                      label: t("Default effort", "默认强度"),
+                      icon: !selection.effort ? <Check size={15} /> : <span className="builtin-menu-spacer" aria-hidden="true" />,
+                      action: () => void save({ ...selection, effort: null }),
+                    },
+                    ...(model?.efforts ?? []).map(effort => ({
+                      label: t(...effortLabels[effort]),
+                      icon: selection.effort === effort ? <Check size={15} /> : <span className="builtin-menu-spacer" aria-hidden="true" />,
+                      action: () => void save({ ...selection, effort }),
+                    })),
+                  ])}>
+                  <Sparkles size={15} aria-hidden="true" />
+                  <span>{activeEffortText}</span>
+                </button>}
+              </div>
               <FloatingField multiline ref={textarea} label={t("Ask the assistant", "向助手提问")}
                 className="composer-text" rows={windows ? 1 : 2}
                 value={question}

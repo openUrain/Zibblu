@@ -54,7 +54,7 @@ Small, durable decisions only. Add a dated entry when an actual choice changes; 
 
 [Issue #157](https://github.com/openUrain/Zibblu/issues/157) 确认方案 A。Windows AI 默认提供只读自主检索，由安装流程或应用内入口披露外发范围并取得当前条款版本的同意。普通聊天中主动提交 `@名称` 默认仅授权当前普通会话，跨普通会话仍须对具体会话授予本次权限。
 
-[Issue #160](https://github.com/openUrain/Zibblu/issues/160) 升级 Windows AI 条款至第 2 版：对已接受第 2 版条款的用户，在内置「Zibblu 助手」中主动提交问题不再重复弹出单次发送确认或跨普通会话授权卡片，问题中明确写出的有权普通会话可在本次任务中直接只读检索；未接受最新条款仍由后端阻断外发，普通聊天 `@名称` 跨会话单次授权、账号与成员权限校验及 M2 私密会话隔离保持不变。
+[Issue #160](https://github.com/openUrain/Zibblu/issues/160) 升级 Windows AI 条款至第 2 版：对已接受第 2 版条款的用户，在内置「Zibblu 助手」中主动提交问题不再重复弹出单次发送确认或跨普通会话授权卡片；如需检索普通聊天，须在当次提问输入区显式关联目标普通会话，由后端固定本次任务的会话范围（不通过提问文本子串自动扩权，且发送后清空避免跨任务复用）；未接受最新条款仍由后端阻断外发，普通聊天 `@名称` 跨会话单次授权、账号与成员权限校验及 M2 私密会话隔离保持不变。
 
 ## Open decisions
 

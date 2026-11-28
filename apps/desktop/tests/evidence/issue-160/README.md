@@ -19,6 +19,7 @@
 | 思考强度菜单 | — | [03c-builtin-effort-menu.png](after/03c-builtin-effort-menu.png) | 思考强度内嵌为输入框左侧紧凑胶囊，展开菜单向上弹出不遮挡输入框 |
 | 第 2 版 AI 服务条款弹窗 | — | [03d-builtin-terms-v2.png](after/03d-builtin-terms-v2.png) | AI 条款升级至 Version 2，未接受前前端与后端均 fail-closed 拦截发送并展示新条款 |
 | 接受条款后直接发送 | — | [03e-builtin-direct-submit.png](after/03e-builtin-direct-submit.png) | 接受 Version 2 条款后提交问题不再弹出重复「发送给 AI 提供商？」确认框；助手提问气泡复用普通聊天样式并隐藏冗余「仅自己可见」标签 |
+| 显式关联普通聊天（固定单次范围） | — | [03f-builtin-attach-chat.png](after/03f-builtin-attach-chat.png) | 通过输入框 `+` 菜单为本次提问显式关联普通会话（展示为可移除标签），后端固定本次任务范围并禁止模型动态扩权，发送后自动清空 |
 | 联系人列表分组 | [04-contacts.png](before/04-contacts.png) | [04-contacts.png](after/04-contacts.png) | `系统联系人` 分组标题与字母分组对齐，统一分隔线与字级 |
 | 文件页 | [05-files.png](before/05-files.png) | [05-files.png](after/05-files.png) | 保持简洁列表层级，顶部状态与全局视觉同步 |
 | 设置页导航与边框 | [06-settings-account.png](before/06-settings-account.png) | [06-settings-account.png](after/06-settings-account.png) | 设置顶栏统一为 52px，导航栏补齐右侧分隔线；`AI 助理` 图标由重复聊天气泡改为 `Bot` 图标 |
@@ -30,7 +31,8 @@
 - `npm --prefix apps/desktop run build`（`tsc --noEmit && vite build`）：PASS
 - `node --test tests/rich-message.test.mjs`（在 `apps/desktop` 目录）：5/5 PASS
 - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib ai_terms`：1/1 PASS（验证 Version 2 条款生效且旧版 Version 1 fail-closed）
-- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib ai::agent`：4/4 PASS（含 `builtin_assistant_skips_cross_chat_prompt_while_ordinary_chat_requires_it`）
+- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib ai::agent`：5/5 PASS（含 `builtin_tools_fix_scope_without_request_chat` 与 `resolve_builtin_chats_fixes_exact_ids_and_disambiguates_names`）
+- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib ai::tests`：6/6 PASS
 - `cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --features custom-protocol`：PASS
 
 ## 未验证范围

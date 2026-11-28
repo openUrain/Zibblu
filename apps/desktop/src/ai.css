@@ -114,8 +114,35 @@
 .builtin-popover-footer { color: var(--muted); font-weight: 500; }
 .builtin-popover-footer:hover:not(:disabled) { color: var(--ink); }
 
-.builtin-effort-button {
+.builtin-composer-actions {
   grid-area: attach; display: inline-flex; align-items: center; gap: 4px;
+}
+.builtin-attach-button {
+  width: 32px; min-width: 32px; height: 32px; border-radius: 9999px; color: var(--muted);
+}
+.builtin-attach-button:hover:not(:disabled),
+.builtin-attach-button[aria-expanded="true"] {
+  background: var(--tint); color: var(--accent);
+}
+.builtin-attached-chats {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 4px 6px;
+}
+.builtin-chat-chip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: min(220px, 100%);
+  height: 26px; padding: 0 4px 0 8px; border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+  border-radius: 9999px; background: var(--tint); color: var(--accent); font-size: 12px; font-weight: 500;
+}
+.builtin-chat-chip > svg { flex: none; }
+.builtin-chat-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.builtin-chat-chip-remove {
+  display: inline-grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0;
+  border-radius: 9999px; background: transparent; color: var(--accent); flex: none;
+}
+.builtin-chat-chip-remove:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.builtin-effort-button {
+  display: inline-flex; align-items: center; gap: 4px;
   height: 32px; padding: 0 10px 0 8px; border: 1px solid var(--line); border-radius: 9999px;
   background: var(--soft); color: var(--ink); font-size: 12px; font-weight: 500; white-space: nowrap;
   transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
@@ -126,12 +153,7 @@
 }
 .builtin-effort-button svg { color: var(--accent); flex: none; }
 .builtin-menu-spacer { display: inline-block; width: 15px; flex: none; }
-.windows .chat-view .composer-input.builtin-composer-plain {
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas: "editor ." "editor send";
-  padding-inline-start: 12px;
-}
-.windows .chat-view .composer-input.builtin-composer-with-effort {
+.windows .chat-view .composer-input.builtin-composer-input {
   padding-inline-start: 6px;
 }
 @media (prefers-reduced-motion: reduce) {
